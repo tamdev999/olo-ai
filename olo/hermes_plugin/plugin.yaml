@@ -1,0 +1,4 @@
+name: olo
+version: 0.1.0
+description: "Olo AI business signal pipeline (M1: CLI only; no tools or hooks)."
+author: "Olo AI"
