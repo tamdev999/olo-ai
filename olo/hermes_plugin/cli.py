@@ -1,6 +1,8 @@
-"""Olo AI — `hermes olo status` and `hermes olo setup` subcommands.
+"""Olo AI — `hermes olo` CLI subcommands (M1 + M2).
 
-§6.1: CLI-only plugin surface for M1.
+§6.1, §7.1, §7.2: setup, status, google connect/status/disconnect,
+checkpoint reset.
+
 No side effects at import time.
 """
 from __future__ import annotations
@@ -9,11 +11,15 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import Any
 
 # ── Validation patterns (must stay in sync with olo.signals) ─────────────────
 _SOURCE_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _OPTION_KEY_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_ALIAS_RE = re.compile(r"^[a-z0-9]{1,16}$")
+
+# ── Gmail/Calendar schedule strings (§7.1) ────────────────────────────────────
+_GMAIL_SCHEDULE = "every 5m"
+_GCAL_SCHEDULE = "every 15m"
 
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -30,6 +36,29 @@ def _cmd_status(args: argparse.Namespace) -> None:
     print(f"  Home:    {home}")
     print(f"  DB:      {db}")
 
+    # Connected Google accounts
+    try:
+        from olo.google.credentials import list_accounts, load_credentials, email_hash
+        accounts = list_accounts()
+        if accounts:
+            print("  Google accounts:")
+            for alias in accounts:
+                try:
+                    creds = load_credentials(alias)
+                    scopes_short = []
+                    if creds.has_gmail_scope():
+                        scopes_short.append("gmail.metadata")
+                    if creds.has_calendar_scope():
+                        scopes_short.append("calendar")
+                    print(
+                        f"    {alias}: email_hash={email_hash(creds.email_address)[:12]}…"
+                        f"  scopes={scopes_short}"
+                    )
+                except Exception as e:
+                    print(f"    {alias}: ERROR ({e})")
+    except ImportError:
+        pass
+
     if not db.exists():
         print("  (database not yet initialised — run `hermes olo setup --source <name>`)")
         return
@@ -37,15 +66,11 @@ def _cmd_status(args: argparse.Namespace) -> None:
     conn = connect(db)
     migrate(conn)
 
-    # Schema version
     row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
     version = row["version"] if row else "?"
     print(f"  Schema:  v{version}")
 
-    # Sources
-    sources = conn.execute(
-        "SELECT DISTINCT source FROM sync_checkpoints"
-    ).fetchall()
+    sources = conn.execute("SELECT DISTINCT source FROM sync_checkpoints").fetchall()
     if not sources:
         print("  Sources: (none)")
     else:
@@ -55,6 +80,8 @@ def _cmd_status(args: argparse.Namespace) -> None:
                 "SELECT cursor FROM sync_checkpoints WHERE source=?", (src,)
             ).fetchone()
             cursor = cp["cursor"] if cp else "None"
+            # Show phase for Google sources
+            phase_str = _cursor_phase_str(cursor)
             n = conn.execute(
                 "SELECT COUNT(*) AS n FROM signals WHERE source=?", (src,)
             ).fetchone()["n"]
@@ -67,9 +94,8 @@ def _cmd_status(args: argparse.Namespace) -> None:
                 if lease else "no lease"
             )
             print(f"  Source:  {src}")
-            print(f"    cursor={cursor}  signals={n}  {lease_str}")
+            print(f"    cursor={phase_str}  signals={n}  {lease_str}")
 
-    # Last 5 runs
     runs = conn.execute(
         "SELECT id, source, status, started_at, batches, inserted, error"
         " FROM ingest_runs ORDER BY started_at DESC LIMIT 5"
@@ -86,6 +112,25 @@ def _cmd_status(args: argparse.Namespace) -> None:
     conn.close()
 
 
+def _cursor_phase_str(cursor: str) -> str:
+    """Human-readable phase description for a cursor string."""
+    if cursor is None or cursor == "None":
+        return "bootstrap"
+    try:
+        import json
+        d = json.loads(cursor)
+        phase = d.get("phase", "?")
+        if phase == "full":
+            return f"full(time_min={d.get('time_min','?')[:10]})"
+        if phase == "incr":
+            tok = d.get("sync_token", "?")[:12]
+            return f"incr(token={tok}…)"
+        return phase
+    except Exception:
+        # Gmail: plain historyId string
+        return f"historyId={cursor}"
+
+
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 def _cmd_setup(args: argparse.Namespace) -> None:
@@ -97,7 +142,6 @@ def _cmd_setup(args: argparse.Namespace) -> None:
 
     source: str = args.source
 
-    # ── Validate source before any side effects ───────────────────────────────
     if not _SOURCE_RE.match(source):
         print(
             f"olo setup: invalid --source {source!r}: "
@@ -105,6 +149,7 @@ def _cmd_setup(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
     _ensure_registry()
     if source not in ADAPTERS:
         known = ", ".join(sorted(ADAPTERS))
@@ -114,7 +159,6 @@ def _cmd_setup(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # ── Parse and validate options ────────────────────────────────────────────
     options: dict[str, str] = {}
     for item in (args.option or []):
         if "=" not in item:
@@ -130,15 +174,55 @@ def _cmd_setup(args: argparse.Namespace) -> None:
             sys.exit(1)
         options[k] = v
 
-    # Migrate
+    # For gmail/gcal, verify the account is connected and has the required scope
+    alias = options.get("account", "")
+    if source in ("gmail", "gcal") and alias:
+        try:
+            from olo.google.credentials import load_credentials
+            creds = load_credentials(alias)
+            if source == "gmail" and not creds.has_gmail_scope():
+                print(
+                    f"olo setup: account {alias!r} has no gmail.metadata scope. "
+                    f"Run: hermes olo google connect --account {alias}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if source == "gcal" and not creds.has_calendar_scope():
+                print(
+                    f"olo setup: account {alias!r} has no calendar scope. "
+                    f"Run: hermes olo google connect --account {alias}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        except FileNotFoundError:
+            print(
+                f"olo setup: account {alias!r} is not connected. "
+                f"Run: hermes olo google connect --account {alias}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    elif source in ("gmail", "gcal") and not alias:
+        print(
+            f"olo setup: --source {source} requires --option account=<alias>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     db = db_path()
     conn = connect(db)
     migrate(conn)
 
-    # Install shim
     scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    shim_name = f"olo_monitor_{source}.py"
+
+    # §7.1: shim name includes account for gmail/gcal
+    if source in ("gmail", "gcal") and alias:
+        shim_name = f"olo_monitor_{source}_{alias}.py"
+        cron_name = f"olo-{source}-{alias}"
+    else:
+        shim_name = f"olo_monitor_{source}.py"
+        cron_name = f"olo-{source}"
+
     shim_path = scripts_dir / shim_name
 
     if shim_path.exists() and not getattr(args, "force", False):
@@ -148,15 +232,8 @@ def _cmd_setup(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # Render shim from template.
-    # Build the argument list as a safe Python literal using repr() so that
-    # source and option values can NEVER inject code regardless of their content.
     import os
     repo_root = str(Path(__file__).parent.parent.parent)
-
-    # Build the argument list as a safe Python literal using repr() so that
-    # every element (flags AND values) is a quoted string literal in the
-    # generated shim. repr() ensures injected Python characters are inert.
     parts: list[str] = [repr("--source"), repr(source)]
     for k, v in options.items():
         parts += [repr("--option"), repr(f"{k}={v}")]
@@ -169,14 +246,13 @@ def _cmd_setup(args: argparse.Namespace) -> None:
         tmpl = _DEFAULT_SHIM_TEMPLATE
 
     shim_content = tmpl.format(
-        repo_root=repr(repo_root),   # safe: repr() wraps the string
+        repo_root=repr(repo_root),
         argv_literal=argv_literal,
     )
 
     shim_path.write_text(shim_content, encoding="utf-8")
     shim_path.chmod(0o700)
 
-    # Audit
     conn.execute("BEGIN IMMEDIATE")
     try:
         _audit(conn, "cli:setup", "setup.completed", {
@@ -191,14 +267,315 @@ def _cmd_setup(args: argparse.Namespace) -> None:
 
     conn.close()
 
+    # §7.1: schedule strings
+    schedule_str = _GMAIL_SCHEDULE if source == "gmail" else (
+        _GCAL_SCHEDULE if source == "gcal" else "every 15m"
+    )
+
     print(f"olo setup: DB migrated, shim installed at {shim_path}")
     print()
     print("Add cron job:")
     print(
-        f"  hermes cron create \"every 15m\" --name olo-{source}"
+        f"  hermes cron create \"{schedule_str}\" --name {cron_name}"
         f" --script {shim_name} --no-agent --deliver local"
     )
 
+
+# ── Google connect ─────────────────────────────────────────────────────────────
+
+def _cmd_google_connect(args: argparse.Namespace) -> None:
+    """OAuth connect for a Google account."""
+    alias: str = args.account
+    client_secret_file: str = args.client_secret_file
+    manual: bool = getattr(args, "manual", False)
+    prod: bool = getattr(args, "production", False)
+
+    if not _ALIAS_RE.match(alias):
+        print(
+            f"olo google connect: invalid alias {alias!r}: "
+            f"must match ^[a-z0-9]{{1,16}}$",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Load client secrets
+    import json as _json
+    try:
+        raw = Path(client_secret_file).read_text(encoding="utf-8")
+        secret_data = _json.loads(raw)
+    except Exception as e:
+        print(f"olo google connect: cannot read client secret file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Support both "installed" and "web" key layouts
+    app = secret_data.get("installed") or secret_data.get("web") or secret_data
+    client_id = app.get("client_id", "")
+    client_secret = app.get("client_secret", "")
+    if not client_id or not client_secret:
+        print(
+            "olo google connect: client secret file missing client_id or client_secret",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from olo.google.credentials import REQUIRED_SCOPES, credential_lock, save_credentials
+    from olo.google.oauth import (
+        connect_loopback, await_loopback_code,
+        build_auth_url, parse_manual_redirect,
+        exchange_code,
+    )
+
+    scopes = REQUIRED_SCOPES
+    oauth_status = "production" if prod else "testing"
+
+    if manual:
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        redirect_uri = f"http://127.0.0.1:{port}/"
+        auth_url, pending = build_auth_url(client_id, redirect_uri, scopes)
+        print(f"\nOpen this URL in your browser:\n\n  {auth_url}\n")
+        print("After authorising, paste the full redirect URL here:")
+        try:
+            pasted = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.", file=sys.stderr)
+            sys.exit(1)
+        code = parse_manual_redirect(pasted, pending)
+        if code is None:
+            print("olo google connect: authorisation failed or state mismatch.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        auth_url, pending, port = connect_loopback(client_id, client_secret, alias, scopes)
+        print(f"\nOpen this URL in your browser:\n\n  {auth_url}\n")
+        print(f"Waiting for redirect on http://127.0.0.1:{port}/ (300s timeout)...")
+        code = await_loopback_code(pending, port)
+        if code is None:
+            print("olo google connect: timeout or access denied.", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        creds = exchange_code(
+            code, pending, client_id, client_secret, alias,
+            oauth_publishing_status=oauth_status,
+        )
+    except ValueError as e:
+        print(f"olo google connect: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    with credential_lock(alias):
+        save_credentials(creds)
+
+    # Audit
+    from olo.paths import db_path
+    from olo.store import connect, migrate, _audit, utc_now
+    from olo.google.credentials import email_hash
+    db = db_path()
+    conn = connect(db)
+    migrate(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _audit(conn, "cli:google", "google.connected", {
+            "alias": alias,
+            "email_hash": email_hash(creds.email_address),
+            "scopes": sorted(creds.granted_scopes),
+        }, now=utc_now())
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+    conn.close()
+
+    scopes_short = []
+    if creds.has_gmail_scope():
+        scopes_short.append("gmail.metadata")
+    if creds.has_calendar_scope():
+        scopes_short.append("calendar")
+    print(f"\nConnected account {alias!r} (scopes: {scopes_short})")
+    if oauth_status == "testing":
+        print("  Warning: Testing-mode tokens expire 7 days after consent.")
+        print("  Run 'hermes olo google connect' again weekly to reconnect.")
+
+
+def _cmd_google_status(args: argparse.Namespace) -> None:
+    """Show connected Google accounts."""
+    check: bool = getattr(args, "check", False)
+
+    try:
+        from olo.google.credentials import list_accounts, load_credentials, email_hash
+        from datetime import datetime, UTC, timedelta
+    except ImportError:
+        print("olo google status: google module not available", file=sys.stderr)
+        sys.exit(1)
+
+    accounts = list_accounts()
+    if not accounts:
+        print("No connected Google accounts.")
+        return
+
+    for alias in accounts:
+        try:
+            creds = load_credentials(alias)
+        except Exception as e:
+            print(f"  {alias}: ERROR loading credentials: {e}")
+            continue
+
+        scopes_short = []
+        if creds.has_gmail_scope():
+            scopes_short.append("gmail.metadata")
+        if creds.has_calendar_scope():
+            scopes_short.append("calendar")
+
+        print(f"  {alias}:")
+        print(f"    email_hash: {email_hash(creds.email_address)}")
+        print(f"    scopes:     {scopes_short}")
+        print(f"    status:     {creds.oauth_publishing_status}")
+
+        # Expiry warning for testing mode
+        if creds.oauth_publishing_status == "testing":
+            expiry = creds.refresh_token_issued_at + timedelta(days=7)
+            now = datetime.now(UTC)
+            remaining = (expiry - now).total_seconds()
+            if remaining <= 0:
+                print("    expiry:     EXPIRED — reconnect now")
+            elif remaining < 48 * 3600:
+                hrs = remaining / 3600
+                print(f"    expiry:     WARNING — expires in {hrs:.1f}h (reconnect soon)")
+            else:
+                days = remaining / 86400
+                print(f"    expiry:     {days:.1f} days remaining")
+
+        if check:
+            try:
+                from olo.google.oauth import refresh_access_token
+                from olo.google.credentials import GoogleAuthRevoked
+                refresh_access_token(alias)
+                print("    live check: OK (token refreshed)")
+            except GoogleAuthRevoked as e:
+                print(f"    live check: FAILED — {e}")
+            except Exception as e:
+                print(f"    live check: ERROR — {e}")
+
+
+def _cmd_google_disconnect(args: argparse.Namespace) -> None:
+    """Revoke and remove credentials for an account."""
+    alias: str = args.account
+
+    try:
+        from olo.google.credentials import (
+            load_credentials, remove_credentials, credential_lock,
+        )
+        from olo.google.oauth import refresh_access_token, revoke_token
+    except ImportError:
+        print("olo google disconnect: google module not available", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with credential_lock(alias):
+            creds = load_credentials(alias)
+            # Revoke (best effort)
+            try:
+                token = refresh_access_token(alias)
+                revoke_token(token, api_base_override=creds.api_base_override)
+            except Exception:
+                pass
+            remove_credentials(alias)
+    except FileNotFoundError:
+        print(f"olo google disconnect: account {alias!r} not connected", file=sys.stderr)
+        sys.exit(1)
+
+    # Audit
+    from olo.paths import db_path
+    from olo.store import connect, migrate, _audit, utc_now
+    from olo.google.credentials import email_hash
+    db = db_path()
+    conn = connect(db)
+    migrate(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _audit(conn, "cli:google", "google.disconnected", {"alias": alias}, now=utc_now())
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+    conn.close()
+
+    print(f"Disconnected account {alias!r}.")
+
+
+# ── Checkpoint reset ───────────────────────────────────────────────────────────
+
+def _cmd_checkpoint_reset(args: argparse.Namespace) -> None:
+    """Reset sync checkpoint for a source (§7.2)."""
+    source: str = args.source
+    confirm: bool = getattr(args, "confirm", False)
+
+    if not confirm:
+        print(
+            "olo checkpoint reset: requires --confirm flag to proceed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from olo.paths import db_path
+    from olo.store import connect, migrate, _audit, utc_now
+    import hashlib as _hashlib
+    import sqlite3
+
+    db = db_path()
+    conn = connect(db)
+    migrate(conn)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Refuse if a live lease exists
+        lease = conn.execute(
+            "SELECT run_id, expires_at FROM source_leases WHERE source=?",
+            (source,),
+        ).fetchone()
+        if lease:
+            from datetime import datetime, UTC
+            expires = datetime.fromisoformat(lease["expires_at"])
+            if expires > datetime.now(UTC):
+                conn.execute("ROLLBACK")
+                print(
+                    f"olo checkpoint reset: source {source!r} has an active lease "
+                    f"(run_id={lease['run_id']}, expires={lease['expires_at']}). "
+                    f"Wait for it to expire or finish.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        # Get old cursor for audit
+        cp_row = conn.execute(
+            "SELECT cursor FROM sync_checkpoints WHERE source=?", (source,)
+        ).fetchone()
+        old_cursor = cp_row["cursor"] if cp_row else None
+        old_cursor_hash = (
+            _hashlib.sha256(old_cursor.encode()).hexdigest()
+            if old_cursor else None
+        )
+
+        # Delete checkpoint
+        conn.execute("DELETE FROM sync_checkpoints WHERE source=?", (source,))
+
+        _audit(conn, "cli:checkpoint", "checkpoint.reset", {
+            "source": source,
+            "old_cursor_hash": old_cursor_hash,
+            "reason": "operator",
+        }, now=utc_now())
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+    conn.close()
+    print(f"Checkpoint reset for source {source!r}. Next run will re-sync from scratch.")
+
+
+# ── Shim template ─────────────────────────────────────────────────────────────
 
 _DEFAULT_SHIM_TEMPLATE = """\
 #!/usr/bin/env python3
@@ -232,22 +609,79 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
 
     # setup
     setup_p = subs.add_parser("setup", help="Initialise Olo pipeline for a source")
-    setup_p.add_argument("--source", required=True, help="Adapter name, e.g. synthetic")
+    setup_p.add_argument("--source", required=True, help="Adapter name")
     setup_p.add_argument(
         "--option", metavar="key=value", action="append",
         help="Adapter option (may be repeated)",
     )
-    setup_p.add_argument(
-        "--force", action="store_true",
-        help="Overwrite existing shim script",
-    )
+    setup_p.add_argument("--force", action="store_true", help="Overwrite existing shim")
     setup_p.set_defaults(func=_cmd_setup)
+
+    # google (sub-group)
+    google_p = subs.add_parser("google", help="Google account management")
+    google_subs = google_p.add_subparsers(dest="google_cmd")
+
+    # google connect
+    gconn = google_subs.add_parser("connect", help="Connect a Google account")
+    gconn.add_argument("--account", required=True, help="Account alias (a-z0-9, max 16)")
+    gconn.add_argument(
+        "--client-secret-file", required=True, dest="client_secret_file",
+        help="Path to Google OAuth client secret JSON",
+    )
+    gconn.add_argument(
+        "--manual", action="store_true",
+        help="Paste redirect URL manually (headless hosts)",
+    )
+    gconn.add_argument(
+        "--production", action="store_true",
+        help="Mark as production OAuth status (not testing)",
+    )
+    gconn.set_defaults(func=_cmd_google_connect)
+
+    # google status
+    gstatus = google_subs.add_parser("status", help="Show connected Google accounts")
+    gstatus.add_argument(
+        "--check", action="store_true",
+        help="Perform a live token refresh check",
+    )
+    gstatus.set_defaults(func=_cmd_google_status)
+
+    # google disconnect
+    gdisc = google_subs.add_parser("disconnect", help="Revoke and remove a Google account")
+    gdisc.add_argument("--account", required=True, help="Account alias")
+    gdisc.set_defaults(func=_cmd_google_disconnect)
+
+    # checkpoint reset
+    cpreset = subs.add_parser("checkpoint", help="Sync checkpoint operations")
+    cpreset_subs = cpreset.add_subparsers(dest="checkpoint_cmd")
+    cpreset_reset = cpreset_subs.add_parser("reset", help="Reset sync checkpoint for a source")
+    cpreset_reset.add_argument("--source", required=True, help="Source name, e.g. gmail_acme")
+    cpreset_reset.add_argument(
+        "--confirm", action="store_true",
+        help="Confirm the reset (required)",
+    )
+    cpreset_reset.set_defaults(func=_cmd_checkpoint_reset)
 
 
 def handler(args: argparse.Namespace) -> None:
     """Dispatch to the chosen sub-command."""
+    # Handle nested sub-parsers
+    if getattr(args, "olo_cmd", None) == "google":
+        func = getattr(args, "func", None)
+        if func is None:
+            print("usage: hermes olo google {connect,status,disconnect}", file=sys.stderr)
+            sys.exit(1)
+        func(args)
+        return
+    if getattr(args, "olo_cmd", None) == "checkpoint":
+        func = getattr(args, "func", None)
+        if func is None:
+            print("usage: hermes olo checkpoint {reset}", file=sys.stderr)
+            sys.exit(1)
+        func(args)
+        return
     func = getattr(args, "func", None)
     if func is None:
-        print("usage: hermes olo {status,setup}", file=sys.stderr)
+        print("usage: hermes olo {status,setup,google,checkpoint}", file=sys.stderr)
         sys.exit(1)
     func(args)
