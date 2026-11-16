@@ -157,34 +157,40 @@ def run_source(
             # 3.6 Done?
             if not batch.has_more:
                 final_cursor = get_checkpoint(source, conn)
-                finish_run(source, run_id, "succeeded", conn, clock=clock)
+                updated = finish_run(source, run_id, "succeeded", conn, clock=clock)
                 conn.close()
+                # If finish_run was a no-op the run was already abandoned by a
+                # successor (lease expired mid-run). Report the actual outcome.
+                actual_status = "succeeded" if updated else "failed"
+                actual_error = None if updated else "run was abandoned by a successor before finish_run"
                 return RunResult(
                     run_id=run_id,
-                    status="succeeded",
+                    status=actual_status,
                     batches=batches,
                     fetched=fetched,
                     inserted=inserted,
                     duplicates=duplicates,
                     conflicts=conflicts,
                     final_cursor=final_cursor,
-                    error=None,
+                    error=actual_error,
                 )
 
         # 4. Loop exhausted with has_more still True → partial
         final_cursor = get_checkpoint(source, conn)
-        finish_run(source, run_id, "partial", conn, clock=clock)
+        updated = finish_run(source, run_id, "partial", conn, clock=clock)
         conn.close()
+        actual_status = "partial" if updated else "failed"
+        actual_error = None if updated else "run was abandoned by a successor before finish_run"
         return RunResult(
             run_id=run_id,
-            status="partial",
+            status=actual_status,
             batches=batches,
             fetched=fetched,
             inserted=inserted,
             duplicates=duplicates,
             conflicts=conflicts,
             final_cursor=final_cursor,
-            error=None,
+            error=actual_error,
         )
 
     except Exception as exc:

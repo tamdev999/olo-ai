@@ -193,7 +193,7 @@ def test_e2e_25_signals_first_fire(e2e_home: Path) -> None:
 
 
 def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
-    """Step 7: fail_at_batch=1 fire → failed; then normal fire → 40 signals."""
+    """Step 7: fail_at_batch=1 fire → all 6 failure invariants hold; then recovery → 40 signals."""
     home = e2e_home
 
     _run(["plugins", "enable", "olo"], home)
@@ -210,7 +210,7 @@ def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
     job_id = _parse_job_id(result.stdout)
     assert job_id
 
-    # Reconfigure shim to fail on first batch
+    # Setup shim with fail_at_batch=1 (first fetch raises SourceError)
     _run([
         "olo", "setup", "--source", "synthetic",
         "--option", "total=40",
@@ -222,23 +222,50 @@ def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
     _run(["cron", "run", job_id], home)
     _run(["cron", "tick"], home)
     exec_fail = _wait_for_terminal_execution(home, job_id, timeout=60)
-    # Hermes records failed execution
-    assert exec_fail["status"] in ("completed", "failed"), (
-        f"unexpected status: {exec_fail['status']}"
+
+    # ── Invariant 1: Hermes records a failure execution ───────────────────────
+    # Hermes marks the execution 'completed' even for a non-zero exit script,
+    # or 'failed' depending on version. Either way it must not be 'running'/'claimed'.
+    assert exec_fail["status"] in ("completed", "failed", "unknown"), (
+        f"Hermes execution has unexpected status: {exec_fail['status']}"
     )
 
-    # Check Olo run is failed with 0 signals
+    # ── Invariants 2–5: Olo DB state ──────────────────────────────────────────
     old = os.environ.get("HERMES_HOME")
     os.environ["HERMES_HOME"] = str(home)
     try:
-        from olo.store import connect, count_signals, get_checkpoint, migrate
+        from olo.store import connect, count_signals, get_checkpoint, migrate, get_lease
+        from olo.store import get_run
         from olo.paths import db_path as _dp
         db = _dp()
         conn = connect(db)
         migrate(conn)
-        # Even if Hermes marks it completed (non-zero exit = error but still a run),
-        # Olo DB should have 0 signals
-        count_signals("synthetic", conn)
+
+        # Invariant 2: Olo run is 'failed'
+        run_row = conn.execute(
+            "SELECT * FROM ingest_runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        assert run_row is not None, "no ingest_run row found"
+        assert run_row["status"] == "failed", (
+            f"Olo run status should be 'failed', got {run_row['status']!r}"
+        )
+
+        # Invariant 3: 0 signals committed
+        assert count_signals("synthetic", conn) == 0, (
+            f"expected 0 signals, found {count_signals('synthetic', conn)}"
+        )
+
+        # Invariant 4: checkpoint unchanged (None — was never set)
+        cp = get_checkpoint("synthetic", conn)
+        assert cp is None, (
+            f"checkpoint should be None after failed first run, got {cp!r}"
+        )
+
+        # Invariant 5: lease released
+        assert get_lease("synthetic", conn) is None, (
+            "lease should be released after failed run"
+        )
+
         conn.close()
     finally:
         if old is None:
@@ -246,7 +273,7 @@ def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
         else:
             os.environ["HERMES_HOME"] = old
 
-    # Recovery: reinstall shim without fail_at_batch
+    # ── Recovery: reinstall shim without fail_at_batch ────────────────────────
     _run([
         "olo", "setup", "--source", "synthetic",
         "--option", "total=40",
@@ -255,13 +282,22 @@ def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
 
     _run(["cron", "run", job_id], home)
     _run(["cron", "tick"], home)
-    _wait_for_terminal_execution(home, job_id, timeout=60)
+    exec_recovery = _wait_for_terminal_execution(home, job_id, timeout=60)
+
+    # Invariant 6: recovery run succeeds with 40 signals
+    assert exec_recovery["status"] in ("completed", "succeeded"), (
+        f"recovery execution status: {exec_recovery['status']}"
+    )
 
     os.environ["HERMES_HOME"] = str(home)
     try:
         conn = connect(db)
-        assert count_signals("synthetic", conn) == 40
-        assert get_checkpoint("synthetic", conn) == "40"
+        assert count_signals("synthetic", conn) == 40, (
+            f"expected 40 signals after recovery, got {count_signals('synthetic', conn)}"
+        )
+        assert get_checkpoint("synthetic", conn) == "40", (
+            f"expected checkpoint '40', got {get_checkpoint('synthetic', conn)!r}"
+        )
         conn.close()
     finally:
         if old is None:

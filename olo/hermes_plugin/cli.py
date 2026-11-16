@@ -6,9 +6,14 @@ No side effects at import time.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import Any
+
+# ── Validation patterns (must stay in sync with olo.signals) ─────────────────
+_SOURCE_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+_OPTION_KEY_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -86,16 +91,43 @@ def _cmd_status(args: argparse.Namespace) -> None:
 def _cmd_setup(args: argparse.Namespace) -> None:
     """Migrate DB, install shim script, print cron create command."""
     from hermes_constants import get_hermes_home
+    from olo.adapters import ADAPTERS, _ensure_registry
     from olo.paths import db_path
     from olo.store import connect, migrate, _audit, utc_now
 
     source: str = args.source
+
+    # ── Validate source before any side effects ───────────────────────────────
+    if not _SOURCE_RE.match(source):
+        print(
+            f"olo setup: invalid --source {source!r}: "
+            f"must match ^[a-z0-9_]{{1,32}}$",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    _ensure_registry()
+    if source not in ADAPTERS:
+        known = ", ".join(sorted(ADAPTERS))
+        print(
+            f"olo setup: unknown --source {source!r}. Known adapters: {known}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # ── Parse and validate options ────────────────────────────────────────────
     options: dict[str, str] = {}
     for item in (args.option or []):
         if "=" not in item:
             print(f"olo setup: bad --option {item!r} (expected key=value)", file=sys.stderr)
             sys.exit(1)
         k, _, v = item.partition("=")
+        if not _OPTION_KEY_RE.match(k):
+            print(
+                f"olo setup: invalid option key {k!r}: "
+                f"must match ^[a-z0-9_]{{1,64}}$",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         options[k] = v
 
     # Migrate
@@ -116,22 +148,29 @@ def _cmd_setup(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # Render shim from template
+    # Render shim from template.
+    # Build the argument list as a safe Python literal using repr() so that
+    # source and option values can NEVER inject code regardless of their content.
+    import os
+    repo_root = str(Path(__file__).parent.parent.parent)
+
+    # Build the argument list as a safe Python literal using repr() so that
+    # every element (flags AND values) is a quoted string literal in the
+    # generated shim. repr() ensures injected Python characters are inert.
+    parts: list[str] = [repr("--source"), repr(source)]
+    for k, v in options.items():
+        parts += [repr("--option"), repr(f"{k}={v}")]
+    argv_literal = "[" + ", ".join(parts) + "]"
+
     tmpl_path = Path(__file__).parent.parent / "cron_scripts" / "olo_monitor.py.tmpl"
     if tmpl_path.exists():
         tmpl = tmpl_path.read_text(encoding="utf-8")
     else:
         tmpl = _DEFAULT_SHIM_TEMPLATE
 
-    # Bake in source, options, and repo root for the fallback import path
-    import os
-    repo_root = str(Path(__file__).parent.parent.parent)
-    opts_list = [f"'--option', '{k}={v}'" for k, v in options.items()]
-    opts_str = (", " + ", ".join(opts_list)) if opts_list else ""
     shim_content = tmpl.format(
-        source=source,
-        extra_options=opts_str,
-        repo_root=repo_root,
+        repo_root=repr(repo_root),   # safe: repr() wraps the string
+        argv_literal=argv_literal,
     )
 
     shim_path.write_text(shim_content, encoding="utf-8")
@@ -163,20 +202,21 @@ def _cmd_setup(args: argparse.Namespace) -> None:
 
 _DEFAULT_SHIM_TEMPLATE = """\
 #!/usr/bin/env python3
-# Olo AI monitor shim — installed by `hermes olo setup --source {source}`
+# Olo AI monitor shim — installed by `hermes olo setup`.
 # Do NOT edit directly; re-run setup to regenerate.
+# argv and repo_root are Python literals produced by repr() — injection-safe.
 import sys
 
 try:
     import olo.runner as _r
 except ImportError:
-    # Fallback: add repo root so dev installs work without the package installed
-    _repo_root = {repo_root!r}
+    # Fallback: add repo root so dev installs work without the package installed.
+    _repo_root = {repo_root}
     if _repo_root not in sys.path:
         sys.path.insert(0, _repo_root)
     import olo.runner as _r  # type: ignore[no-redef]
 
-raise SystemExit(_r.main(['--source', '{source}'{extra_options}]))
+raise SystemExit(_r.main({argv_literal}))
 """
 
 

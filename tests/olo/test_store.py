@@ -307,3 +307,44 @@ def test_profile_isolation(tmp_path: Path) -> None:
     assert get_checkpoint("synthetic", conn_b) is None
     conn_a.close()
     conn_b.close()
+
+
+# ── Directory permission enforcement ──────────────────────────────────────────
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+def test_olo_home_restricts_existing_wide_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """olo_home() must enforce 0o700 on a pre-existing 0o755 directory."""
+    home = tmp_path / "hermes_home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    # Create the olo/ directory with overly-wide permissions (0o755)
+    olo_dir = home / "olo"
+    olo_dir.mkdir(mode=0o755)
+
+    from olo.paths import olo_home
+    olo_home()
+
+    mode = oct(os.stat(str(olo_dir)).st_mode)[-3:]
+    assert mode == "700", (
+        f"olo_home() did not restrict existing 0o755 directory; mode={mode}"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+def test_connect_restricts_existing_wide_db_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """connect() must enforce 0o700 on a pre-existing 0o755 parent directory."""
+    db_dir = tmp_path / "olo"
+    db_dir.mkdir(mode=0o755)
+    db = db_dir / "olo.db"
+
+    connect(db)
+
+    mode = oct(os.stat(str(db_dir)).st_mode)[-3:]
+    assert mode == "700", (
+        f"connect() did not restrict existing 0o755 db parent; mode={mode}"
+    )

@@ -86,10 +86,16 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     """Return a new SQLite connection to the Olo database.
 
     Sets WAL mode, foreign keys, busy timeout, and synchronous=FULL.
-    Creates the DB file at mode 0o600.
+    Creates the DB file at mode 0o600 and restricts an existing parent
+    directory to 0o700 on POSIX.
     """
     db = path or db_path()
     db.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        try:
+            os.chmod(str(db.parent), 0o700)
+        except OSError:
+            pass
 
     conn = sqlite3.connect(str(db), isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -360,10 +366,12 @@ def finish_run(
     conn: sqlite3.Connection,
     clock: Callable[[], datetime] = utc_now,
     error: Optional[str] = None,
-) -> None:
+) -> bool:
     """Mark the run as terminal and release the lease.
 
-    If the run was already abandoned by a successor, the UPDATE is a no-op.
+    Returns True if the row was updated (run was still 'running' when called).
+    Returns False if the run was already abandoned by a successor — in that
+    case the caller must NOT report success to its own caller.
     """
     now_str = format_utc(clock())
     conn.execute("BEGIN IMMEDIATE")
@@ -373,7 +381,8 @@ def finish_run(
             " WHERE id=? AND status='running'",
             (status, now_str, error, run_id),
         )
-        if result.rowcount > 0:
+        updated = result.rowcount > 0
+        if updated:
             conn.execute(
                 "DELETE FROM source_leases WHERE source=? AND run_id=?",
                 (source, run_id),
@@ -391,6 +400,7 @@ def finish_run(
                    subject_type="run", subject_id=run_id,
                    now=datetime.fromisoformat(now_str))
         conn.execute("COMMIT")
+        return updated
     except Exception:
         try:
             conn.execute("ROLLBACK")
