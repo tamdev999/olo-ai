@@ -1,0 +1,64 @@
+# Secrets & environment
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node dependencies & build output
+node_modules/
+dist/
+build/
+.next/
+out/
+
+# Package manager locks (keep one, ignore others as needed)
+# npm-debug.log*
+# yarn-error.log*
+
+# Databases & data files
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE & editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml
+
+# Build artifacts
+*.egg-info/
+dist/
+*.whl
+*.tar.gz
