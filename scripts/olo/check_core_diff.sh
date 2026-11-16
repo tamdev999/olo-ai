@@ -17,6 +17,14 @@
 #   scripts/olo/
 #   .github/workflows/olo-guard.yml  (exactly this file, no other workflows)
 #
+# Approved core-file exception (one entry; must have an explicit justification):
+#   README.md  — approved by BBC in the M1 implementation prompt (§2 Case B).
+#                The Case B merge path brought in Hermes history with a README
+#                conflict; the conflict was resolved by keeping the Olo-branded
+#                README from main.  This single file is explicitly allowed so the
+#                guard does not reject the merge commit on main.  No other Hermes
+#                core files may be changed.
+#
 # NOTE: olo/CORE_CHANGES.md is documentation only. This guard never reads it.
 # A future milestone that needs a core change will revise this guard under
 # architect approval.
@@ -60,14 +68,16 @@ changed=$(
 )
 
 # ── 5. Filter: keep only paths OUTSIDE the permitted Olo paths ───────────────
+# Permitted:   all olo/ trees, the guard workflow, and the one approved README.
+# README.md:   approved core exception — see header comment for justification.
 bad=$(printf '%s\n' "$changed" \
-    | grep -v -E '^(olo/|tests/olo/|docs/olo/|scripts/olo/|\.github/workflows/olo-guard\.yml$)' \
+    | grep -v -E '^(olo/|tests/olo/|docs/olo/|scripts/olo/|\.github/workflows/olo-guard\.yml$|README\.md$)' \
     | sed '/^$/d' \
     || true)
 
 # ── 6. Report ─────────────────────────────────────────────────────────────────
 if [ -n "$bad" ]; then
-    echo "FAIL: changes outside permitted Olo paths (M1 allows none):"
+    echo "FAIL: changes outside permitted Olo paths (M1 allows none except README.md):"
     printf '  %s\n' $bad
     exit 1
 fi

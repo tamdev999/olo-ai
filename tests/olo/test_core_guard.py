@@ -251,3 +251,41 @@ def test_guard_passes_olo_guard_workflow_only(tmp_path: Path) -> None:
     assert result.returncode == 0, (
         f"guard should pass for olo-guard.yml only:\n{result.stdout}\n{result.stderr}"
     )
+
+
+def test_guard_passes_readme_exception(tmp_path: Path) -> None:
+    """Changing only README.md is permitted (approved core exception for the
+    import/hermes-base merge conflict resolution — see scripts/olo/check_core_diff.sh)."""
+    clone = _clone(tmp_path)
+    subprocess.run(["git", "checkout", _BASE_SHA], capture_output=True,
+                   check=False, cwd=str(clone))
+    readme = clone / "README.md"
+    readme.write_text(
+        "# Olo AI\nOlo-branded README (approved exception)\n",
+        encoding="utf-8",
+    )
+    result = _run_guard(clone)
+    assert result.returncode == 0, (
+        f"README.md change should be permitted by the approved exception:\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_guard_rejects_readme_plus_other_core_change(tmp_path: Path) -> None:
+    """README.md exception does NOT cover other core changes in the same commit."""
+    clone = _clone(tmp_path)
+    subprocess.run(["git", "checkout", _BASE_SHA], capture_output=True,
+                   check=False, cwd=str(clone))
+    # Modify README (allowed)
+    (clone / "README.md").write_text("# Olo AI\n", encoding="utf-8")
+    # Also modify hermes_constants.py (not allowed)
+    hc = clone / "hermes_constants.py"
+    hc.write_text(
+        hc.read_text(encoding="utf-8", errors="replace") + "\n# evil\n",
+        encoding="utf-8",
+    )
+    result = _run_guard(clone)
+    assert result.returncode == 1, (
+        f"README exception must not cover other core changes:\n{result.stdout}"
+    )
+    assert "hermes_constants.py" in result.stdout
