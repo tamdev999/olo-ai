@@ -1,9 +1,4 @@
-<<<<<<< Updated upstream
-# Olo AI
-
-Olo AI — An autonomous business AI platform.
-=======
-```
+﻿```
   ██████╗ ██╗      ██████╗      █████╗ ██╗
  ██╔═══██╗██║     ██╔═══██╗    ██╔══██╗██║
  ██║   ██║██║     ██║   ██║    ███████║██║
@@ -77,4 +72,3 @@ For upstream documentation and installation instructions, see [NousResearch/herm
 **Olo AI** is developed by **SMB Automation Research LLC**, a company based in Miami, Florida, USA.
 
 Built upon **Hermes Agent by Nous Research**. Hermes's original copyright notices and applicable open-source license terms must be retained. See the repository's `LICENSE` and upstream project for details.
->>>>>>> Stashed changes
