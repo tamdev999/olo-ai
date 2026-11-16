@@ -84,7 +84,21 @@ def _make_registry() -> dict[str, Callable[[Mapping[str, str]], MonitorAdapter]]
     def _synthetic_factory(options: Mapping[str, str]) -> MonitorAdapter:
         return SyntheticAdapter(options)
 
-    return {"synthetic": _synthetic_factory}
+    from olo.adapters.gmail import GmailAdapter
+
+    def _gmail_factory(options: Mapping[str, str]) -> MonitorAdapter:
+        return GmailAdapter(options)
+
+    from olo.adapters.gcal import GcalAdapter
+
+    def _gcal_factory(options: Mapping[str, str]) -> MonitorAdapter:
+        return GcalAdapter(options)
+
+    return {
+        "synthetic": _synthetic_factory,
+        "gmail": _gmail_factory,
+        "gcal": _gcal_factory,
+    }
 
 
 # Populated at first call; module-level dict is intentionally mutable so tests
