@@ -92,10 +92,7 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     db = path or db_path()
     db.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if os.name != "nt":
-        try:
-            os.chmod(str(db.parent), 0o700)
-        except OSError:
-            pass
+        os.chmod(str(db.parent), 0o700)
 
     conn = sqlite3.connect(str(db), isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -106,10 +103,8 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=FULL")
 
     # Set file permissions after creation
-    try:
+    if os.name != "nt":
         os.chmod(str(db), 0o600)
-    except OSError:
-        pass  # Windows: chmod is a no-op; accepted
 
     return conn
 

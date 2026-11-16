@@ -132,12 +132,14 @@ def test_malicious_option_value_cannot_execute(
 ) -> None:
     """An option value containing Python injection characters is rendered inert.
 
-    The injected value is repr()'d into the shim; executing the shim must not
-    trigger the payload.  We verify by running the shim and checking that:
-      - no sentinel file is created
-      - the process exits normally (olo runner runs; source/option validation
-        in SyntheticAdapter rejects the bad value with exit 1, not 0, because
-        'x=y' is not a valid integer — that's fine, the payload didn't run)
+    Three assertions:
+    1. The sentinel file is NOT created (payload did not execute).
+    2. The shim process exits with code 1 — the olo runner reached adapter
+       validation and rejected the mangled value with AdapterConfigError.
+       A syntax error from bad rendering would cause exit 2 (Python SyntaxError)
+       or exit 120 (ImportError) — neither is 1.
+    3. stderr contains the expected AdapterConfigError text, confirming the
+       runner got as far as argument parsing and adapter construction.
     """
     import os
     home = tmp_path / "h"
@@ -167,18 +169,41 @@ def test_malicious_option_value_cannot_execute(
         "injection payload leaked into shim as bare code"
     )
 
-    # Run the shim — the olo runner will get the mangled 'total' value and
-    # reject it (AdapterConfigError / exit 1); the sentinel must NOT exist
+    # Run the shim.
     env = {**os.environ, "HERMES_HOME": str(home)}
     proc = subprocess.run(
         [sys.executable, str(home / "scripts" / "olo_monitor_synthetic.py")],
         capture_output=True, text=True, env=env, check=False,
         cwd=str(_repo_root()),
     )
+
+    # 1. Sentinel must not exist — payload did not execute.
     assert not sentinel.exists(), (
         f"injection payload executed — sentinel file created!\n"
         f"shim content:\n{shim}\n"
         f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+    )
+
+    # 2. Exit code must be 1 (AdapterConfigError / runner exit 1).
+    #    Exit 2 would indicate a Python-level SyntaxError or bad argument parsing
+    #    before the adapter was reached.  Exit 0 would mean success — wrong.
+    #    Any other code means an unexpected crash rather than a clean rejection.
+    assert proc.returncode == 1, (
+        f"Expected exit 1 (AdapterConfigError from adapter validation), "
+        f"got exit {proc.returncode}.\n"
+        f"stdout: {proc.stdout!r}\nstderr: {proc.stderr!r}\n"
+        f"shim:\n{shim}"
+    )
+
+    # 3. stderr must mention an adapter config / option error — proving the
+    #    runner actually reached SyntheticAdapter.__init__ and rejected the
+    #    mangled 'total' value as a non-integer, not a syntax/import error.
+    assert "adapter config error" in proc.stderr.lower() or \
+           "adapterconfigerror" in proc.stderr.lower() or \
+           "must be an integer" in proc.stderr.lower() or \
+           "option" in proc.stderr.lower(), (
+        f"stderr does not contain expected adapter-rejection message.\n"
+        f"stderr: {proc.stderr!r}\nstdout: {proc.stdout!r}"
     )
 
 

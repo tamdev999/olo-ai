@@ -348,3 +348,54 @@ def test_connect_restricts_existing_wide_db_parent(
     assert mode == "700", (
         f"connect() did not restrict existing 0o755 db parent; mode={mode}"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+def test_olo_home_raises_on_chmod_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """olo_home() must NOT silently swallow a chmod OSError on POSIX.
+
+    We simulate a chmod failure by monkeypatching os.chmod to raise,
+    then confirm that olo_home() propagates the error.
+    """
+    home = tmp_path / "hermes_home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import olo.paths as paths_mod
+
+    def _failing_chmod(path, mode, **kwargs):
+        raise OSError(1, "Operation not permitted (simulated)")
+
+    monkeypatch.setattr(paths_mod.os, "chmod", _failing_chmod)
+
+    with pytest.raises(OSError, match="simulated"):
+        paths_mod.olo_home()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+def test_connect_raises_on_dir_chmod_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """connect() must NOT silently swallow a directory chmod OSError on POSIX."""
+    import olo.store as store_mod
+
+    db_dir = tmp_path / "olo"
+    db_dir.mkdir(mode=0o755)
+    db = db_dir / "olo.db"
+
+    # Make os.chmod raise only for the directory, not the file (which hasn't
+    # been created yet when the directory chmod runs).
+    real_chmod = os.chmod
+
+    def _failing_dir_chmod(path, mode, **kwargs):
+        # Raise only for the directory, not the db file itself
+        if str(path) == str(db_dir):
+            raise OSError(1, "Operation not permitted (simulated)")
+        real_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(store_mod.os, "chmod", _failing_dir_chmod)
+
+    with pytest.raises(OSError, match="simulated"):
+        store_mod.connect(db)

@@ -223,11 +223,13 @@ def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
     _run(["cron", "tick"], home)
     exec_fail = _wait_for_terminal_execution(home, job_id, timeout=60)
 
-    # ── Invariant 1: Hermes records a failure execution ───────────────────────
-    # Hermes marks the execution 'completed' even for a non-zero exit script,
-    # or 'failed' depending on version. Either way it must not be 'running'/'claimed'.
-    assert exec_fail["status"] in ("completed", "failed", "unknown"), (
-        f"Hermes execution has unexpected status: {exec_fail['status']}"
+    # ── Invariant 1: Hermes records a 'failed' execution ─────────────────────
+    # When a no-agent script exits non-zero, Hermes calls
+    # finish_execution(success=False) which sets status='failed' (confirmed in
+    # cron/executions.py::finish_execution: status = 'failed' when success=False).
+    assert exec_fail["status"] == "failed", (
+        f"Hermes execution status should be 'failed' for a non-zero exit script, "
+        f"got {exec_fail['status']!r}"
     )
 
     # ── Invariants 2–5: Olo DB state ──────────────────────────────────────────
