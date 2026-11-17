@@ -892,8 +892,6 @@ def test_fake_rejects_mismatched_page_token() -> None:
     != the request's startHistoryId.  Passes at both e7f915e522 and HEAD
     (it tests the fake, not the adapter).
     """
-    import urllib.error
-    from tests.olo.fake_google import FakeMessage
 
     with FakeGoogleServer() as fake:
         # Add records so the fake generates a real page token
@@ -928,7 +926,6 @@ def test_fake_rejects_mismatched_page_token() -> None:
             ("maxResults", "2"),
             ("pageToken", token),
         ]
-        import urllib.error as _ue
         try:
             client.get_json("gmail", "/users/me/history", mismatched_params)
             assert False, "expected 400 error for mismatched page token"
@@ -946,7 +943,6 @@ def test_signal_less_page_then_token_no_loss() -> None:
     After fix: exactly ['r2', 'r3'] ingested; every history.list within each
     fetch() uses the same startHistoryId.
     """
-    from tests.olo.fake_google import FakeMessage
 
     with FakeGoogleServer() as fake:
         # Bootstrap
@@ -1016,7 +1012,6 @@ def test_signal_less_paging_matrix(limit: int, num_drafts: int) -> None:
       - limit=2, num_drafts=2: r2 lost
       (All cells where drafts cause paging with token-reuse across pages)
     """
-    from tests.olo.fake_google import FakeMessage
 
     with FakeGoogleServer() as fake:
         a, spy = _make_adapter_with_spy(fake)
@@ -1063,7 +1058,6 @@ def test_signal_less_cap_returns_progress_cursor() -> None:
     - Second fetch from that cursor yields exactly r1.
     """
     from olo.adapters.gmail import _MAX_EMPTY_PAGES
-    from tests.olo.fake_google import FakeMessage
 
     with FakeGoogleServer() as fake:
         a, spy = _make_adapter_with_spy(fake)
