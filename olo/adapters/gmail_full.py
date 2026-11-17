@@ -369,10 +369,13 @@ def run_backfill_batch(
     from olo.store import _audit
 
     params: list[tuple[str, str]] = [
-        ("q", f"after:{after_epoch}"),
         ("includeSpamTrash", "false"),
         ("maxResults", str(min(limit, 500))),
     ]
+    # Gmail's after: filter uses unix epoch in seconds; after:0 returns nothing.
+    # Only add the filter when we have a meaningful positive epoch value.
+    if after_epoch and after_epoch > 0:
+        params.insert(0, ("q", f"after:{after_epoch}"))
     if page_token:
         params.append(("pageToken", page_token))
 
