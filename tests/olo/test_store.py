@@ -65,7 +65,7 @@ def test_migrate_idempotent_and_permissions(tmp_path: Path) -> None:
 
     row = conn.execute("SELECT version FROM schema_version").fetchall()
     assert len(row) == 1
-    assert row[0]["version"] == 1
+    assert row[0]["version"] == 2
 
     # Permissions (POSIX only; Windows chmod is a no-op)
     if os.name != "nt":
