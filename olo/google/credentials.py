@@ -2,6 +2,9 @@
 
 §3.5: atomic 0600 writes, dir 0700, permission enforcement on load,
 per-account lock, no access tokens on disk.
+I6: api_base_override validation.
+I7: alias pattern enforcement.
+I9: expiry_status() production function.
 
 No side effects at import time.
 """
@@ -10,11 +13,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -25,14 +29,18 @@ from olo.paths import olo_home
 
 GMAIL_METADATA_SCOPE = "https://www.googleapis.com/auth/gmail.metadata"
 CALENDAR_EVENTS_OWNED_RO = "https://www.googleapis.com/auth/calendar.events.owned.readonly"
-# Fallback if V3 fails and BBC approves:
 CALENDAR_EVENTS_RO = "https://www.googleapis.com/auth/calendar.events.readonly"
 
 REQUIRED_SCOPES = frozenset({GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO})
 CALENDAR_SCOPES = frozenset({CALENDAR_EVENTS_OWNED_RO, CALENDAR_EVENTS_RO})
 
 ACCOUNT_RE = "^[a-z0-9]{1,16}$"
-_ACCOUNT_PATTERN = __import__("re").compile(ACCOUNT_RE)
+_ACCOUNT_PATTERN = re.compile(ACCOUNT_RE)
+
+# I6: allowed api_base_override hosts
+_API_BASE_HOST_RE = re.compile(
+    r"^http://(127\.0\.0\.1|localhost):[0-9]{1,5}$"
+)
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -43,6 +51,71 @@ class GoogleAuthRevoked(SourceError):
 
 class CredentialPermissionError(PermissionError):
     """Credential file or directory has unsafe permissions or foreign owner."""
+
+
+# ── I6: api_base_override validation ─────────────────────────────────────────
+
+def _validate_api_base_override(value: Optional[str]) -> None:
+    """Raise AdapterConfigError if value is not None and not a loopback URL.
+
+    Allowed: http://127.0.0.1:<port> or http://localhost:<port>  (§3.5).
+    Port must be explicitly present (1–65535). No path, query, or userinfo.
+    """
+    if value is None:
+        return
+    from olo.adapters import AdapterConfigError
+    import urllib.parse as _up
+
+    parsed = _up.urlparse(value.rstrip("/"))
+
+    # Scheme must be http
+    if parsed.scheme != "http":
+        raise AdapterConfigError(
+            f"api_base_override must be http://127.0.0.1:<port> or "
+            f"http://localhost:<port>, got {value!r}"
+        )
+
+    # No userinfo (user@host)
+    if parsed.username:
+        raise AdapterConfigError(
+            f"api_base_override must be http://127.0.0.1:<port> or "
+            f"http://localhost:<port>, got {value!r}"
+        )
+
+    # Host must be exactly 127.0.0.1 or localhost
+    if parsed.hostname not in ("127.0.0.1", "localhost"):
+        raise AdapterConfigError(
+            f"api_base_override must be http://127.0.0.1:<port> or "
+            f"http://localhost:<port>, got {value!r}"
+        )
+
+    # Port must be explicit
+    if parsed.port is None:
+        raise AdapterConfigError(
+            f"api_base_override must include an explicit port, got {value!r}"
+        )
+
+    # No path (empty or "/" only), no query, no fragment
+    if parsed.path not in ("", "/"):
+        raise AdapterConfigError(
+            f"api_base_override must not include a path, got {value!r}"
+        )
+    if parsed.query or parsed.fragment:
+        raise AdapterConfigError(
+            f"api_base_override must not include query or fragment, got {value!r}"
+        )
+
+
+# ── I7: alias validation ──────────────────────────────────────────────────────
+
+def _validate_alias(alias: str) -> None:
+    """Raise AdapterConfigError for aliases that don't match ^[a-z0-9]{1,16}$."""
+    if not _ACCOUNT_PATTERN.match(alias):
+        from olo.adapters import AdapterConfigError
+        raise AdapterConfigError(
+            f"Google account alias {alias!r} is invalid; "
+            f"must match ^[a-z0-9]{{1,16}}$"
+        )
 
 
 # ── Dataclass ─────────────────────────────────────────────────────────────────
@@ -56,13 +129,19 @@ class GoogleAccountCredentials:
 
     alias: str
     client_id: str
-    client_secret: str          # non-confidential for desktop apps but stored 0600
+    client_secret: str
     refresh_token: str
     granted_scopes: frozenset[str]
-    email_address: str          # recorded after connect
-    refresh_token_issued_at: datetime   # UTC; set at connect and on rotation
-    oauth_publishing_status: str        # "testing" | "production"
-    api_base_override: Optional[str]    # loopback override for tests only
+    email_address: str
+    refresh_token_issued_at: datetime
+    oauth_publishing_status: str
+    api_base_override: Optional[str]
+
+    def __post_init__(self) -> None:
+        # I7: alias validation at construction time
+        _validate_alias(self.alias)
+        # I6: api_base_override validation at construction time
+        _validate_api_base_override(self.api_base_override)
 
     def has_gmail_scope(self) -> bool:
         return GMAIL_METADATA_SCOPE in self.granted_scopes
@@ -84,6 +163,29 @@ class GoogleAccountCredentials:
         )
 
 
+# ── I9: production expiry_status ─────────────────────────────────────────────
+
+def expiry_status(
+    creds: GoogleAccountCredentials,
+    now: Optional[datetime] = None,
+) -> str:
+    """Return 'ok', 'warning' (< 48 h), or 'expired' for testing-mode tokens.
+
+    *now* defaults to datetime.now(UTC).  Pass a fixed value in tests.
+    """
+    if creds.oauth_publishing_status != "testing":
+        return "ok"
+    if now is None:
+        now = datetime.now(UTC)
+    expiry = creds.refresh_token_issued_at + timedelta(days=7)
+    remaining = (expiry - now).total_seconds()
+    if remaining <= 0:
+        return "expired"
+    if remaining < 48 * 3600:
+        return "warning"
+    return "ok"
+
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 def _cred_dir() -> Path:
@@ -96,26 +198,25 @@ def _cred_dir() -> Path:
 
 
 def credential_path(alias: str) -> Path:
+    _validate_alias(alias)  # I7
     return _cred_dir() / f"{alias}.json"
 
 
 def lock_path(alias: str) -> Path:
+    _validate_alias(alias)  # I7
     return _cred_dir() / f"{alias}.lock"
 
 
 # ── Permission checks (POSIX) ─────────────────────────────────────────────────
 
 def _check_posix_permissions(path: Path) -> None:
-    """Raise CredentialPermissionError if file is group/world-accessible or foreign-owned."""
     if os.name == "nt":
         return
     st = os.stat(str(path))
-    # Check owner
     if st.st_uid != os.getuid():
         raise CredentialPermissionError(
             f"credential file {path} is owned by uid {st.st_uid}, not {os.getuid()}"
         )
-    # Check mode: no group/world read or write
     bad_bits = stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH
     if st.st_mode & bad_bits:
         mode_str = oct(stat.S_IMODE(st.st_mode))
@@ -144,14 +245,12 @@ def _check_dir_permissions(path: Path) -> None:
 # ── Atomic write (H6 pattern) ──────────────────────────────────────────────────
 
 def _write_private_json(path: Path, data: dict) -> None:
-    """Atomically write JSON at mode 0600 from creation (H6 pattern)."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if os.name != "nt":
         os.chmod(path.parent, 0o700)
     tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
     try:
         if os.name == "nt":
-            # Windows: best-effort 0600 (chmod is a no-op for real ACLs here)
             with open(str(tmp), "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
                 f.flush()
@@ -185,7 +284,7 @@ class _CredentialLock:
         self._path = lock_path(alias)
         self._fh = None
 
-    def __enter__(self) -> _CredentialLock:
+    def __enter__(self) -> "_CredentialLock":
         import time
         self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._fh = open(str(self._path), "a", encoding="utf-8")
@@ -236,7 +335,6 @@ class _CredentialLock:
 
 
 def credential_lock(alias: str) -> _CredentialLock:
-    """Context manager: exclusive per-account credential lock."""
     return _CredentialLock(alias)
 
 
@@ -281,6 +379,7 @@ def _from_dict(d: dict) -> GoogleAccountCredentials:
 
 def load_credentials(alias: str) -> GoogleAccountCredentials:
     """Load credentials for *alias*; raises FileNotFoundError if not connected."""
+    _validate_alias(alias)  # I7
     path = credential_path(alias)
     if not path.exists():
         raise FileNotFoundError(
@@ -295,11 +394,13 @@ def load_credentials(alias: str) -> GoogleAccountCredentials:
 
 def save_credentials(creds: GoogleAccountCredentials) -> None:
     """Save credentials atomically at 0600.  Must be called under the account lock."""
+    _validate_alias(creds.alias)  # I7
+    _validate_api_base_override(creds.api_base_override)  # I6
     _write_private_json(credential_path(creds.alias), _to_dict(creds))
 
 
 def remove_credentials(alias: str) -> None:
-    """Delete the credential file for *alias*."""
+    _validate_alias(alias)  # I7
     path = credential_path(alias)
     if path.exists():
         path.unlink()
@@ -312,7 +413,6 @@ def remove_credentials(alias: str) -> None:
 
 
 def list_accounts() -> list[str]:
-    """Return sorted list of connected account aliases."""
     try:
         d = _cred_dir()
     except Exception:
@@ -324,5 +424,4 @@ def list_accounts() -> list[str]:
 
 
 def email_hash(address: str) -> str:
-    """SHA-256 hex of the lowercased email address."""
     return hashlib.sha256(address.strip().lower().encode()).hexdigest()

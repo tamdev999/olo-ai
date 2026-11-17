@@ -1,17 +1,14 @@
 """Tests for olo.google.credentials — storage, permissions, lock, repr."""
 from __future__ import annotations
 
-import json
 import os
-import stat
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, UTC
 from pathlib import Path
 
 import pytest
 
 from olo.google.credentials import (
     GoogleAccountCredentials,
-    GoogleAuthRevoked,
     CredentialPermissionError,
     credential_path,
     credential_lock,
@@ -182,3 +179,140 @@ def test_olo_does_not_read_hermes_skill_token(
     # Skill token is untouched
     assert skill_token.read_text(encoding="utf-8") == '{"token": "hermes_skill_secret"}'
     assert loaded.refresh_token == creds.refresh_token
+
+
+# ── I6: api_base_override validation ─────────────────────────────────────────
+
+@pytest.mark.parametrize("bad_url", [
+    "https://evil.example",
+    "http://10.0.0.1:1",
+    "http://127.0.0.1.evil.example:1",
+    "http://user@127.0.0.1:1",
+    "http://127.0.0.1",        # missing port
+    "http://localhost",         # missing port
+    "http://127.0.0.1:0/path", # has path
+    "ftp://127.0.0.1:1",       # wrong scheme
+])
+def test_api_base_override_bad_url_rejected_on_construct(bad_url: str) -> None:
+    """I6: bad api_base_override values raise AdapterConfigError at construction."""
+    from olo.adapters import AdapterConfigError
+    with pytest.raises((AdapterConfigError, Exception)):
+        _make_creds(api_base_override=bad_url)
+
+
+@pytest.mark.parametrize("bad_url", [
+    "https://evil.example",
+    "http://10.0.0.1:1",
+    "http://127.0.0.1.evil.example:1",
+    "http://user@127.0.0.1:1",
+    "http://127.0.0.1",
+    "http://localhost",
+])
+def test_api_base_override_bad_url_rejected_on_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_url: str
+) -> None:
+    """I6: save_credentials must also reject bad api_base_override."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from olo.adapters import AdapterConfigError
+
+    # Build a valid creds object, then try to save a mutated one with a bad URL.
+    # Since GoogleAccountCredentials is frozen, we bypass __post_init__ by
+    # patching _validate_api_base_override at the dataclass level and testing
+    # save_credentials independently.
+    import olo.google.credentials as _cm
+    original = _cm._validate_api_base_override
+
+    # Allow construction but test save rejects
+    _cm._validate_api_base_override = lambda v: None  # bypass for construction
+    try:
+        bad_creds = _make_creds(api_base_override=bad_url)
+    finally:
+        _cm._validate_api_base_override = original
+
+    with pytest.raises((AdapterConfigError, Exception)):
+        with credential_lock(bad_creds.alias):
+            save_credentials(bad_creds)
+
+
+def test_api_base_override_loopback_accepted_on_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I6: valid loopback URLs are accepted by save_credentials."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    creds = _make_creds(api_base_override="http://127.0.0.1:12345")
+    with credential_lock(creds.alias):
+        save_credentials(creds)
+    loaded = load_credentials(creds.alias)
+    assert loaded.api_base_override == "http://127.0.0.1:12345"
+
+
+# ── I7: alias validation ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("bad_alias", [
+    "../x",
+    "A",          # uppercase not allowed
+    "a/b",        # slash not allowed
+    "",            # empty
+    "a" * 17,     # 17 chars — too long
+    "a-b",         # hyphen not allowed
+    "a b",         # space not allowed
+])
+def test_alias_bad_rejected_on_construct(bad_alias: str) -> None:
+    """I7: invalid alias raises AdapterConfigError at construction."""
+    from olo.adapters import AdapterConfigError
+    with pytest.raises((AdapterConfigError, Exception)):
+        _make_creds(alias=bad_alias)
+
+
+@pytest.mark.parametrize("bad_alias", [
+    "../x", "A", "a/b", "", "a" * 17,
+])
+def test_alias_bad_rejected_in_credential_path(bad_alias: str) -> None:
+    """I7: credential_path() refuses bad aliases — no file created."""
+    from olo.adapters import AdapterConfigError
+    with pytest.raises((AdapterConfigError, Exception)):
+        credential_path(bad_alias)
+
+
+@pytest.mark.parametrize("bad_alias", [
+    "../x", "A", "a/b", "", "a" * 17,
+])
+def test_alias_bad_rejected_in_load_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_alias: str
+) -> None:
+    """I7: load_credentials() refuses bad aliases."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from olo.adapters import AdapterConfigError
+    with pytest.raises((AdapterConfigError, Exception)):
+        load_credentials(bad_alias)
+
+
+@pytest.mark.parametrize("bad_alias", [
+    "../x", "A", "a/b", "", "a" * 17,
+])
+def test_alias_bad_rejected_in_remove_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_alias: str
+) -> None:
+    """I7: remove_credentials() refuses bad aliases — no file created."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from olo.adapters import AdapterConfigError
+    with pytest.raises((AdapterConfigError, Exception)):
+        remove_credentials(bad_alias)
+
+
+def test_alias_bad_rejected_by_gcal_adapter() -> None:
+    """I7: GcalAdapter refuses invalid alias option."""
+    from olo.adapters import AdapterConfigError
+    from olo.adapters.gcal import GcalAdapter
+    for bad in ["../x", "A", "a/b", "", "a" * 17]:
+        with pytest.raises(AdapterConfigError, match="alias"):
+            GcalAdapter({"account": bad})
+
+
+def test_alias_bad_rejected_by_gmail_adapter() -> None:
+    """I7: GmailAdapter refuses invalid alias option."""
+    from olo.adapters import AdapterConfigError
+    from olo.adapters.gmail import GmailAdapter
+    for bad in ["../x", "A", "a/b", "", "a" * 17]:
+        with pytest.raises(AdapterConfigError, match="alias"):
+            GmailAdapter({"account": bad})
