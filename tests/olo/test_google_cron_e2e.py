@@ -513,72 +513,111 @@ def test_both_sources_gmail_and_gcal(e2e_home: Path) -> None:
             )
 
 
-# ── §9.5: in-process cron zero-LLM proof ─────────────────────────────────────
+# ── §9.5: zero-LLM proof through cron.scheduler.run_job ──────────────────────
 
-def test_in_process_cron_zero_llm(e2e_home: Path) -> None:
-    """§9.5: run_job in-process with AIAgent patched to raise; job still completes.
+def test_cron_run_job_never_constructs_agent(
+    e2e_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F3: run_job with no_agent=True never constructs AIAgent.
 
-    Proves the cron script does not call the LLM.
+    run_job return shape (verified against cron/scheduler.py):
+        (success: bool, full_output_doc: str, final_response: str, error: Optional[str])
+
+    Test plan:
+    1. Set up HERMES_HOME, fake server, saved credentials.
+    2. hermes olo setup writes the shim script.
+    3. create_job(None, ..., no_agent=True, script=...) creates the job in-process.
+    4. Patch run_agent.AIAgent with a sentinel that raises AssertionError.
+       No ImportError fallback — if run_agent is absent the test must fail.
+    5. cron.scheduler.run_job(job) must succeed (success==True).
+    6. Sentinel was never constructed (bootstrap run).
+    7. Gmail checkpoint set.
+    8. Add 1 message, run_job again → 1 email.received signal stored.
+    9. No usage_audit.jsonl line for this job.
     """
     home = e2e_home
 
     with FakeGoogleServer(email="test@example.com") as fake:
         _save_creds(fake, "acme", home)
 
-        old = os.environ.get("HERMES_HOME")
-        os.environ["HERMES_HOME"] = str(home)
-        try:
-            from olo.store import connect, migrate
-            from olo.paths import db_path
+        old_home = os.environ.get("HERMES_HOME")
+        monkeypatch.setenv("HERMES_HOME", str(home))
 
-            # Ensure DB exists
-            conn = connect(db_path())
-            migrate(conn)
-            conn.close()
+        # Write shim via CLI
+        r = _run(["olo", "setup", "--source", "gmail", "--option", "account=acme"], home)
+        assert r.returncode == 0, f"setup failed: {r.stderr}"
 
-            # Register source
-            r = _run(["olo", "setup", "--source", "gmail", "--option", "account=acme"], home)
-            assert r.returncode == 0, f"setup failed: {r.stderr}"
+        # Ensure DB exists
+        from olo.store import connect, migrate, count_signals, get_checkpoint
+        from olo.paths import db_path
+        conn = connect(db_path())
+        migrate(conn)
+        conn.close()
 
-            # Build a minimal adapter and run it in-process
-            from olo.adapters.gmail import GmailAdapter
-            from olo.google.http import GoogleClient
+        # Create job in-process
+        from cron.jobs import create_job
+        job = create_job(
+            None,  # prompt — None is valid for no_agent jobs
+            "every 5m",
+            name="olo-gmail-acme",
+            script="olo_monitor_gmail_acme.py",
+            no_agent=True,
+            deliver="local",
+        )
+        assert job["id"], "create_job must return a job with an id"
 
-            adapter = GmailAdapter({"account": "acme"})
-            creds = fake.make_credentials("acme")
-            client = GoogleClient(creds)
-            client._access_token = fake.tokens.access_token
-            adapter._client = client
+        # Sentinel class — raises if ever constructed
+        constructed: list[bool] = []
 
-            # Patch run_agent.AIAgent to raise if called
-            try:
-                import run_agent
-                original_agent = run_agent.AIAgent
+        class _NeverConstructAgent:
+            def __init__(self, *a, **kw):
+                constructed.append(True)
+                raise AssertionError(
+                    "F3: AIAgent was constructed — cron script must not call LLM"
+                )
 
-                class _RaisingAgent:
-                    def __init__(self, *a, **kw):
-                        raise AssertionError("AIAgent must not be instantiated in zero-LLM mode")
+        # Patch run_agent.AIAgent at the module where run_job will re-import it
+        import run_agent  # must not raise ImportError
+        monkeypatch.setattr(run_agent, "AIAgent", _NeverConstructAgent)
 
-                run_agent.AIAgent = _RaisingAgent
+        import cron.scheduler as _sched
 
-                # Run the fetch manually (this is what the cron script does)
-                b = adapter.fetch(None, limit=100)
-                assert b is not None  # bootstrap completes without calling LLM
+        # ── Fire 1: bootstrap ─────────────────────────────────────────────────
+        success, _doc, _resp, error = _sched.run_job(job)
+        # Recorded return shape: (bool, str, str, Optional[str])
+        assert success is True, (
+            f"F3: run_job bootstrap must succeed, error={error!r}"
+        )
+        assert not constructed, "F3: AIAgent must never be constructed"
 
-            except ImportError:
-                # run_agent not available in this environment — skip LLM patch
-                b = adapter.fetch(None, limit=100)
-                assert b is not None
-            finally:
-                try:
-                    run_agent.AIAgent = original_agent
-                except (NameError, UnboundLocalError):
-                    pass
-        finally:
-            if old is None:
-                os.environ.pop("HERMES_HOME", None)
-            else:
-                os.environ["HERMES_HOME"] = old
+        conn = connect(db_path())
+        cursor_after_boot = get_checkpoint("gmail_acme", conn)
+        assert cursor_after_boot is not None, (
+            "F3: Gmail checkpoint must be set after bootstrap"
+        )
+        conn.close()
+
+        # ── Fire 2: 1 inbox message → 1 signal ───────────────────────────────
+        fake.gmail.add_message("msg1", subject="Test zero-LLM")
+
+        success2, _doc2, _resp2, error2 = _sched.run_job(job)
+        assert success2 is True, (
+            f"F3: run_job incremental must succeed, error={error2!r}"
+        )
+        assert not constructed, "F3: AIAgent must never be constructed"
+
+        conn = connect(db_path())
+        n = count_signals("gmail_acme", conn)
+        assert n == 1, f"F3: expected 1 signal after msg1, got {n}"
+        conn.close()
+
+        # ── No usage_audit.jsonl entry ────────────────────────────────────────
+        audit_path = home / "cron" / "usage_audit.jsonl"
+        if audit_path.exists():
+            content = audit_path.read_text(encoding="utf-8")
+            assert job["id"] not in content, (
+                "F3: no-agent job must not appear in usage audit"
+            )
 
 
 # ── Zero LLM: no usage_audit.jsonl ───────────────────────────────────────────
