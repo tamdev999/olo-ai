@@ -604,9 +604,17 @@ class GcalAdapter(MonitorAdapter):
     ) -> FetchBatch:
         """One signal-bearing page of events for one calendar.
 
+        Each event produces 2 signals (calendar.event.changed/cancelled +
+        calendar.event.content). The minimum meaningful limit is therefore 2;
+        at limit=1 we could never return even one complete event pair.
+
         On 410 (sync token expired), self-heals: restarts full sync for that
         calendar and continues (does not propagate the 410).
         """
+        if limit < 2:
+            raise AdapterConfigError(
+                f"gcal: limit must be ≥ 2 (each event produces 2 signals); got {limit}"
+            )
         from olo.google.http import CalendarSyncTokenExpired, CalendarPageTokenInvalid
 
         empty_page_count = 0
@@ -635,8 +643,8 @@ class GcalAdapter(MonitorAdapter):
             next_sync_token = resp.get("nextSyncToken")
 
             # C1 fix: reject over-sized pages
-            # Each event produces 2 signals, so max events = limit // 2
-            max_events = max(1, limit // 2)
+            # Each event produces 2 signals; max_events = limit // 2
+            max_events = limit // 2
             if len(events) > max_events:
                 raise SourceError(
                     f"gcal page exceeds requested maxResults ({len(events)} > {max_events})"
@@ -750,12 +758,12 @@ class GcalAdapter(MonitorAdapter):
     ) -> dict:
         """Build params and call events.list for the given calendar.
 
-        Each event produces 2 signals (calendar.event.changed + calendar.event.content),
-        so maxResults must be limit // 2 to stay within the runner's signal budget.
-        Minimum 1 event per page.
+        Each event produces 2 signals (calendar.event.changed + calendar.event.content).
+        maxResults = limit // 2 so the total returned signals never exceed limit.
+        limit is guaranteed ≥ 2 by the caller (_fetch_calendar_events guard).
         """
-        # 2 signals per event: metadata + content blob
-        events_per_page = max(1, min(limit // 2, 2500))
+        # 2 signals per event — request at most limit // 2 events
+        events_per_page = min(limit // 2, 2500)
         params: list[tuple[str, str]] = [
             ("singleEvents", "false"),
             ("showDeleted", "true"),
