@@ -268,6 +268,10 @@ class GoogleClient:
         if status == 410 and "/calendars/" in path:
             raise CalendarSyncTokenExpired("calendar sync token expired")
 
+        # 410 on calendarList (B4: sync token expired)
+        if status == 410 and "/users/me/calendarList" in path:
+            raise CalendarSyncTokenExpired("calendarList sync token expired")
+
         # 400 on events with pageToken
         if status == 400 and "/calendars/" in path:
             raise CalendarPageTokenInvalid("calendar page token invalid")
