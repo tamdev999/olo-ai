@@ -483,3 +483,201 @@ def test_crash_mid_run_resumes_without_loss() -> None:
         cr_seen = [i for i in seen_ids if i.startswith("cr")]
         assert len(set(cr_seen)) == len(cr_seen), f"Duplicates: {cr_seen}"
         assert sorted(set(cr_seen)) == [f"cr{i}" for i in range(1, 6)]
+
+
+# ── F2 regression tests: consecutive empty-page loop fix ─────────────────────
+
+def test_consecutive_empty_pages_reach_records() -> None:
+    """F2: empty[]+p2, empty[]+p3, [record 150 with 1 inbox message] — 3 pages.
+
+    Requests must be in order: no token, p2, p3.
+    One signal returned; next_cursor == the record id from the third page.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor0 = b0.next_cursor
+
+        # Build a scripted sequence
+        # Page 1: empty + nextPageToken=p2
+        # Page 2: empty + nextPageToken=p3
+        # Page 3: one real inbox message record, no token
+        record_id = "150"
+        fake.gmail.messages["real1"] = __import__(
+            "tests.olo.fake_google", fromlist=["FakeMessage"]
+        ).FakeMessage(
+            id="real1",
+            thread_id="real1",
+            label_ids=["INBOX", "UNREAD"],
+            internal_date="1700000000000",
+            size_estimate=512,
+            subject="Hello",
+        )
+        fake.gmail.script_history_pages([
+            {"records": [], "next_page_token": "p2",
+             "history_id": fake.gmail.current_history_id},
+            {"records": [], "next_page_token": "p3",
+             "history_id": fake.gmail.current_history_id},
+            {"records": [{"id": record_id,
+                          "messagesAdded": [{"message": {
+                              "id": "real1",
+                              "threadId": "real1",
+                              "labelIds": ["INBOX", "UNREAD"],
+                          }}]}],
+             "history_id": record_id},
+        ])
+
+        b = a.fetch(cursor0, limit=10)
+
+        # Requests were: no token, "p2", "p3"
+        assert fake.gmail.recorded_history_requests() == [None, "p2", "p3"], (
+            f"F2: wrong request sequence: {fake.gmail.recorded_history_requests()}"
+        )
+        # One signal for the inbox message
+        assert len(b.signals) == 1, f"expected 1 signal, got {len(b.signals)}"
+        assert b.signals[0].kind in ("email.received", "email.sent")
+        # Cursor is the record id from the third page
+        assert b.next_cursor == record_id, (
+            f"expected cursor {record_id!r}, got {b.next_cursor!r}"
+        )
+
+
+def test_empty_page_cap_fails_loudly() -> None:
+    """F2: 25 consecutive empty pages with tokens → SourceError; checkpoint unchanged."""
+    from olo.adapters import SourceError
+
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor0 = b0.next_cursor
+
+        # Script 25 empty pages each with a next token
+        pages = [
+            {"records": [], "next_page_token": f"pt{i}",
+             "history_id": fake.gmail.current_history_id}
+            for i in range(1, 26)
+        ]
+        fake.gmail.script_history_pages(pages)
+
+        with pytest.raises(SourceError, match="too many consecutive empty"):
+            a.fetch(cursor0, limit=10)
+
+
+def test_signal_less_page_then_messages_f2() -> None:
+    """F2 rewrite: page 1 = drafts + nextPageToken; page 2 = real message.
+
+    The real message is returned in the same fetch(); cursor == page-2 record id.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor0 = b0.next_cursor
+
+        # Add a draft message (will be fetched but filtered out)
+        draft_msg_id = "draft1"
+        fake.gmail.messages[draft_msg_id] = __import__(
+            "tests.olo.fake_google", fromlist=["FakeMessage"]
+        ).FakeMessage(
+            id=draft_msg_id,
+            thread_id=draft_msg_id,
+            label_ids=["DRAFT"],
+            internal_date="1700000000000",
+            size_estimate=100,
+            subject="Draft subject",
+        )
+        # Add a real inbox message
+        real_msg_id = "real2"
+        fake.gmail.messages[real_msg_id] = __import__(
+            "tests.olo.fake_google", fromlist=["FakeMessage"]
+        ).FakeMessage(
+            id=real_msg_id,
+            thread_id=real_msg_id,
+            label_ids=["INBOX", "UNREAD"],
+            internal_date="1700000001000",
+            size_estimate=512,
+            subject="Real message",
+        )
+
+        fake.gmail.script_history_pages([
+            # Page 1: draft message record + token
+            {"records": [{"id": "101",
+                          "messagesAdded": [{"message": {
+                              "id": draft_msg_id,
+                              "threadId": draft_msg_id,
+                              "labelIds": ["DRAFT"],
+                          }}]}],
+             "next_page_token": "pt_real",
+             "history_id": "101"},
+            # Page 2: real inbox message, no token
+            {"records": [{"id": "102",
+                          "messagesAdded": [{"message": {
+                              "id": real_msg_id,
+                              "threadId": real_msg_id,
+                              "labelIds": ["INBOX", "UNREAD"],
+                          }}]}],
+             "history_id": "102"},
+        ])
+
+        b = a.fetch(cursor0, limit=10)
+
+        # Must include the real message
+        assert len(b.signals) == 1, f"expected 1 signal, got {len(b.signals)}"
+        assert b.signals[0].external_id == real_msg_id
+        # Cursor is the record id from page 2
+        assert b.next_cursor == "102", (
+            f"expected cursor '102', got {b.next_cursor!r}"
+        )
+
+
+def test_signal_less_pages_cap_f2() -> None:
+    """F2 rewrite: ≥21 signal-less pages → ((), has_more=False, last-consumed record id).
+
+    Uses the scripted path with drafts-only records so signal_less_page logic is hit.
+    """
+    from olo.adapters.gmail import _MAX_EMPTY_PAGES
+
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor0 = b0.next_cursor
+
+        # Register a draft message in the fake's message store
+        fake.gmail.messages["slp_draft"] = __import__(
+            "tests.olo.fake_google", fromlist=["FakeMessage"]
+        ).FakeMessage(
+            id="slp_draft",
+            thread_id="slp_draft",
+            label_ids=["DRAFT"],
+            internal_date="1700000000000",
+            size_estimate=100,
+            subject="Draft",
+        )
+
+        # Script _MAX_EMPTY_PAGES+1 pages each with draft record + token
+        # so the signal-less cap is reached
+        pages = []
+        for i in range(_MAX_EMPTY_PAGES + 1):
+            rid = str(1000 + i)
+            npt = f"slp_pt{i + 1}" if i < _MAX_EMPTY_PAGES else None
+            page = {
+                "records": [{"id": rid,
+                             "messagesAdded": [{"message": {
+                                 "id": "slp_draft",
+                                 "threadId": "slp_draft",
+                                 "labelIds": ["DRAFT"],
+                             }}]}],
+                "history_id": rid,
+            }
+            if npt:
+                page["next_page_token"] = npt
+            pages.append(page)
+        fake.gmail.script_history_pages(pages)
+
+        b = a.fetch(cursor0, limit=10)
+
+        assert b.signals == (), f"expected no signals, got {b.signals}"
+        assert b.has_more is False
+        # Cursor must have advanced past consumed records (not stuck at cursor0)
+        assert b.next_cursor != cursor0, (
+            "cursor must advance past signal-less pages"
+        )

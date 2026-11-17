@@ -116,6 +116,35 @@ class FakeGmailState:
         record.update(record_data)
         self.history_records.append(record)
 
+    # ── F2: scripted page sequences ───────────────────────────────────────────
+    # When scripted_history_pages is set, _handle_history dequeues from it
+    # instead of computing pages from history_records.
+    # Each entry is a dict with optional keys:
+    #   "records": list[dict]  — history records (default [])
+    #   "next_page_token": str | None  — token for the next page (default None)
+    #   "history_id": str | None  — historyId to return (default current_history_id)
+    # Also records which page_token was received in the request (for assertion).
+
+    def script_history_pages(self, pages: list[dict]) -> None:
+        """Replace normal history.list behaviour with a scripted sequence.
+
+        pages is a list of response blueprints consumed one-at-a-time.
+        Call recorded_history_requests() to inspect which tokens were sent.
+        """
+        self._scripted_pages: list[dict] = list(pages)
+        self._recorded_requests: list[str | None] = []
+
+    def pop_scripted_page(self, page_token: str | None) -> dict | None:
+        """Return the next scripted page and record the token; None if exhausted."""
+        if not hasattr(self, "_scripted_pages") or not self._scripted_pages:
+            return None
+        self._recorded_requests.append(page_token)
+        return self._scripted_pages.pop(0)
+
+    def recorded_history_requests(self) -> list[str | None]:
+        """Return the list of pageToken values sent in each request."""
+        return list(getattr(self, "_recorded_requests", []))
+
 
 @dataclass
 class FakeCalendarEvent:
@@ -399,6 +428,25 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         htypes = [v for k, v in parsed_qs if k == "historyTypes"]
 
         start_id_str = params.get("startHistoryId", "")
+        page_token_in = params.get("pageToken")
+
+        # ── F2: scripted page sequences (checked before any validation) ───────
+        scripted = self.__class__.gmail.pop_scripted_page(page_token_in)
+        if scripted is not None:
+            history_id = scripted.get(
+                "history_id", self.__class__.gmail.current_history_id
+            )
+            resp: dict = {"historyId": history_id}
+            recs = scripted.get("records", [])
+            if recs:
+                resp["history"] = recs
+            npt = scripted.get("next_page_token")
+            if npt:
+                resp["nextPageToken"] = npt
+            self._send_json(resp)
+            return
+
+        # ── Normal path ───────────────────────────────────────────────────────
         try:
             start_id = int(start_id_str)
         except ValueError:
@@ -411,7 +459,6 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             return
 
         max_results = int(params.get("maxResults", "100"))
-        page_token = params.get("pageToken")
 
         all_records = [
             r for r in self.__class__.gmail.history_records
@@ -441,9 +488,9 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             all_records = filtered
 
         # pageToken: skip to the right offset
-        if page_token:
+        if page_token_in:
             try:
-                offset = int(page_token.split("_")[-1])
+                offset = int(page_token_in.split("_")[-1])
             except (ValueError, IndexError):
                 offset = 0
             all_records = all_records[offset:]
@@ -453,14 +500,14 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         if len(all_records) > max_results:
             # Encode offset into the token
             base = 0
-            if page_token:
+            if page_token_in:
                 try:
-                    base = int(page_token.split("_")[-1])
+                    base = int(page_token_in.split("_")[-1])
                 except (ValueError, IndexError):
                     base = 0
             next_page_token = f"page_token_{base + max_results}"
 
-        resp: dict = {"historyId": self.__class__.gmail.current_history_id}
+        resp = {"historyId": self.__class__.gmail.current_history_id}
         if page_records:
             resp["history"] = page_records
         if next_page_token:

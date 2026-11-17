@@ -164,24 +164,37 @@ class GmailAdapter(MonitorAdapter):
         cursor: str,
         limit: int,
     ) -> FetchBatch:
-        """§5.2 step 2 + I5 fix: incremental sync from cursor.
+        """§5.2 step 2 + F2 fix: incremental sync from cursor.
 
-        I5 fix: when history[] is empty but nextPageToken is present, we follow
-        the token within this fetch (counted against _MAX_EMPTY_PAGES). If the
-        cap is reached while a nextPageToken is still present, raise SourceError
-        — this indicates a blocked sync, not normal empty-page progress. The
-        cursor is NOT advanced to the response historyId while a nextPageToken
-        is present (that would skip records on the pending pages).
+        F2 fix: carry page_token across loop iterations so every request uses
+        the current token consistently.  The old code did a one-shot re-fetch
+        inside the empty-page branch; if that second response was also empty
+        the next loop iteration would rebuild params without any pageToken,
+        producing a None→p2→None→p2 oscillation that never reached real records.
+
+        Contract:
+        - page_token is local to one fetch() call; never persisted.
+        - Every history.list request uses startHistoryId=in_memory_cursor plus
+          pageToken when set.
+        - Empty history[] + token: count toward _MAX_EMPTY_PAGES, set
+          page_token = token, continue.
+        - Records present: process them (record-whole rules unchanged). After a
+          signal-less page with a token set in_memory_cursor to the last record
+          id and page_token = token.
+        - Empty history[] without token: return ((), response historyId, False).
+          Only this case may advance to the mailbox historyId.
+        - Cap reached while tokens keep arriving: raise SourceError.
         """
-        from olo.google.http import GmailHistoryExpired
-
         empty_page_count = 0
         in_memory_cursor = cursor
+        page_token: str | None = None
         all_signals: list[NormalizedSignal] = []
         final_has_more = False
         final_cursor = cursor
+        mailbox_history_id = cursor  # updated each response
 
         while True:
+            # ── Build request params ──────────────────────────────────────────
             params: list[tuple[str, str]] = [
                 ("startHistoryId", in_memory_cursor),
                 ("historyTypes", "messageAdded"),
@@ -190,17 +203,25 @@ class GmailAdapter(MonitorAdapter):
                 ("historyTypes", "labelRemoved"),
                 ("maxResults", str(min(limit, 500))),
             ]
+            if page_token is not None:
+                params.append(("pageToken", page_token))
+
             resp = client.get_json("gmail", "/users/me/history", params)
 
             mailbox_history_id = str(resp.get("historyId", in_memory_cursor))
             records = resp.get("history", [])
             next_page_token = resp.get("nextPageToken")
 
-            # ── I5 fix: empty history[] with nextPageToken ────────────────────
-            if not records and next_page_token:
-                # Page had no records but more pages remain. Follow the token
-                # within this fetch (counts toward cap). Do NOT advance to
-                # mailbox_history_id — that would skip records on later pages.
+            # ── Empty page ────────────────────────────────────────────────────
+            if not records:
+                if not next_page_token:
+                    # Terminal empty page: advance cursor to mailbox historyId.
+                    return FetchBatch(
+                        signals=(),
+                        next_cursor=mailbox_history_id,
+                        has_more=False,
+                    )
+                # Empty page with token: count, set token, loop.
                 empty_page_count += 1
                 if empty_page_count >= _MAX_EMPTY_PAGES:
                     raise SourceError(
@@ -208,39 +229,10 @@ class GmailAdapter(MonitorAdapter):
                         "nextPageToken — sync appears blocked; "
                         "run 'hermes olo checkpoint reset' to restart"
                     )
-                # Follow the page token (re-query from same cursor)
-                in_memory_cursor = cursor  # don't advance; use original cursor
-                # We need to pass the page token; Gmail history.list supports
-                # pageToken. Add it to our next request.
-                in_memory_cursor = cursor
-                # Fetch with explicit pageToken
-                params_pt: list[tuple[str, str]] = list(params) + [("pageToken", next_page_token)]
-                resp = client.get_json("gmail", "/users/me/history", params_pt)
-                mailbox_history_id = str(resp.get("historyId", in_memory_cursor))
-                records = resp.get("history", [])
-                next_page_token = resp.get("nextPageToken")
-
-            # ── No records at all (last page) ─────────────────────────────────
-            if not records and not next_page_token:
-                # Advance cursor to mailbox's current historyId
-                return FetchBatch(
-                    signals=(),
-                    next_cursor=mailbox_history_id,
-                    has_more=False,
-                )
-
-            if not records:
-                # Empty page but has_more — count and loop (shouldn't reach here
-                # after the I5 fix above, but guard anyway)
-                empty_page_count += 1
-                if empty_page_count >= _MAX_EMPTY_PAGES:
-                    raise SourceError(
-                        "gmail: too many consecutive empty history pages — "
-                        "sync appears blocked; run 'hermes olo checkpoint reset'"
-                    )
+                page_token = next_page_token
                 continue
 
-            # ── Process records ───────────────────────────────────────────────
+            # ── Records present ───────────────────────────────────────────────
             batch_signals, last_included_id, records_remain = self._process_records(
                 client, records, limit - len(all_signals), in_memory_cursor
             )
@@ -249,19 +241,11 @@ class GmailAdapter(MonitorAdapter):
                 all_signals.extend(batch_signals)
                 final_cursor = last_included_id
                 final_has_more = records_remain or (next_page_token is not None)
-                if len(all_signals) >= limit:
-                    break
-                if not records_remain and not next_page_token:
-                    break
-                if records_remain:
-                    final_has_more = True
-                    break
                 break
             else:
-                # §5.0: signal-less page
+                # §5.0: signal-less page — advance in-memory cursor, loop.
                 empty_page_count += 1
-                if records:
-                    in_memory_cursor = str(records[-1].get("id", in_memory_cursor))
+                in_memory_cursor = str(records[-1].get("id", in_memory_cursor))
                 if not next_page_token:
                     return FetchBatch(
                         signals=(),
@@ -274,6 +258,7 @@ class GmailAdapter(MonitorAdapter):
                         next_cursor=in_memory_cursor,
                         has_more=False,
                     )
+                page_token = next_page_token
                 continue
 
         if not all_signals:
