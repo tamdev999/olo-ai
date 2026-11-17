@@ -1,6 +1,8 @@
 """Olo AI — Gmail adapter (metadata-only, no message bodies).
 
 §5: sync algorithm, signal mapping, §5.0 empty-page rule.
+I5: empty history[] with nextPageToken raises SourceError at cap.
+I7: alias pattern enforcement.
 Registered as "gmail"; per-account source = "gmail_<alias>".
 
 No side effects at import time.
@@ -41,6 +43,9 @@ _MAX_HEADER_CHARS = 998
 _MAX_SUBJECT_CHARS = 256
 _MAX_EMPTY_PAGES = 20
 
+# I7: alias pattern
+_ALIAS_RE = re.compile(r"^[a-z0-9]{1,16}$")
+
 
 # ── Signal subject from RFC 2047 header ──────────────────────────────────────
 
@@ -60,7 +65,6 @@ def _decode_header_value(raw: str) -> Optional[str]:
 
 
 def _parse_addresses(raw: str) -> list[dict]:
-    """Parse an address header into [{"name": ..., "email": ...}, ...]."""
     if not raw:
         return []
     raw = raw[:_MAX_HEADER_CHARS]
@@ -72,7 +76,6 @@ def _parse_addresses(raw: str) -> list[dict]:
 
 
 def _extract_headers(payload_headers: list[dict]) -> dict:
-    """Build a normalised header dict from a Gmail payload.headers list."""
     hmap: dict[str, str] = {}
     for h in payload_headers:
         name = h.get("name", "").strip().lower()
@@ -98,7 +101,6 @@ class GmailAdapter(MonitorAdapter):
     source = "gmail_<alias>" (instance attribute, V7).
     """
 
-    # Class-level default; overridden per-instance
     source: str = "gmail_unknown"
 
     def __init__(self, options: Mapping[str, str]) -> None:
@@ -107,6 +109,12 @@ class GmailAdapter(MonitorAdapter):
             raise AdapterConfigError(
                 "gmail adapter requires option account=<alias>"
             )
+        # I7: enforce alias pattern
+        if not _ALIAS_RE.match(alias):
+            raise AdapterConfigError(
+                f"gmail adapter: invalid account alias {alias!r}; "
+                f"must match ^[a-z0-9]{{1,16}}$"
+            )
         extra = set(options) - {"account"}
         if extra:
             raise AdapterConfigError(
@@ -114,9 +122,9 @@ class GmailAdapter(MonitorAdapter):
             )
         self._alias = alias
         self.source = f"gmail_{alias}"
-        self._client: Optional[GoogleClient] = None
+        self._client: Optional["GoogleClient"] = None
 
-    def _get_client(self) -> GoogleClient:
+    def _get_client(self) -> "GoogleClient":
         if self._client is None:
             from olo.google.credentials import load_credentials
             from olo.google.http import GoogleClient
@@ -138,14 +146,11 @@ class GmailAdapter(MonitorAdapter):
 
         client = self._get_client()
 
-        # Bootstrap
         if cursor is None:
             return self._bootstrap(client)
-
-        # Incremental
         return self._incremental(client, cursor, limit)
 
-    def _bootstrap(self, client: GoogleClient) -> FetchBatch:
+    def _bootstrap(self, client: "GoogleClient") -> FetchBatch:
         """§5.2 step 1: get profile historyId, return empty batch."""
         profile = client.get_json("gmail", "/users/me/profile", [])
         history_id = str(profile.get("historyId", ""))
@@ -155,11 +160,19 @@ class GmailAdapter(MonitorAdapter):
 
     def _incremental(
         self,
-        client: GoogleClient,
+        client: "GoogleClient",
         cursor: str,
         limit: int,
     ) -> FetchBatch:
-        """§5.2 step 2: incremental sync from cursor."""
+        """§5.2 step 2 + I5 fix: incremental sync from cursor.
+
+        I5 fix: when history[] is empty but nextPageToken is present, we follow
+        the token within this fetch (counted against _MAX_EMPTY_PAGES). If the
+        cap is reached while a nextPageToken is still present, raise SourceError
+        — this indicates a blocked sync, not normal empty-page progress. The
+        cursor is NOT advanced to the response historyId while a nextPageToken
+        is present (that would skip records on the pending pages).
+        """
         from olo.google.http import GmailHistoryExpired
 
         empty_page_count = 0
@@ -183,16 +196,51 @@ class GmailAdapter(MonitorAdapter):
             records = resp.get("history", [])
             next_page_token = resp.get("nextPageToken")
 
-            # No records at all
-            if not records:
-                # §5.2: advance cursor to mailbox's current historyId
+            # ── I5 fix: empty history[] with nextPageToken ────────────────────
+            if not records and next_page_token:
+                # Page had no records but more pages remain. Follow the token
+                # within this fetch (counts toward cap). Do NOT advance to
+                # mailbox_history_id — that would skip records on later pages.
+                empty_page_count += 1
+                if empty_page_count >= _MAX_EMPTY_PAGES:
+                    raise SourceError(
+                        "gmail: too many consecutive empty history pages with "
+                        "nextPageToken — sync appears blocked; "
+                        "run 'hermes olo checkpoint reset' to restart"
+                    )
+                # Follow the page token (re-query from same cursor)
+                in_memory_cursor = cursor  # don't advance; use original cursor
+                # We need to pass the page token; Gmail history.list supports
+                # pageToken. Add it to our next request.
+                in_memory_cursor = cursor
+                # Fetch with explicit pageToken
+                params_pt: list[tuple[str, str]] = list(params) + [("pageToken", next_page_token)]
+                resp = client.get_json("gmail", "/users/me/history", params_pt)
+                mailbox_history_id = str(resp.get("historyId", in_memory_cursor))
+                records = resp.get("history", [])
+                next_page_token = resp.get("nextPageToken")
+
+            # ── No records at all (last page) ─────────────────────────────────
+            if not records and not next_page_token:
+                # Advance cursor to mailbox's current historyId
                 return FetchBatch(
                     signals=(),
                     next_cursor=mailbox_history_id,
                     has_more=False,
                 )
 
-            # Process records
+            if not records:
+                # Empty page but has_more — count and loop (shouldn't reach here
+                # after the I5 fix above, but guard anyway)
+                empty_page_count += 1
+                if empty_page_count >= _MAX_EMPTY_PAGES:
+                    raise SourceError(
+                        "gmail: too many consecutive empty history pages — "
+                        "sync appears blocked; run 'hermes olo checkpoint reset'"
+                    )
+                continue
+
+            # ── Process records ───────────────────────────────────────────────
             batch_signals, last_included_id, records_remain = self._process_records(
                 client, records, limit - len(all_signals), in_memory_cursor
             )
@@ -205,38 +253,27 @@ class GmailAdapter(MonitorAdapter):
                     break
                 if not records_remain and not next_page_token:
                     break
-                # More records to process in next iteration
                 if records_remain:
-                    # Partial — stop here, next fetch continues from last_included_id
                     final_has_more = True
                     break
-                # Follow next_page_token not supported (§5.2: each fetch starts
-                # from committed cursor). Stop with what we have.
                 break
             else:
                 # §5.0: signal-less page
                 empty_page_count += 1
-                # Advance in-memory cursor to last record id
                 if records:
                     in_memory_cursor = str(records[-1].get("id", in_memory_cursor))
-                if next_page_token:
-                    # More pages remain but all were signal-less here
-                    pass
-                if not records_remain and not next_page_token:
-                    # Last page, all signal-less
+                if not next_page_token:
                     return FetchBatch(
                         signals=(),
                         next_cursor=mailbox_history_id,
                         has_more=False,
                     )
                 if empty_page_count >= _MAX_EMPTY_PAGES:
-                    # §5.0 cap: return advanced cursor, no signals
                     return FetchBatch(
                         signals=(),
                         next_cursor=in_memory_cursor,
                         has_more=False,
                     )
-                # Continue looping to try to find signals
                 continue
 
         if not all_signals:
@@ -254,7 +291,7 @@ class GmailAdapter(MonitorAdapter):
 
     def _process_records(
         self,
-        client: GoogleClient,
+        client: "GoogleClient",
         records: list[dict],
         remaining: int,
         base_cursor: str,
@@ -268,7 +305,7 @@ class GmailAdapter(MonitorAdapter):
         last_id = base_cursor
         seen_message_ids: set[str] = set()
 
-        for i, record in enumerate(records):
+        for record in records:
             record_id = str(record.get("id", ""))
             if not record_id:
                 continue
@@ -277,13 +314,10 @@ class GmailAdapter(MonitorAdapter):
                 client, record, seen_message_ids
             )
 
-            # §5.2: add record whole or stop before it
             if signals and len(signals) + len(record_signals) > remaining:
-                # This record would push us over — stop before it
-                return signals, last_id, True  # records_remain=True
+                return signals, last_id, True
 
             if not signals and len(record_signals) > remaining:
-                # First record alone exceeds limit
                 raise SourceError(
                     "gmail history record exceeds batch limit; raise --limit"
                 )
@@ -292,14 +326,11 @@ class GmailAdapter(MonitorAdapter):
                 signals.extend(record_signals)
             last_id = record_id
 
-        # Mark message ids as seen for deduplication across batches
-        # (already tracked within record_signals)
-        records_remain = False
-        return signals, last_id, records_remain
+        return signals, last_id, False
 
     def _record_to_signals(
         self,
-        client: GoogleClient,
+        client: "GoogleClient",
         record: dict,
         seen_ids: set[str],
     ) -> list[NormalizedSignal]:
@@ -308,37 +339,29 @@ class GmailAdapter(MonitorAdapter):
         now_utc = datetime.now(UTC)
         signals: list[NormalizedSignal] = []
 
-        # ── messagesAdded ──────────────────────────────────────────────────────
         for entry in record.get("messagesAdded", []):
             msg_stub = entry.get("message", {})
             msg_id = msg_stub.get("id", "")
             if not msg_id or msg_id in seen_ids:
                 continue
-
-            # Fetch metadata
             msg = client.get_message_or_none(msg_id, _METADATA_HEADERS)
             if msg is None:
-                # deleted before we could fetch
                 continue
-
             label_ids: list[str] = msg.get("labelIds", [])
-            # Skip drafts, spam, trash, chat
             if any(lbl in _SKIP_LABELS for lbl in label_ids):
                 continue
-
             sig = self._message_to_signal(msg, record_id)
             if sig is not None:
                 signals.append(sig)
                 seen_ids.add(msg_id)
 
-        # ── messagesDeleted ────────────────────────────────────────────────────
         for entry in record.get("messagesDeleted", []):
             msg_stub = entry.get("message", {})
             msg_id = msg_stub.get("id", "")
             if not msg_id:
                 continue
             ext_id = f"h{record_id}:{msg_id}:deleted"
-            sig = NormalizedSignal(
+            signals.append(NormalizedSignal(
                 source=self.source,
                 external_id=ext_id,
                 kind="email.deleted",
@@ -349,10 +372,8 @@ class GmailAdapter(MonitorAdapter):
                     "thread_id": msg_stub.get("threadId", ""),
                     "history_id": record_id,
                 },
-            )
-            signals.append(sig)
+            ))
 
-        # ── labelsAdded / labelsRemoved ────────────────────────────────────────
         for event_type, event_kind in [
             ("labelsAdded", "email.labels_added"),
             ("labelsRemoved", "email.labels_removed"),
@@ -372,7 +393,7 @@ class GmailAdapter(MonitorAdapter):
                 ]
                 suffix = "added" if event_type == "labelsAdded" else "removed"
                 ext_id = f"h{record_id}:{msg_id}:{suffix}"
-                sig = NormalizedSignal(
+                signals.append(NormalizedSignal(
                     source=self.source,
                     external_id=ext_id,
                     kind=event_kind,
@@ -385,32 +406,24 @@ class GmailAdapter(MonitorAdapter):
                         "labels": changed_labels,
                         "current_label_ids": current_labels,
                     },
-                )
-                signals.append(sig)
+                ))
 
         return signals
 
     def _message_to_signal(self, msg: Mapping, record_id: str) -> Optional[NormalizedSignal]:
-        """Map a Gmail message to a NormalizedSignal."""
         msg_id = msg.get("id", "")
         thread_id = msg.get("threadId", "")
         label_ids: list[str] = msg.get("labelIds", [])
-
-        # Determine kind
         kind = "email.sent" if "SENT" in label_ids else "email.received"
 
-        # occurred_at from internalDate (ms since epoch)
         try:
             ts_ms = int(msg.get("internalDate", "0"))
             occurred_at = datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC)
         except (ValueError, TypeError):
             occurred_at = datetime.now(UTC)
 
-        # Headers
         payload_headers = msg.get("payload", {}).get("headers", [])
         hdrs = _extract_headers(payload_headers)
-
-        # Signal.subject = decoded Subject header
         subject = _decode_header_value(hdrs.get("subject", ""))
 
         payload: dict = {
