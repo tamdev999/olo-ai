@@ -117,17 +117,19 @@ def _cron_run_and_wait(
 ) -> dict:
     """H2: fire a cron job and return exactly the new execution row.
 
-    The M1 runner dispatches via 'cron run' + 'cron tick' (not synchronous).
-    The default trigger runs both; custom triggers skip the exit-code/stdout checks.
+    'hermes cron run' executes the job synchronously (via _SESSION_ASYNC_DELIVERY
+    in _job_action) and returns exit code 0 for a completed run, 1 for a failed
+    run.  There is no need for 'cron tick'; adding it would create a second
+    execution and corrupt the before/after snapshot.
 
     1. Snapshot the set of existing execution IDs (all rows, not just limit=5).
-    2. Run the trigger.
-    3. For the default trigger: check that 'cron run' succeeded (exit 0).
-       Note: M1 'cron run' just marks the job; 'cron tick' fires the scheduler.
-       The exit code from 'cron run' does not reflect the execution outcome.
-    4. wait_until: find exactly one new execution row (id not in snapshot)
-       that is in a terminal state with status == expect_status.
-    5. Return that row.
+    2. Run the trigger (default: hermes cron run <job_id>).
+    3. For the default trigger:
+       - Assert exit code 0 if expect_status=="completed", else 1.
+       - Assert "Ran now:" appears in stdout (proves synchronous execution).
+    4. wait_until: find new execution rows (id not in snapshot) in terminal state.
+    5. Assert exactly one new row; assert its status == expect_status.
+    6. Return that row.
     """
     from cron.executions import _TERMINAL_STATES
 
@@ -137,28 +139,41 @@ def _cron_run_and_wait(
     # Step 2: trigger
     if trigger is not None:
         trigger()
+        run_result = None
     else:
-        r_run = _run(["cron", "run", job_id], home)
-        assert r_run.returncode == 0, (
-            f"H2: 'cron run' failed: rc={r_run.returncode} "
-            f"stderr={r_run.stderr!r}"
+        run_result = _run(["cron", "run", job_id], home)
+
+    # Step 3: assert trigger outcome for default trigger
+    if run_result is not None:
+        expected_rc = 0 if expect_status == "completed" else 1
+        assert run_result.returncode == expected_rc, (
+            f"H2: hermes cron run exit code {run_result.returncode} "
+            f"!= expected {expected_rc} for status={expect_status!r}; "
+            f"stdout={run_result.stdout!r}; stderr={run_result.stderr!r}"
         )
-        _run(["cron", "tick"], home)
+        assert "Ran now:" in run_result.stdout, (
+            f"H2: 'Ran now:' not found in stdout — was execution synchronous? "
+            f"stdout={run_result.stdout!r}"
+        )
 
-    # Step 3-5: wait for the new row
-    def _new_terminal() -> Optional[dict]:
+    # Step 4–6: wait for new rows and assert exactly one
+    def _new_terminal() -> Optional[list]:
         rows = _list_executions_in_home(home, job_id)
-        for row in rows:
-            if row["id"] not in before_ids and row["status"] in _TERMINAL_STATES:
-                return row
-        return None
+        new = [r for r in rows
+               if r["id"] not in before_ids and r["status"] in _TERMINAL_STATES]
+        return new if new else None
 
-    new_row = wait_until(
+    new_rows = wait_until(
         _new_terminal,
         timeout=timeout,
         what=f"new terminal execution for job {job_id}",
     )
 
+    assert len(new_rows) == 1, (
+        f"H2: expected exactly 1 new terminal execution, got {len(new_rows)}: "
+        f"{[r['id'] for r in new_rows]}"
+    )
+    new_row = new_rows[0]
     assert new_row["status"] == expect_status, (
         f"H2: new execution status={new_row['status']!r} "
         f"!= expected {expect_status!r}"

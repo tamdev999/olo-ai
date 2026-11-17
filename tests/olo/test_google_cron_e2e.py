@@ -139,20 +139,24 @@ def _cron_run_and_wait(
             f"stdout={run_result.stdout!r}"
         )
 
-    # Step 4–5: wait for the new row
-    def _new_terminal() -> Optional[dict]:
+    # Step 4–5: wait for new rows and assert exactly one
+    def _new_terminal() -> Optional[list]:
         rows = _list_executions_in_home(home, job_id)
-        for row in rows:
-            if row["id"] not in before_ids and row["status"] in _TERMINAL_STATES:
-                return row
-        return None
+        new = [r for r in rows
+               if r["id"] not in before_ids and r["status"] in _TERMINAL_STATES]
+        return new if new else None
 
-    new_row = wait_until(
+    new_rows = wait_until(
         _new_terminal,
         timeout=timeout,
         what=f"new terminal execution for job {job_id}",
     )
 
+    assert len(new_rows) == 1, (
+        f"H2: expected exactly 1 new terminal execution, got {len(new_rows)}: "
+        f"{[r['id'] for r in new_rows]}"
+    )
+    new_row = new_rows[0]
     assert new_row["status"] == expect_status, (
         f"H2: new execution status={new_row['status']!r} "
         f"!= expected {expect_status!r}"
