@@ -404,7 +404,7 @@ def test_profile_redirect_does_not_forward_authorization(
 
     server_b = http.server.HTTPServer(("127.0.0.1", 0), _RecordHandler)
     port_b = server_b.server_address[1]
-    t_b = threading.Thread(target=server_b.handle_request, daemon=True)
+    t_b = threading.Thread(target=server_b.serve_forever, daemon=True)
     t_b.start()
 
     received_by_a: dict = {}
@@ -421,8 +421,21 @@ def test_profile_redirect_does_not_forward_authorization(
 
     server_a = http.server.HTTPServer(("127.0.0.1", 0), _RedirectHandler)
     port_a = server_a.server_address[1]
-    t_a = threading.Thread(target=server_a.handle_request, daemon=True)
+    t_a = threading.Thread(target=server_a.serve_forever, daemon=True)
     t_a.start()
+
+    # Wait until both servers are accepting connections (safe with serve_forever)
+    import socket as _sock
+    import time as _time
+    for _port in (port_a, port_b):
+        deadline = _time.monotonic() + 5.0
+        while _time.monotonic() < deadline:
+            try:
+                s = _sock.create_connection(("127.0.0.1", _port), timeout=0.1)
+                s.close()
+                break
+            except OSError:
+                _time.sleep(0.005)
 
     from olo.google.oauth import _get_profile
     try:
@@ -432,6 +445,8 @@ def test_profile_redirect_does_not_forward_authorization(
 
     t_a.join(timeout=5)
     t_b.join(timeout=5)
+    server_a.shutdown()
+    server_b.shutdown()
     server_a.server_close()
     server_b.server_close()
 
@@ -684,7 +699,7 @@ def test_token_exchange_redirect_does_not_forward_secrets(
 
     server_b = http.server.HTTPServer(("127.0.0.1", 0), _RedirectTarget)
     port_b = server_b.server_address[1]
-    t_b = threading.Thread(target=server_b.handle_request, daemon=True)
+    t_b = threading.Thread(target=server_b.serve_forever, daemon=True)
     t_b.start()
 
     class _RedirectHandler(http.server.BaseHTTPRequestHandler):
@@ -703,7 +718,7 @@ def test_token_exchange_redirect_does_not_forward_secrets(
 
     server_a = http.server.HTTPServer(("127.0.0.1", 0), _RedirectHandler)
     port_a = server_a.server_address[1]
-    t_a = threading.Thread(target=server_a.handle_request, daemon=True)
+    t_a = threading.Thread(target=server_a.serve_forever, daemon=True)
     t_a.start()
 
     from olo.google.oauth import _post_token
@@ -725,6 +740,8 @@ def test_token_exchange_redirect_does_not_forward_secrets(
     except Exception:
         pass
 
+    server_a.shutdown()
+    server_b.shutdown()
     t_a.join(timeout=5)
     t_b.join(timeout=5)
     server_a.server_close()
@@ -767,7 +784,7 @@ def test_revoke_redirect_does_not_forward_token(
 
     server_b = http.server.HTTPServer(("127.0.0.1", 0), _RecordTarget)
     port_b = server_b.server_address[1]
-    t_b = threading.Thread(target=server_b.handle_request, daemon=True)
+    t_b = threading.Thread(target=server_b.serve_forever, daemon=True)
     t_b.start()
 
     class _RedirectHandler(http.server.BaseHTTPRequestHandler):
@@ -784,12 +801,14 @@ def test_revoke_redirect_does_not_forward_token(
 
     server_a = http.server.HTTPServer(("127.0.0.1", 0), _RedirectHandler)
     port_a = server_a.server_address[1]
-    t_a = threading.Thread(target=server_a.handle_request, daemon=True)
+    t_a = threading.Thread(target=server_a.serve_forever, daemon=True)
     t_a.start()
 
     from olo.google.oauth import revoke_token
     revoke_token(TOKEN_VALUE, api_base_override=f"http://127.0.0.1:{port_a}")
 
+    server_a.shutdown()
+    server_b.shutdown()
     t_a.join(timeout=5)
     t_b.join(timeout=5)
     server_a.server_close()

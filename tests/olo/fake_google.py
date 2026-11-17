@@ -18,6 +18,7 @@ import http.server
 import json
 import re
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, UTC
@@ -712,6 +713,18 @@ class FakeGoogleServer:
         _FakeGoogleHandler._teardown_event = self._teardown_ev
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
+        # On Linux, the socket only accepts connections once serve_forever()
+        # has started in the thread.  Poll until the port is reachable so
+        # clients in the same process don't get "Connection refused".
+        import socket as _socket
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                s = _socket.create_connection(("127.0.0.1", self.port), timeout=0.05)
+                s.close()
+                break
+            except OSError:
+                time.sleep(0.005)
         return self
 
     def _serve(self) -> None:
@@ -724,6 +737,15 @@ class FakeGoogleServer:
         if self._server:
             self._server.shutdown()
             self._server.server_close()
+        # Wait for the server thread to exit so the next test doesn't race
+        # against class-level handler state left over from this instance.
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+        # Clear class-level handler state so a subsequent FakeGoogleServer
+        # in the same process cannot see this instance's mailbox/calendar.
+        _FakeGoogleHandler.gmail = None
+        _FakeGoogleHandler.calendar = None
+        _FakeGoogleHandler.tokens = None
 
     def make_credentials(self, alias: str) -> GoogleAccountCredentials:
         """Return in-memory credentials pointing at this fake server."""
