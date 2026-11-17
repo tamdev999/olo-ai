@@ -269,8 +269,11 @@ Stored fields: `client_id`, `client_secret`, `refresh_token`,
 
 ## Limitations
 
-- **No backfill.** Gmail bootstrap sets the cursor to the current historyId;
-  mail received before setup is not ingested.
+- **No backfill for legacy accounts.** Accounts connected with M2 (gmail.metadata only)
+  do not receive email.content signals. Upgrade with `--upgrade` (see §M2b Upgrade below).
+- **Gmail backfill on upgrade.** When upgrading a connected account to full_v1 scopes,
+  Olo performs a one-time backfill using `messages.list`. Backfill is best-effort; messages
+  deleted before backfill completes are skipped silently.
 - **Weekly reconnect** required when `oauth_publishing_status = "testing"`.
 - **Checkpoint reset gap.** After `checkpoint reset`, events/messages from
   the gap period (since the last committed cursor) are not visible in Olo.
@@ -283,3 +286,179 @@ Stored fields: `client_id`, `client_secret`, `refresh_token`,
 ## Attribution
 
 Built on **Hermes Agent by Nous Research**. See `LICENSE` for terms.
+
+---
+
+## M2b: Full Content and All Calendars
+
+Milestone 2b adds:
+- **Full Gmail content** (`email.content` signals with lossless message blobs)
+- **All readable calendars** (not just primary — all calendars via `calendarList.list`)
+- **Gmail backfill** after scope upgrade (one-time `messages.list` scan)
+- **Calendar discovery signals** (`calendar.calendar.added` / `calendar.calendar.removed`)
+
+### New Scopes (M2b)
+
+| Scope | Replaces | What it allows |
+|---|---|---|
+| `gmail.readonly` | `gmail.metadata` | Full message content (headers + body + attachments metadata) |
+| `calendar.events.readonly` | `calendar.events.owned.readonly` | Events on all calendars (not just owned) |
+| `calendar.calendarlist.readonly` | _(new)_ | Discover all readable calendars |
+
+**`gmail.metadata` must not coexist with `gmail.readonly`** — Google returns 403 on
+`format=full` requests when both scopes are granted. The `scope_profile` field in the
+credential file distinguishes the two generations:
+
+| `scope_profile` | Scopes | Behavior |
+|---|---|---|
+| `legacy_v1` (or `null`) | M2 scopes | Metadata-only Gmail; primary calendar only |
+| `full_v1` | M2b scopes | Full content Gmail; all readable calendars |
+
+### Google Cloud Setup for M2b
+
+The consent screen must be updated to include the three new scopes before running
+`--upgrade`:
+
+1. In **APIs & Services → OAuth consent screen → Data Access**, remove the old scopes
+   and add:
+   - `https://www.googleapis.com/auth/gmail.readonly`
+   - `https://www.googleapis.com/auth/calendar.events.readonly`
+   - `https://www.googleapis.com/auth/calendar.calendarlist.readonly`
+2. Download a **new** client secret JSON (or reuse the same client, but generate a fresh
+   credential file so the granted scopes are updated).
+3. Run `--upgrade` (see below).
+
+### Upgrading a Connected Account
+
+```bash
+# Reconnect with M2b scopes (opens browser):
+hermes olo google connect \
+    --account acme \
+    --client-secret-file /path/to/client_secret_m2b.json \
+    --upgrade
+
+# Headless:
+hermes olo google connect \
+    --account acme \
+    --client-secret-file /path/to/client_secret_m2b.json \
+    --upgrade --manual
+```
+
+The `--upgrade` flag:
+1. Verifies the new scopes are granted (`gmail.readonly`, not `gmail.metadata`).
+2. Saves the credential with `scope_profile = "full_v1"`.
+3. Clears the Gmail checkpoint so backfill starts on the next run.
+
+After upgrading, the next Gmail run enters **backfill mode**: it uses `messages.list` to
+scan backwards from the current time and emit `email.content` signals for existing messages.
+Backfill continues across multiple runs (cursor carries the `{"phase":"backfill",...}` JSON).
+
+```bash
+# Verify after upgrade:
+hermes olo google status --check
+# Must show: gmail.readonly ✓, calendar.events.readonly ✓,
+#            calendar.calendarlist.readonly ✓, scope_profile=full_v1
+```
+
+### Backfill Phases
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| `bootstrap` | Fresh account, no prior signals | Scans all messages from epoch=0 (up to lookback) |
+| `resume` | Checkpoint exists (plain historyId) | Resumes from that historyId |
+| `gap` | History ID expired, signals exist | Records unrecoverable gap, then continues |
+
+Backfill emits `email.content` only (not `email.received`/`email.sent` — those come
+from incremental history sync). Backfill is bounded by a 48 MiB soft stop per run.
+
+### Purging Full Content
+
+If you need to remove stored message blobs (e.g., before sharing a database):
+
+```bash
+# Remove all content_blobs for a source (irreversible):
+hermes olo purge-content --source gmail_acme --confirm
+```
+
+This deletes rows from `content_blobs` and clears the `blobs` reference in
+the corresponding signal payloads. It does not remove the signal rows themselves.
+
+### Composite Calendar Cursor (v2)
+
+The Calendar cursor is now a JSON composite object:
+
+```json
+{
+  "v": 2,
+  "list": {"sync_token": "...", "page_token": null},
+  "cals": {
+    "primary": {"phase": "incr", "sync_token": "...", "page_token": null},
+    "work@group.calendar.google.com": {"phase": "incr", "sync_token": "..."}
+  }
+}
+```
+
+- `list`: calendarList sync state (discovers new/removed calendars each tick).
+- `cals`: per-calendar events cursor (independent incremental sync per calendar).
+- **v1 cursors** (`{"phase":"incr",...}`) from M2 are automatically migrated on first use.
+
+### Recovery
+
+#### calendarList sync token expired
+
+**Symptom:** Calendar run fails with `calendarList sync token expired`.
+
+**Fix:** The adapter self-heals automatically — it restarts calendarList full sync and
+continues. No manual intervention needed.
+
+#### Single calendar 410 (events sync token expired)
+
+**Fix:** The adapter self-heals per-calendar — restarts full sync for the affected
+calendar only. Other calendars are unaffected.
+
+#### Upgrading resets the Gmail checkpoint
+
+After `--upgrade`, the Gmail checkpoint is intentionally cleared. The next run enters
+backfill mode. This is expected and completes automatically over several runs.
+
+---
+
+## Production Paths
+
+### Path A: New Account (M2b from the start)
+
+```bash
+hermes olo google connect \
+    --account acme \
+    --client-secret-file /path/to/client_secret_m2b.json
+# grants: gmail.readonly, calendar.events.readonly, calendar.calendarlist.readonly
+# scope_profile = full_v1
+```
+
+Setup monitors:
+
+```bash
+hermes olo setup --source gmail --option account=acme
+hermes olo setup --source gcal --option account=acme --option lookback_days=30
+
+hermes cron create "every 5m" --name olo-gmail-acme \
+    --script olo_monitor_gmail_acme.py --no-agent --deliver local
+
+hermes cron create "every 15m" --name olo-gcal-acme \
+    --script olo_monitor_gcal_acme.py --no-agent --deliver local
+```
+
+### Path B: Existing M2 Account Upgrade
+
+```bash
+# 1. Update consent screen scopes in Google Cloud Console (see §M2b setup above).
+# 2. Upgrade:
+hermes olo google connect \
+    --account acme \
+    --client-secret-file /path/to/client_secret_m2b.json \
+    --upgrade
+# 3. Restart monitors (existing cron jobs work unchanged — adapter auto-detects scope_profile).
+```
+
+The Gmail monitor will enter backfill mode automatically on the next run.
+The Calendar monitor will discover all calendars (not just primary) on the next run.

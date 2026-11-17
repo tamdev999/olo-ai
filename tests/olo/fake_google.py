@@ -603,6 +603,11 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         self._send_json(resp)
 
     def _handle_message(self, msg_id: str) -> None:
+        # Parse query params from path
+        parsed_full = urllib.parse.urlparse(self.path)
+        qp = dict(urllib.parse.parse_qsl(parsed_full.query))
+        fmt = qp.get("format", "metadata")
+
         msg = self.__class__.gmail.messages.get(msg_id)
         if msg is None or msg_id in self.__class__.gmail.deleted_message_ids:
             self._send_json({"error": {"code": 404, "message": "not found"}}, 404)
@@ -614,19 +619,45 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             {"name": "Date", "value": "Mon, 1 Jan 2026 00:00:00 +0000"},
             {"name": "Message-ID", "value": msg.message_id_header},
         ]
-        self._send_json({
+        base = {
             "id": msg.id,
             "threadId": msg.thread_id,
             "labelIds": msg.label_ids,
             "internalDate": msg.internal_date,
             "sizeEstimate": msg.size_estimate,
-            "payload": {"headers": headers},
-        })
+        }
+        if fmt == "full":
+            # B3: return a full MIME payload with inline text/plain body
+            import base64 as _base64
+            body_text = f"Test body for message {msg.id}. Subject: {msg.subject}"
+            encoded = _base64.urlsafe_b64encode(body_text.encode()).decode()
+            base["payload"] = {
+                "mimeType": "text/plain",
+                "headers": headers,
+                "body": {
+                    "data": encoded,
+                    "size": len(body_text),
+                },
+                "parts": [],
+            }
+            base["historyId"] = self.__class__.gmail.current_history_id
+            base["snippet"] = body_text[:100]
+        else:
+            # metadata format
+            base["payload"] = {"headers": headers}
+        self._send_json(base)
 
     def _handle_messages_list(self, params: dict) -> None:
         """B3: messages.list — return stub messages for backfill testing."""
-        # Very simple implementation: return all non-deleted messages as stubs
-        after = int(params.get("q", "after:0").replace("after:", "0") or "0")
+        # Support q=after:<epoch> filter
+        q = params.get("q", "")
+        after_epoch = 0
+        if q.startswith("after:"):
+            try:
+                after_epoch = int(q[len("after:"):].strip())
+            except (ValueError, AttributeError):
+                after_epoch = 0
+
         max_results = int(params.get("maxResults", "500"))
         page_token_in = params.get("pageToken")
 
@@ -634,6 +665,7 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             {"id": msg_id, "threadId": msg.thread_id}
             for msg_id, msg in self.__class__.gmail.messages.items()
             if msg_id not in self.__class__.gmail.deleted_message_ids
+            and int(msg.internal_date) >= after_epoch * 1000
         ]
 
         # Apply page_token offset
@@ -864,20 +896,32 @@ class FakeGoogleServer:
         _FakeGoogleHandler.calendar = None
         _FakeGoogleHandler.tokens = None
 
-    def make_credentials(self, alias: str) -> GoogleAccountCredentials:
-        """Return in-memory credentials pointing at this fake server."""
+    def make_credentials(self, alias: str, *, gmail_readonly: bool = False) -> GoogleAccountCredentials:
+        """Return in-memory credentials pointing at this fake server.
+
+        gmail_readonly=True: grant gmail.readonly instead of gmail.metadata
+        (enables email.content signals in B3 tests).
+        """
         from olo.google.credentials import GoogleAccountCredentials
         from olo.google.oauth import GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO
+        from olo.google.credentials import GMAIL_READONLY_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_LIST_SCOPE, SCOPE_PROFILE_FULL_V1, SCOPE_PROFILE_LEGACY
+        if gmail_readonly:
+            scopes = frozenset({GMAIL_READONLY_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_LIST_SCOPE})
+            profile = SCOPE_PROFILE_FULL_V1
+        else:
+            scopes = frozenset({GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO})
+            profile = SCOPE_PROFILE_LEGACY
         return GoogleAccountCredentials(
             alias=alias,
             client_id="fake_client_id",
             client_secret="fake_client_secret",
             refresh_token=self.tokens.refresh_token,
-            granted_scopes=frozenset({GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO}),
+            granted_scopes=scopes,
             email_address=self.email,
             refresh_token_issued_at=datetime.now(UTC),
             oauth_publishing_status="testing",
             api_base_override=self.base_url,
+            scope_profile=profile,
         )
 
     def make_saved_credentials(
