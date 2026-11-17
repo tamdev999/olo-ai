@@ -129,20 +129,39 @@ class FakeGmailState:
 
         pages is a list of response blueprints consumed one-at-a-time.
         Call recorded_history_requests() to inspect which tokens were sent.
+        Call recorded_history_params() to inspect (startHistoryId, pageToken).
         """
         self._scripted_pages: list[dict] = list(pages)
         self._recorded_requests: list[str | None] = []
+        self._recorded_params: list[tuple[str, str | None]] = []
 
-    def pop_scripted_page(self, page_token: str | None) -> dict | None:
-        """Return the next scripted page and record the token; None if exhausted."""
+    def pop_scripted_page(
+        self, start_history_id: str, page_token: str | None
+    ) -> dict | None:
+        """Return the next scripted page and record the params; None if exhausted."""
         if not hasattr(self, "_scripted_pages") or not self._scripted_pages:
             return None
+        if not hasattr(self, "_recorded_requests"):
+            self._recorded_requests = []
+        if not hasattr(self, "_recorded_params"):
+            self._recorded_params = []
         self._recorded_requests.append(page_token)
+        self._recorded_params.append((start_history_id, page_token))
         return self._scripted_pages.pop(0)
+
+    def record_params(self, start_history_id: str, page_token: str | None) -> None:
+        """Record a (startHistoryId, pageToken) pair for a non-scripted request."""
+        if not hasattr(self, "_recorded_params"):
+            self._recorded_params = []
+        self._recorded_params.append((start_history_id, page_token))
 
     def recorded_history_requests(self) -> list[str | None]:
         """Return the list of pageToken values sent in each request."""
         return list(getattr(self, "_recorded_requests", []))
+
+    def recorded_history_params(self) -> list[tuple[str, str | None]]:
+        """Return list of (startHistoryId, pageToken) for every request."""
+        return list(getattr(self, "_recorded_params", []))
 
 
 @dataclass
@@ -436,8 +455,8 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         start_id_str = params.get("startHistoryId", "")
         page_token_in = params.get("pageToken")
 
-        # ── F2: scripted page sequences (checked before any validation) ───────
-        scripted = self.__class__.gmail.pop_scripted_page(page_token_in)
+        # ── F2/H1: scripted page sequences (checked before any validation) ────
+        scripted = self.__class__.gmail.pop_scripted_page(start_id_str, page_token_in)
         if scripted is not None:
             history_id = scripted.get(
                 "history_id", self.__class__.gmail.current_history_id
@@ -453,6 +472,9 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # ── Normal path ───────────────────────────────────────────────────────
+        # Record params for assertion in tests
+        self.__class__.gmail.record_params(start_id_str, page_token_in)
+
         try:
             start_id = int(start_id_str)
         except ValueError:
@@ -465,6 +487,30 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             return
 
         max_results = int(params.get("maxResults", "100"))
+
+        # ── H1: strict page token validation on the non-scripted path ─────────
+        # Tokens are encoded as h{start_id}_{offset}.  If a token is present
+        # and its embedded start_id does not match this request's startHistoryId,
+        # or the token is malformed, respond 400 to surface mismatched usage.
+        if page_token_in:
+            try:
+                tok_parts = page_token_in.split("_")
+                # format: h{start_id}_{offset}
+                tok_start = int(tok_parts[0][1:])    # strip leading "h"
+                tok_offset = int(tok_parts[1])
+            except (ValueError, IndexError, AttributeError):
+                self._send_json(
+                    {"error": {"code": 400, "message": "Invalid pageToken"}}, 400
+                )
+                return
+            if tok_start != start_id:
+                self._send_json(
+                    {"error": {"code": 400, "message": "Invalid pageToken"}}, 400
+                )
+                return
+            offset = tok_offset
+        else:
+            offset = 0
 
         all_records = [
             r for r in self.__class__.gmail.history_records
@@ -493,25 +539,15 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
                     filtered.append(new_rec)
             all_records = filtered
 
-        # pageToken: skip to the right offset
-        if page_token_in:
-            try:
-                offset = int(page_token_in.split("_")[-1])
-            except (ValueError, IndexError):
-                offset = 0
-            all_records = all_records[offset:]
+        # Apply offset from page token
+        all_records = all_records[offset:]
 
         page_records = all_records[:max_results]
         next_page_token = None
         if len(all_records) > max_results:
-            # Encode offset into the token
-            base = 0
-            if page_token_in:
-                try:
-                    base = int(page_token_in.split("_")[-1])
-                except (ValueError, IndexError):
-                    base = 0
-            next_page_token = f"page_token_{base + max_results}"
+            # H1: encode start_id into the token so mismatch is detectable
+            new_offset = offset + max_results
+            next_page_token = f"h{start_id}_{new_offset}"
 
         resp = {"historyId": self.__class__.gmail.current_history_id}
         if page_records:
@@ -737,3 +773,11 @@ class FakeGoogleServer:
     def set_page_size(self, n: int) -> None:
         """I3: set cal.page_size so _handle_events pages at n events."""
         self.calendar.page_size = n
+
+    def reset_history_params(self) -> None:
+        """Clear the recorded (startHistoryId, pageToken) log."""
+        self.gmail._recorded_params = []
+
+    def recorded_history_params(self) -> list[tuple[str, str | None]]:
+        """Return (startHistoryId, pageToken) for every history.list request."""
+        return self.gmail.recorded_history_params()

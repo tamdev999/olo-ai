@@ -526,6 +526,13 @@ def test_consecutive_empty_pages_reach_records() -> None:
         assert fake.gmail.recorded_history_requests() == [None, "p2", "p3"], (
             f"F2: wrong request sequence: {fake.gmail.recorded_history_requests()}"
         )
+        # H1: all requests within this fetch() used the same startHistoryId
+        all_params = fake.gmail.recorded_history_params()
+        start_ids = [sid for sid, _ in all_params]
+        assert len(set(start_ids)) == 1, (
+            f"H1: startHistoryId must be constant across all requests in one fetch(): "
+            f"{start_ids}"
+        )
         # One signal for the inbox message
         assert len(b.signals) == 1, f"expected 1 signal, got {len(b.signals)}"
         assert b.signals[0].kind in ("email.received", "email.sent")
@@ -829,4 +836,288 @@ def test_inbox_deletion_still_produces_signal() -> None:
         deleted_sigs = [s for s in b.signals if s.kind == "email.deleted"]
         assert len(deleted_sigs) == 1, (
             f"expected 1 email.deleted for inbox message, got: {deleted_sigs}"
+        )
+
+
+# ── H1 regression tests: startHistoryId constant within one fetch() ───────────
+
+class _SpyClient:
+    """Wraps a GoogleClient and records every history.list get_json call."""
+
+    def __init__(self, real_client) -> None:
+        self._client = real_client
+        self.history_calls: list[list[tuple[str, str]]] = []  # list of params per call
+
+    def get_json(self, service: str, path: str, params):
+        if service == "gmail" and "/history" in path:
+            self.history_calls.append(list(params))
+        return self._client.get_json(service, path, params)
+
+    def get_message_or_none(self, msg_id, headers):
+        return self._client.get_message_or_none(msg_id, headers)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
+def _make_adapter_with_spy(fake: FakeGoogleServer, alias: str = "test"):
+    """Return (GmailAdapter, spy) using the public client= seam."""
+    creds = fake.make_credentials(alias)
+    from olo.google.http import GoogleClient
+    real_client = GoogleClient(creds)
+    real_client._access_token = fake.tokens.access_token
+    spy = _SpyClient(real_client)
+    return GmailAdapter({"account": alias}, client=spy), spy
+
+
+def _start_history_ids_for_call(spy: _SpyClient, call_index: int) -> list[str]:
+    """Return all startHistoryId values for a specific get_json call index."""
+    if call_index >= len(spy.history_calls):
+        return []
+    return [v for k, v in spy.history_calls[call_index] if k == "startHistoryId"]
+
+
+def _start_history_ids_since(spy: _SpyClient, start: int) -> list[str]:
+    """Return startHistoryId from calls [start:] (a single fetch())."""
+    result = []
+    for call_params in spy.history_calls[start:]:
+        for k, v in call_params:
+            if k == "startHistoryId":
+                result.append(v)
+    return result
+
+
+def test_fake_rejects_mismatched_page_token() -> None:
+    """H1 guard: the fake returns 400 when pageToken's embedded startHistoryId
+    != the request's startHistoryId.  Passes at both e7f915e522 and HEAD
+    (it tests the fake, not the adapter).
+    """
+    import urllib.error
+    from tests.olo.fake_google import FakeMessage
+
+    with FakeGoogleServer() as fake:
+        # Add records so the fake generates a real page token
+        for i in range(1, 6):
+            fake.gmail.add_message(f"msg{i}", subject=f"M{i}")
+
+        _, spy = _make_adapter_with_spy(fake)
+        fake.gmail._access_token_cache = None
+
+        # Directly call the fake via the real client to get a page token
+        from olo.google.http import GoogleClient
+        creds = fake.make_credentials("test")
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+
+        # First request: startHistoryId=1000, maxResults=2 → should give a token
+        params = [
+            ("startHistoryId", "1000"),
+            ("historyTypes", "messageAdded"),
+            ("maxResults", "2"),
+        ]
+        resp1 = client.get_json("gmail", "/users/me/history", params)
+        token = resp1.get("nextPageToken")
+        assert token is not None, (
+            "fake must return a nextPageToken when there are more records"
+        )
+
+        # Now try to use that token with a DIFFERENT startHistoryId → must 400
+        mismatched_params = [
+            ("startHistoryId", "1001"),   # different from 1000
+            ("historyTypes", "messageAdded"),
+            ("maxResults", "2"),
+            ("pageToken", token),
+        ]
+        import urllib.error as _ue
+        try:
+            client.get_json("gmail", "/users/me/history", mismatched_params)
+            assert False, "expected 400 error for mismatched page token"
+        except Exception as e:
+            # Should be a 400 error (manifests as SourceError or HTTPError)
+            assert "400" in str(e) or "Invalid pageToken" in str(e), (
+                f"expected 400 Invalid pageToken, got: {e}"
+            )
+
+
+def test_signal_less_page_then_token_no_loss() -> None:
+    """H1: GPT-6 exact scenario — d1 DRAFT, r2, r3; limit=1.
+
+    Before fix: r2 is lost (fake returns 400 for mismatched token or skips it).
+    After fix: exactly ['r2', 'r3'] ingested; every history.list within each
+    fetch() uses the same startHistoryId.
+    """
+    from tests.olo.fake_google import FakeMessage
+
+    with FakeGoogleServer() as fake:
+        # Bootstrap
+        a, spy = _make_adapter_with_spy(fake)
+        b0 = a.fetch(None, limit=1)
+        cursor0 = b0.next_cursor
+        calls_before = len(spy.history_calls)
+
+        # Add d1 (DRAFT), r2 (INBOX), r3 (INBOX)
+        fake.gmail.add_message("d1", labels=["DRAFT"], subject="Draft")
+        fake.gmail.add_message("r2", labels=["INBOX", "UNREAD"], subject="Real 2")
+        fake.gmail.add_message("r3", labels=["INBOX", "UNREAD"], subject="Real 3")
+
+        # Collect all ingested signals across repeated fetches
+        ingested_ids: list[str] = []
+        cursor = cursor0
+        for iteration in range(20):  # safety cap
+            calls_start = len(spy.history_calls)
+            b = a.fetch(cursor, limit=1)
+            calls_end = len(spy.history_calls)
+
+            # H1 assertion: within this fetch(), all requests used same startHistoryId
+            start_ids_this_fetch = _start_history_ids_since(spy, calls_start)
+            assert len(set(start_ids_this_fetch)) <= 1, (
+                f"H1 FAIL iteration {iteration}: multiple startHistoryId values "
+                f"within one fetch(): {start_ids_this_fetch}"
+            )
+
+            ingested_ids.extend(s.external_id for s in b.signals)
+            cursor = b.next_cursor
+            if not b.has_more and not b.signals:
+                break
+            if not b.has_more:
+                # Keep iterating to drain remaining signals
+                pass
+
+        assert ingested_ids == ["r2", "r3"], (
+            f"H1: expected exactly ['r2', 'r3'], got {ingested_ids}"
+        )
+        # Final cursor is the mailbox historyId (last seen)
+        assert cursor == fake.gmail.current_history_id, (
+            f"H1: final cursor {cursor!r} != mailbox historyId "
+            f"{fake.gmail.current_history_id!r}"
+        )
+
+
+@pytest.mark.parametrize("limit,num_drafts", [
+    (1, 1),
+    (1, 2),
+    (1, 5),
+    (2, 1),
+    (2, 2),
+    (2, 5),
+    (3, 1),
+    (3, 2),
+    (3, 5),
+])
+def test_signal_less_paging_matrix(limit: int, num_drafts: int) -> None:
+    """H1: parametrised matrix of limit × num_drafts.
+
+    For each cell: d1..dN (DRAFTs) then r2 and r3 (INBOX).
+    Result must always be exactly ['r2', 'r3'] with no SourceError.
+
+    Several cells fail at e7f915e522:
+      - limit=1, num_drafts≥1: r2 lost (mismatched token → 400 or skip)
+      - limit=2, num_drafts=1: r2 lost on some paths
+      - limit=2, num_drafts=2: r2 lost
+      (All cells where drafts cause paging with token-reuse across pages)
+    """
+    from tests.olo.fake_google import FakeMessage
+
+    with FakeGoogleServer() as fake:
+        a, spy = _make_adapter_with_spy(fake)
+        b0 = a.fetch(None, limit=limit)
+        cursor0 = b0.next_cursor
+
+        # Add drafts
+        for i in range(1, num_drafts + 1):
+            fake.gmail.add_message(f"d{i}", labels=["DRAFT"], subject=f"Draft {i}")
+        # Add two real messages
+        fake.gmail.add_message("r2", labels=["INBOX", "UNREAD"], subject="Real 2")
+        fake.gmail.add_message("r3", labels=["INBOX", "UNREAD"], subject="Real 3")
+
+        ingested_ids: list[str] = []
+        cursor = cursor0
+        for _ in range(30):  # safety cap
+            calls_start = len(spy.history_calls)
+            b = a.fetch(cursor, limit=limit)
+            calls_end = len(spy.history_calls)
+
+            # H1: constant startHistoryId within each fetch
+            start_ids_this_fetch = _start_history_ids_since(spy, calls_start)
+            assert len(set(start_ids_this_fetch)) <= 1, (
+                f"H1 FAIL limit={limit} drafts={num_drafts}: "
+                f"multiple startHistoryIds: {start_ids_this_fetch}"
+            )
+
+            ingested_ids.extend(s.external_id for s in b.signals)
+            cursor = b.next_cursor
+            if not b.has_more and not b.signals:
+                break
+
+        assert ingested_ids == ["r2", "r3"], (
+            f"H1 matrix limit={limit} drafts={num_drafts}: "
+            f"expected ['r2', 'r3'], got {ingested_ids}"
+        )
+
+
+def test_signal_less_cap_returns_progress_cursor() -> None:
+    """H1: _MAX_EMPTY_PAGES+2 drafts then r1; limit=1.
+
+    - First fetch: returns (), has_more=False, next_cursor == last draft record id.
+    - Every request within that fetch uses same startHistoryId.
+    - Second fetch from that cursor yields exactly r1.
+    """
+    from olo.adapters.gmail import _MAX_EMPTY_PAGES
+    from tests.olo.fake_google import FakeMessage
+
+    with FakeGoogleServer() as fake:
+        a, spy = _make_adapter_with_spy(fake)
+        b0 = a.fetch(None, limit=1)
+        cursor0 = b0.next_cursor
+
+        # Add _MAX_EMPTY_PAGES+2 draft messages
+        last_draft_record_id = None
+        draft_record_ids: list[str] = []
+        for i in range(_MAX_EMPTY_PAGES + 2):
+            fake.gmail.add_message(f"draft_{i}", labels=["DRAFT"],
+                                   subject=f"Draft {i}")
+            draft_record_ids.append(fake.gmail.current_history_id)
+
+        # The cap triggers after _MAX_EMPTY_PAGES signal-less records consumed.
+        # progress_id will be the ID of the _MAX_EMPTY_PAGES-th record (0-indexed).
+        # (empty_page_count reaches _MAX_EMPTY_PAGES on the 20th signal-less page)
+        cap_cursor = draft_record_ids[_MAX_EMPTY_PAGES - 1]
+
+        # Add one real inbox message
+        fake.gmail.add_message("r1", labels=["INBOX", "UNREAD"], subject="Real")
+
+        # First fetch: should cap and return progress_id
+        calls_start = len(spy.history_calls)
+        b1 = a.fetch(cursor0, limit=1)
+        calls_end = len(spy.history_calls)
+
+        assert b1.signals == (), f"expected no signals, got {b1.signals}"
+        assert b1.has_more is False
+
+        # H1: all requests used same startHistoryId
+        start_ids = _start_history_ids_since(spy, calls_start)
+        assert len(set(start_ids)) == 1, (
+            f"H1: multiple startHistoryIds in cap fetch: {start_ids}"
+        )
+        assert start_ids[0] == cursor0, (
+            f"H1: startHistoryId was {start_ids[0]!r}, expected cursor0={cursor0!r}"
+        )
+
+        # Cursor == last consumed draft record id (not stuck at cursor0,
+        # not jumped to mailbox historyId which includes r1)
+        assert b1.next_cursor == cap_cursor, (
+            f"H1: cap exit cursor {b1.next_cursor!r} != "
+            f"cap_cursor={cap_cursor!r} (the {_MAX_EMPTY_PAGES}th draft record)"
+        )
+        assert b1.next_cursor != fake.gmail.current_history_id, (
+            "cap exit cursor must not be the full mailbox historyId (r1 not yet seen)"
+        )
+
+        # Second fetch from progress cursor: should yield r1
+        b2 = a.fetch(b1.next_cursor, limit=1)
+        assert len(b2.signals) >= 1, (
+            f"expected r1 in second fetch, got {b2.signals}"
+        )
+        assert b2.signals[0].external_id == "r1", (
+            f"expected r1, got {b2.signals[0].external_id!r}"
         )

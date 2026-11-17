@@ -167,29 +167,33 @@ class GmailAdapter(MonitorAdapter):
         cursor: str,
         limit: int,
     ) -> FetchBatch:
-        """§5.2 step 2 + F2 fix: incremental sync from cursor.
+        """§5.2 step 2 + H1 fix: incremental sync from cursor.
 
-        F2 fix: carry page_token across loop iterations so every request uses
-        the current token consistently.  The old code did a one-shot re-fetch
-        inside the empty-page branch; if that second response was also empty
-        the next loop iteration would rebuild params without any pageToken,
-        producing a None→p2→None→p2 oscillation that never reached real records.
+        H1 fix: startHistoryId is constant for ALL requests within one fetch().
+        A pageToken is only ever sent with the exact startHistoryId that
+        produced it; advancing the startHistoryId mid-pagination would invalidate
+        the token and cause records to be skipped or a 400 on strict servers.
 
         Contract:
+        - start_history_id is set once from cursor and never changes.
         - page_token is local to one fetch() call; never persisted.
-        - Every history.list request uses startHistoryId=in_memory_cursor plus
+        - Every history.list request uses startHistoryId=start_history_id plus
           pageToken when set.
+        - progress_id tracks the last consumed record id (for the signal-less
+          cap exit cursor). It is never fed back into the request params.
         - Empty history[] + token: count toward _MAX_EMPTY_PAGES, set
           page_token = token, continue.
         - Records present: process them (record-whole rules unchanged). After a
-          signal-less page with a token set in_memory_cursor to the last record
-          id and page_token = token.
+          signal-less page with a token, set progress_id = records[-1]["id"]
+          and page_token = token.
         - Empty history[] without token: return ((), response historyId, False).
           Only this case may advance to the mailbox historyId.
         - Cap reached while tokens keep arriving: raise SourceError.
         """
+        # H1: start_history_id is constant for all requests in this fetch()
+        start_history_id = cursor
         empty_page_count = 0
-        in_memory_cursor = cursor
+        progress_id = cursor     # tracks last consumed record id; never in requests
         page_token: str | None = None
         all_signals: list[NormalizedSignal] = []
         final_has_more = False
@@ -198,8 +202,9 @@ class GmailAdapter(MonitorAdapter):
 
         while True:
             # ── Build request params ──────────────────────────────────────────
+            # H1: always use start_history_id (the committed cursor), never progress_id
             params: list[tuple[str, str]] = [
-                ("startHistoryId", in_memory_cursor),
+                ("startHistoryId", start_history_id),
                 ("historyTypes", "messageAdded"),
                 ("historyTypes", "messageDeleted"),
                 ("historyTypes", "labelAdded"),
@@ -211,7 +216,7 @@ class GmailAdapter(MonitorAdapter):
 
             resp = client.get_json("gmail", "/users/me/history", params)
 
-            mailbox_history_id = str(resp.get("historyId", in_memory_cursor))
+            mailbox_history_id = str(resp.get("historyId", start_history_id))
             records = resp.get("history", [])
             next_page_token = resp.get("nextPageToken")
 
@@ -237,7 +242,7 @@ class GmailAdapter(MonitorAdapter):
 
             # ── Records present ───────────────────────────────────────────────
             batch_signals, last_included_id, records_remain = self._process_records(
-                client, records, limit - len(all_signals), in_memory_cursor
+                client, records, limit - len(all_signals), progress_id
             )
 
             if batch_signals:
@@ -246,9 +251,10 @@ class GmailAdapter(MonitorAdapter):
                 final_has_more = records_remain or (next_page_token is not None)
                 break
             else:
-                # §5.0: signal-less page — advance in-memory cursor, loop.
+                # §5.0: signal-less page — advance progress_id, NOT start_history_id.
+                # page_token is valid for start_history_id; do not change start_history_id.
                 empty_page_count += 1
-                in_memory_cursor = str(records[-1].get("id", in_memory_cursor))
+                progress_id = str(records[-1].get("id", progress_id))
                 if not next_page_token:
                     return FetchBatch(
                         signals=(),
@@ -256,9 +262,11 @@ class GmailAdapter(MonitorAdapter):
                         has_more=False,
                     )
                 if empty_page_count >= _MAX_EMPTY_PAGES:
+                    # Safe exit: every record up to progress_id was fully
+                    # processed (produced no signals); cursor advances.
                     return FetchBatch(
                         signals=(),
-                        next_cursor=in_memory_cursor,
+                        next_cursor=progress_id,
                         has_more=False,
                     )
                 page_token = next_page_token
