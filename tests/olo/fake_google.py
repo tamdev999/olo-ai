@@ -14,7 +14,6 @@ Usage in tests::
 """
 from __future__ import annotations
 
-import hashlib
 import http.server
 import json
 import re
@@ -22,7 +21,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone, UTC
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -102,7 +101,7 @@ class FakeGmailState:
     def remove_labels(self, msg_id: str, labels: list[str]) -> None:
         if msg_id in self.messages:
             self.messages[msg_id].label_ids = [
-                l for l in self.messages[msg_id].label_ids if l not in labels
+                lbl for lbl in self.messages[msg_id].label_ids if lbl not in labels
             ]
         msg_labels = self.messages[msg_id].label_ids if msg_id in self.messages else []
         self._bump_history({"labelsRemoved": [{"message": {
@@ -134,6 +133,10 @@ class FakeCalendarState:
     events: dict[str, FakeCalendarEvent] = field(default_factory=dict)
     sync_token: str = "synctoken_initial"
     _incr_events: list[FakeCalendarEvent] = field(default_factory=list)
+    # I3: configurable page size; None = all events in one response
+    page_size: Optional[int] = None
+    _pages: dict[str, list[FakeCalendarEvent]] = field(default_factory=dict)
+    _next_page_counter: int = 0
 
     def add_event(
         self,
@@ -182,6 +185,30 @@ class FakeCalendarState:
                 pass
         return evs
 
+    # I3: paginate helper
+    def paginate(
+        self, events: list[FakeCalendarEvent], max_results: int
+    ) -> tuple[list[FakeCalendarEvent], Optional[str]]:
+        """Return (page, next_page_token_or_None).
+
+        If page_size is set, use min(page_size, max_results) as the effective
+        page size; otherwise use max_results directly.
+        """
+        effective = max_results
+        if self.page_size is not None:
+            effective = min(self.page_size, max_results)
+        if not events or len(events) <= effective:
+            return events, None
+        page = events[:effective]
+        rest = events[effective:]
+        self._next_page_counter += 1
+        tok = f"pagetoken_{self._next_page_counter}"
+        self._pages[tok] = rest
+        return page, tok
+
+    def pop_page(self, page_token: str) -> Optional[list[FakeCalendarEvent]]:
+        return self._pages.pop(page_token, None)
+
 
 # ── Fake token store ───────────────────────────────────────────────────────────
 
@@ -210,6 +237,23 @@ class FakeTokenStore:
             self.refresh_token = new_refresh
             resp["refresh_token"] = new_refresh
         return resp
+
+
+# ── Module-level helper used by _handle_events ────────────────────────────────
+
+def _ev_dict_local(ev: "FakeCalendarEvent") -> dict:
+    """Serialise a FakeCalendarEvent to the shape Google Calendar returns."""
+    return {
+        "id": ev.id,
+        "status": ev.status,
+        "summary": ev.summary,
+        "updated": ev.updated,
+        "start": {"dateTime": ev.start},
+        "end": {"dateTime": ev.end},
+        "created": ev.updated,
+        "organizer": {"email": ev.organizer, "self": False},
+        "htmlLink": f"https://calendar.google.com/event?eid={ev.id}",
+    }
 
 
 # ── HTTP handler ───────────────────────────────────────────────────────────────
@@ -350,6 +394,10 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         })
 
     def _handle_history(self, params: dict) -> None:
+        # Re-parse query string to handle repeated historyTypes keys
+        parsed_qs = urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query)
+        htypes = [v for k, v in parsed_qs if k == "historyTypes"]
+
         start_id_str = params.get("startHistoryId", "")
         try:
             start_id = int(start_id_str)
@@ -363,10 +411,7 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             return
 
         max_results = int(params.get("maxResults", "100"))
-        htypes = params.getlist("historyTypes") if hasattr(params, "getlist") else []
-        # For simple dict params, collect repeated values via raw query string
-        # (urllib.parse.parse_qsl preserves duplicates, but we used dict() — handle here)
-        # We already have params as dict; for history types just include all if not filtered
+        page_token = params.get("pageToken")
 
         all_records = [
             r for r in self.__class__.gmail.history_records
@@ -374,23 +419,46 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         ]
 
         # Filter by historyTypes if specified
+        # Map API historyType values → record keys (plural form used in records)
+        _HTYPE_MAP = {
+            "messageAdded": "messagesAdded",
+            "messageDeleted": "messagesDeleted",
+            "labelAdded": "labelsAdded",
+            "labelRemoved": "labelsRemoved",
+        }
         if htypes:
+            record_keys = {_HTYPE_MAP.get(ht, ht) for ht in htypes}
             filtered = []
             for rec in all_records:
                 keep = {}
-                for ht in htypes:
-                    if ht in rec:
-                        keep[ht] = rec[ht]
+                for key in record_keys:
+                    if key in rec:
+                        keep[key] = rec[key]
                 if keep:
                     new_rec = {"id": rec["id"]}
                     new_rec.update(keep)
                     filtered.append(new_rec)
             all_records = filtered
 
+        # pageToken: skip to the right offset
+        if page_token:
+            try:
+                offset = int(page_token.split("_")[-1])
+            except (ValueError, IndexError):
+                offset = 0
+            all_records = all_records[offset:]
+
         page_records = all_records[:max_results]
         next_page_token = None
         if len(all_records) > max_results:
-            next_page_token = f"page_token_{max_results}"
+            # Encode offset into the token
+            base = 0
+            if page_token:
+                try:
+                    base = int(page_token.split("_")[-1])
+                except (ValueError, IndexError):
+                    base = 0
+            next_page_token = f"page_token_{base + max_results}"
 
         resp: dict = {"historyId": self.__class__.gmail.current_history_id}
         if page_records:
@@ -421,51 +489,72 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         })
 
     def _handle_events(self, params: dict) -> None:
+        """I3: honour maxResults, emit nextPageToken/nextSyncToken correctly.
+
+        Rules (mirror real Google Calendar API):
+        - Full sync (no syncToken, no pageToken): serve all events paginated by
+          maxResults; non-final pages get nextPageToken only; final page gets
+          nextSyncToken only.
+        - Incremental (syncToken present): same pagination rules over the
+          incremental event set.
+        - pageToken: resume a pending page stored in cal._pages.
+        - 410 for EXPIRED_SYNC_TOKEN; 400 for INVALID_PAGE_TOKEN.
+        """
         sync_token = params.get("syncToken")
         page_token = params.get("pageToken")
         time_min = params.get("timeMin")
+        try:
+            max_results = int(params.get("maxResults", "2500"))
+        except (ValueError, TypeError):
+            max_results = 2500
 
         cal = self.__class__.calendar
 
-        if sync_token:
-            # Incremental
-            if sync_token != cal.sync_token and not sync_token.startswith("synctoken_"):
-                # Expired token simulation
-                if sync_token == "EXPIRED_SYNC_TOKEN":
-                    self._send_json({"error": {"code": 410, "message": "sync token expired"}}, 410)
-                    return
-            evs = cal.consume_incr()
-        elif page_token:
-            if page_token == "INVALID_PAGE_TOKEN":
+        # ── 410 / 400 error paths ─────────────────────────────────────────────
+        if sync_token == "EXPIRED_SYNC_TOKEN":
+            self._send_json({"error": {"code": 410, "message": "sync token expired"}}, 410)
+            return
+
+        if page_token == "INVALID_PAGE_TOKEN":
+            self._send_json({
+                "error": {"code": 400, "message": "invalid page token",
+                          "errors": [{"reason": "invalid", "domain": "calendar"}]}
+            }, 400)
+            return
+
+        # ── Determine the full event list for this request ────────────────────
+        if page_token:
+            # Resume a pending page stored by a previous paginate() call
+            evs = cal.pop_page(page_token)
+            if evs is None:
+                # Unknown page token → treat as invalid
                 self._send_json({
                     "error": {"code": 400, "message": "invalid page token",
                               "errors": [{"reason": "invalid", "domain": "calendar"}]}
                 }, 400)
                 return
-            evs = cal.all_events_full(time_min)
+        elif sync_token:
+            # Incremental sync — accept any synctoken_* token as valid
+            evs = cal.consume_incr()
         else:
             # Full sync
             evs = cal.all_events_full(time_min)
 
-        def _ev_dict(ev: FakeCalendarEvent) -> dict:
-            return {
-                "id": ev.id,
-                "status": ev.status,
-                "summary": ev.summary,
-                "updated": ev.updated,
-                "start": {"dateTime": ev.start},
-                "end": {"dateTime": ev.end},
-                "created": ev.updated,
-                "organizer": {"email": ev.organizer, "self": False},
-                "htmlLink": f"https://calendar.google.com/event?eid={ev.id}",
-            }
+        # ── Paginate ──────────────────────────────────────────────────────────
+        page_evs, next_page_token = cal.paginate(evs, max_results)
 
         resp: dict = {
             "kind": "calendar#events",
             "summary": "primary",
-            "items": [_ev_dict(e) for e in evs],
-            "nextSyncToken": cal.sync_token,
+            "items": [_ev_dict_local(e) for e in page_evs],
         }
+        if next_page_token:
+            resp["nextPageToken"] = next_page_token
+        else:
+            # Final page always gets nextSyncToken; bump it so each call is fresh
+            cal.sync_token = f"synctoken_{len(cal.events)}_{cal._next_page_counter}"
+            resp["nextSyncToken"] = cal.sync_token
+
         self._send_json(resp)
 
     def log_message(self, *_) -> None:
@@ -557,7 +646,6 @@ class FakeGoogleServer:
         monkeypatch,
     ) -> GoogleAccountCredentials:
         """Create credentials, save them in *home*, return the object."""
-        import os
         monkeypatch.setenv("HERMES_HOME", str(home))
         from olo.google.credentials import save_credentials, credential_lock
         creds = self.make_credentials(alias)
@@ -587,3 +675,7 @@ class FakeGoogleServer:
 
     def set_min_history_id(self, h_id: str) -> None:
         self.gmail.min_valid_history_id = h_id
+
+    def set_page_size(self, n: int) -> None:
+        """I3: set cal.page_size so _handle_events pages at n events."""
+        self.calendar.page_size = n
