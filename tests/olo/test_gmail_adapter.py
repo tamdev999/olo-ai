@@ -681,3 +681,159 @@ def test_signal_less_pages_cap_f2() -> None:
         assert b.next_cursor != cursor0, (
             "cursor must advance past signal-less pages"
         )
+
+
+# ── F5b regression tests: header caps and DRAFT/CHAT change-entry filtering ───
+
+def test_giant_subject_capped_in_payload() -> None:
+    """F5b: a 70,000-char Subject header is capped at _MAX_HEADER_CHARS (998)
+    in the payload; the signal is created and total payload fits in 64 KiB."""
+    import json as _json
+    from olo.adapters.gmail import _MAX_HEADER_CHARS
+
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor0 = b0.next_cursor
+
+        giant_subject = "X" * 70_000
+        fake.gmail.add_message("huge1", subject=giant_subject)
+
+        b = a.fetch(cursor0, limit=10)
+        assert len(b.signals) == 1
+        payload = b.signals[0].payload
+        assert len(payload["headers"]["subject"]) <= _MAX_HEADER_CHARS, (
+            f"subject in payload not capped: {len(payload['headers']['subject'])}"
+        )
+        # Serialised payload must fit within 64 KiB
+        payload_bytes = len(_json.dumps(payload).encode())
+        assert payload_bytes <= 64 * 1024, (
+            f"payload too large: {payload_bytes} bytes"
+        )
+
+
+def test_giant_message_id_capped_in_payload() -> None:
+    """F5b: a 5,000-char Message-ID is capped at _MAX_HEADER_CHARS (998)."""
+    from olo.adapters.gmail import _MAX_HEADER_CHARS
+    from tests.olo.fake_google import FakeMessage
+
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor0 = b0.next_cursor
+
+        giant_mid = "<" + "m" * 5000 + "@example.com>"
+        # Insert the message directly with the giant Message-ID header
+        fake.gmail.messages["midtest"] = FakeMessage(
+            id="midtest",
+            thread_id="midtest",
+            label_ids=["INBOX", "UNREAD"],
+            internal_date="1700000000000",
+            size_estimate=512,
+            subject="Normal subject",
+            message_id_header=giant_mid,
+        )
+        fake.gmail._bump_history({
+            "messagesAdded": [{"message": {
+                "id": "midtest", "threadId": "midtest",
+                "labelIds": ["INBOX", "UNREAD"],
+            }}]
+        })
+
+        b = a.fetch(cursor0, limit=10)
+        assert len(b.signals) == 1
+        mid_in_payload = b.signals[0].payload["headers"]["message_id_header"]
+        assert len(mid_in_payload) <= _MAX_HEADER_CHARS, (
+            f"message_id_header not capped: {len(mid_in_payload)}"
+        )
+
+
+def test_draft_deletion_produces_no_signal() -> None:
+    """F5b: a messagesDeleted entry for a DRAFT message produces no signal."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        # Simulate a deletion history record for a DRAFT message
+        fake.gmail._bump_history({
+            "messagesDeleted": [{"message": {
+                "id": "draftdel", "threadId": "draftdel",
+                "labelIds": ["DRAFT"],
+            }}]
+        })
+
+        b = a.fetch(cursor, limit=10)
+        deleted_sigs = [s for s in b.signals if s.kind == "email.deleted"]
+        assert deleted_sigs == [], (
+            f"F5b: draft deletion must produce no signal, got: {deleted_sigs}"
+        )
+
+
+def test_chat_deletion_produces_no_signal() -> None:
+    """F5b: a messagesDeleted entry for a CHAT message produces no signal."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        fake.gmail._bump_history({
+            "messagesDeleted": [{"message": {
+                "id": "chatdel", "threadId": "chatdel",
+                "labelIds": ["CHAT"],
+            }}]
+        })
+
+        b = a.fetch(cursor, limit=10)
+        deleted_sigs = [s for s in b.signals if s.kind == "email.deleted"]
+        assert deleted_sigs == [], (
+            f"F5b: chat deletion must produce no signal, got: {deleted_sigs}"
+        )
+
+
+def test_draft_label_change_produces_no_signal() -> None:
+    """F5b: label change on a DRAFT message produces no signal."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        # labelsAdded on a DRAFT message
+        fake.gmail._bump_history({
+            "labelsAdded": [{"message": {
+                "id": "draftlbl", "threadId": "draftlbl",
+                "labelIds": ["DRAFT", "STARRED"],
+            }, "labelIds": ["STARRED"]}]
+        })
+
+        b = a.fetch(cursor, limit=10)
+        label_sigs = [s for s in b.signals if s.kind.startswith("email.labels")]
+        assert label_sigs == [], (
+            f"F5b: draft label change must produce no signal, got: {label_sigs}"
+        )
+
+
+def test_inbox_deletion_still_produces_signal() -> None:
+    """F5b: a deletion on an INBOX message still produces email.deleted."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        fake.gmail.add_message("inbox1", labels=["INBOX", "UNREAD"])
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        fake.gmail._bump_history({
+            "messagesDeleted": [{"message": {
+                "id": "inbox1", "threadId": "inbox1",
+                "labelIds": ["INBOX"],
+            }}]
+        })
+
+        b = a.fetch(cursor, limit=10)
+        deleted_sigs = [s for s in b.signals if s.kind == "email.deleted"]
+        assert len(deleted_sigs) == 1, (
+            f"expected 1 email.deleted for inbox message, got: {deleted_sigs}"
+        )

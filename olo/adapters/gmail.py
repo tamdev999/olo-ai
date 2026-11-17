@@ -85,10 +85,11 @@ def _extract_headers(payload_headers: list[dict]) -> dict:
         "from": _parse_addresses(hmap.get("from", "")),
         "to": _parse_addresses(hmap.get("to", "")),
         "cc": _parse_addresses(hmap.get("cc", "")),
-        "subject": hmap.get("subject", ""),
-        "date": hmap.get("date", ""),
-        "message_id_header": hmap.get("message-id", ""),
-        "in_reply_to": hmap.get("in-reply-to", ""),
+        # F5b: cap non-address header strings at _MAX_HEADER_CHARS (998)
+        "subject": hmap.get("subject", "")[:_MAX_HEADER_CHARS],
+        "date": hmap.get("date", "")[:_MAX_HEADER_CHARS],
+        "message_id_header": hmap.get("message-id", "")[:_MAX_HEADER_CHARS],
+        "in_reply_to": hmap.get("in-reply-to", "")[:_MAX_HEADER_CHARS],
     }
 
 
@@ -345,6 +346,10 @@ class GmailAdapter(MonitorAdapter):
             msg_id = msg_stub.get("id", "")
             if not msg_id:
                 continue
+            # F5b: skip deletions on DRAFT or CHAT messages (spec §5.2)
+            msg_label_ids: list[str] = msg_stub.get("labelIds", [])
+            if any(lbl in _SKIP_LABELS for lbl in msg_label_ids):
+                continue
             ext_id = f"h{record_id}:{msg_id}:deleted"
             signals.append(NormalizedSignal(
                 source=self.source,
@@ -366,6 +371,10 @@ class GmailAdapter(MonitorAdapter):
             for entry in record.get(event_type, []):
                 msg_stub = entry.get("message", {})
                 msg_id = msg_stub.get("id", "")
+                # F5b: skip label changes on DRAFT or CHAT messages (spec §5.2)
+                msg_label_ids = msg_stub.get("labelIds", [])
+                if any(lbl in _SKIP_LABELS for lbl in msg_label_ids):
+                    continue
                 changed_labels = [
                     lbl for lbl in entry.get("labelIds", [])
                     if lbl in _CHANGE_SIGNAL_LABELS
