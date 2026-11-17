@@ -419,14 +419,26 @@ def test_history_404_then_reset_then_rebootstrap(e2e_home: Path) -> None:
                 os.environ["HERMES_HOME"] = old_env2
 
 
-# ── §9.5: label/deletion change events ───────────────────────────────────────
+# ── §9.5: label/deletion change events — F4: exact signal assertions ─────────
 
 def test_label_and_deletion_change_events(e2e_home: Path) -> None:
-    """§9.5: label changes and deletions produce signals, run completes."""
+    """F4: label changes and deletions produce exact signals with correct external_ids.
+
+    Chronology (all executions must be 'completed'):
+    1. Bootstrap fire → 0 signals; checkpoint set.
+    2. Add msg1 (INBOX, UNREAD); fire → exactly 1 email.received, external_id="msg1".
+    3. remove_labels(msg1, [UNREAD]); delete_message(msg1); fire →
+       exactly 2 new signals:
+         - email.labels_removed with payload.labels==["UNREAD"],
+           external_id == f"h{R1}:msg1:removed"
+         - email.deleted with external_id == f"h{R2}:msg1:deleted"
+       where R1/R2 are read from the fake (not hard-coded).
+    4. Checkpoint == fake's last history id.
+    5. Fourth fire → 0 new signals.
+    """
     home = e2e_home
 
     with FakeGoogleServer(email="test@example.com") as fake:
-        fake.gmail.add_message("msg1", labels=["INBOX", "UNREAD"], subject="Inbox")
         _save_creds(fake, "acme", home)
 
         r = _run(["olo", "setup", "--source", "gmail", "--option", "account=acme"], home)
@@ -437,41 +449,129 @@ def test_label_and_deletion_change_events(e2e_home: Path) -> None:
             "--no-agent", "--deliver", "local",
         ], home)
         job_id = _parse_job_id(r.stdout)
+        assert job_id
 
-        # Bootstrap
+        def _db_connect(h: Path):
+            old = os.environ.get("HERMES_HOME")
+            os.environ["HERMES_HOME"] = str(h)
+            try:
+                from olo.store import connect, migrate
+                from olo.paths import db_path
+                conn = connect(db_path())
+                migrate(conn)
+                return conn
+            finally:
+                if old is None:
+                    os.environ.pop("HERMES_HOME", None)
+                else:
+                    os.environ["HERMES_HOME"] = old
+
+        # ── Fire 1: bootstrap ─────────────────────────────────────────────────
         _run(["cron", "run", job_id], home)
         exec_boot = _wait_for_terminal(home, job_id, timeout=60)
-        assert exec_boot["status"] == "completed"
+        assert exec_boot["status"] == "completed", (
+            f"bootstrap must complete, got: {exec_boot['status']}"
+        )
 
-        # First incremental: pick up msg1
+        conn = _db_connect(home)
+        from olo.store import count_signals, get_checkpoint
+        assert count_signals("gmail_acme", conn) == 0
+        assert get_checkpoint("gmail_acme", conn) is not None
+        conn.close()
+
+        # ── Fire 2: add msg1 → 1 email.received ──────────────────────────────
+        fake.gmail.add_message("msg1", labels=["INBOX", "UNREAD"], subject="Inbox msg")
+
         _run(["cron", "run", job_id], home)
         exec1 = _wait_for_terminal(home, job_id, timeout=60)
-        assert exec1["status"] == "completed"
+        assert exec1["status"] == "completed", (
+            f"fire 2 must complete, got: {exec1['status']}"
+        )
 
-        # Trigger label + deletion changes
+        conn = _db_connect(home)
+        assert count_signals("gmail_acme", conn) == 1
+        row = conn.execute(
+            "SELECT external_id, kind FROM signals WHERE source='gmail_acme'"
+        ).fetchone()
+        assert row is not None
+        assert row["kind"] == "email.received"
+        assert row["external_id"] == "msg1"
+        conn.close()
+
+        # ── Fire 3: label change + deletion → 2 new signals ──────────────────
+        # Read the record IDs the fake will assign BEFORE making the changes
+        # (each _bump_history increments current_history_id)
         fake.gmail.remove_labels("msg1", ["UNREAD"])
+        R1 = fake.gmail.current_history_id  # record id for labels_removed
+
         fake.gmail.delete_message("msg1")
+        R2 = fake.gmail.current_history_id  # record id for messagesDeleted
 
         _run(["cron", "run", job_id], home)
         exec2 = _wait_for_terminal(home, job_id, timeout=60)
-        assert exec2["status"] == "completed"
+        assert exec2["status"] == "completed", (
+            f"fire 3 must complete, got: {exec2['status']}"
+        )
 
-        old = os.environ.get("HERMES_HOME")
-        os.environ["HERMES_HOME"] = str(home)
-        try:
-            from olo.store import connect, count_signals, migrate
-            from olo.paths import db_path
-            conn = connect(db_path())
-            migrate(conn)
-            # Must have signals including at least one deletion/label signal
-            n = count_signals("gmail_acme", conn)
-            assert n >= 1, f"expected ≥1 signals, got {n}"
-            conn.close()
-        finally:
-            if old is None:
-                os.environ.pop("HERMES_HOME", None)
-            else:
-                os.environ["HERMES_HOME"] = old
+        conn = _db_connect(home)
+        total = count_signals("gmail_acme", conn)
+        assert total == 3, f"expected 3 total signals after fire 3, got {total}"
+
+        new_rows = conn.execute(
+            "SELECT external_id, kind, payload FROM signals "
+            "WHERE source='gmail_acme' AND external_id != 'msg1'"
+        ).fetchall()
+        assert len(new_rows) == 2, (
+            f"expected 2 new signals, got {len(new_rows)}: {[r['external_id'] for r in new_rows]}"
+        )
+
+        import json as _json
+        new_by_kind = {r["kind"]: r for r in new_rows}
+
+        # email.labels_removed
+        assert "email.labels_removed" in new_by_kind, (
+            f"missing email.labels_removed, got kinds: {list(new_by_kind)}"
+        )
+        removed_row = new_by_kind["email.labels_removed"]
+        expected_removed_id = f"h{R1}:msg1:removed"
+        assert removed_row["external_id"] == expected_removed_id, (
+            f"labels_removed external_id: {removed_row['external_id']!r} "
+            f"!= {expected_removed_id!r}"
+        )
+        removed_payload = _json.loads(removed_row["payload"])
+        assert removed_payload.get("labels") == ["UNREAD"], (
+            f"labels_removed payload.labels: {removed_payload.get('labels')!r}"
+        )
+
+        # email.deleted
+        assert "email.deleted" in new_by_kind, (
+            f"missing email.deleted, got kinds: {list(new_by_kind)}"
+        )
+        deleted_row = new_by_kind["email.deleted"]
+        expected_deleted_id = f"h{R2}:msg1:deleted"
+        assert deleted_row["external_id"] == expected_deleted_id, (
+            f"deleted external_id: {deleted_row['external_id']!r} "
+            f"!= {expected_deleted_id!r}"
+        )
+
+        # Checkpoint == fake's last history id
+        final_chk = get_checkpoint("gmail_acme", conn)
+        assert final_chk == fake.gmail.current_history_id, (
+            f"checkpoint {final_chk!r} != fake historyId "
+            f"{fake.gmail.current_history_id!r}"
+        )
+        conn.close()
+
+        # ── Fire 4: no new signals ────────────────────────────────────────────
+        _run(["cron", "run", job_id], home)
+        exec3 = _wait_for_terminal(home, job_id, timeout=60)
+        assert exec3["status"] == "completed"
+
+        conn = _db_connect(home)
+        assert count_signals("gmail_acme", conn) == 3, (
+            "fire 4 must add 0 signals"
+        )
+        conn.close()
 
 
 # ── §9.5: both sources of one account fired ───────────────────────────────────
