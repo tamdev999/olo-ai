@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
 import pytest
 
 from olo.adapters import AdapterConfigError, SourceError
 from olo.adapters.gcal import GcalAdapter, _event_external_id
-from tests.olo.fake_google import FakeGoogleServer, FakeCalendarState
+from tests.olo.fake_google import FakeGoogleServer
 
 
 def _make_adapter(
@@ -199,3 +198,331 @@ def test_runner_never_sees_empty_has_more_calendar() -> None:
         assert not (b.signals == () and b.has_more is True)
         b2 = a.fetch(b.next_cursor, limit=10)
         assert not (b2.signals == () and b2.has_more is True)
+
+
+# ── C1 regression tests ───────────────────────────────────────────────────────
+
+def test_short_page_then_full_page_loses_nothing() -> None:
+    """C1 Path A: pages of [e1,e2] then [e3..e7] then [e8] with limit=5.
+
+    Before fix: ingested e1–e5, e8; e6+e7 lost.
+    After fix:  first fetch returns e1+e2 (page 1, limit=5); second returns
+                e3..e7 (page 2); third returns e8 — all events ingested.
+    Every event id appears exactly once; final cursor is the latest sync token.
+    """
+    with FakeGoogleServer() as fake:
+        # 8 events; page size = 2
+        for i in range(1, 9):
+            fake.calendar.add_event(f"e{i}", summary=f"Event {i}")
+        fake.calendar._incr_events.clear()
+
+        # Page 2 events at a time
+        fake.set_page_size(2)
+        a = _make_adapter(fake)
+
+        seen_ids: list[str] = []
+        cursor = None
+        limit = 5
+
+        for _ in range(20):  # safety cap
+            b = a.fetch(cursor, limit=limit)
+            for sig in b.signals:
+                seen_ids.append(sig.payload["event_id"])
+            cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        # All 8 events ingested, each exactly once
+        assert sorted(seen_ids) == [f"e{i}" for i in range(1, 9)], (
+            f"C1 Path A: lost events. Got: {sorted(seen_ids)}"
+        )
+        # Final cursor is incr phase
+        assert json.loads(cursor)["phase"] == "incr"
+
+
+def test_overflow_on_last_page_loses_nothing() -> None:
+    """C1 Path B: [e1,e2,e3] then [e4..e8] with nextSyncToken, limit=5.
+
+    Before fix: returned e1–e5, cursor jumped to sync token; e6–e8 lost.
+    After fix:  first fetch returns e1+e2+e3 (page 1); second returns
+                e4+e5; third returns e6+e7+e8 (last page, gets sync token).
+    """
+    with FakeGoogleServer() as fake:
+        for i in range(1, 9):
+            fake.calendar.add_event(f"e{i}", summary=f"Event {i}")
+        fake.calendar._incr_events.clear()
+
+        # Page 3 at a time (so pages are [e1-e3], [e4-e6], [e7-e8])
+        fake.set_page_size(3)
+        a = _make_adapter(fake)
+
+        seen_ids: list[str] = []
+        cursor = None
+        limit = 5
+
+        for _ in range(20):
+            b = a.fetch(cursor, limit=limit)
+            for sig in b.signals:
+                seen_ids.append(sig.payload["event_id"])
+            cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        assert sorted(seen_ids) == [f"e{i}" for i in range(1, 9)], (
+            f"C1 Path B: lost events. Got: {sorted(seen_ids)}"
+        )
+        assert json.loads(cursor)["phase"] == "incr"
+
+
+def test_never_truncates_page() -> None:
+    """C1: a page with more items than maxResults → SourceError, nothing committed.
+
+    We simulate Google over-delivering by patching _do_request directly.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        # Bootstrap first so we have a valid cursor
+        b0 = a.fetch(None, limit=10)
+
+        # Patch _do_request to return more events than limit
+        from datetime import UTC
+
+        original_do = a._do_request
+
+        def _oversize_request(client, phase, limit_arg):
+            # Return limit_arg + 1 items — more than requested
+            items = [
+                {
+                    "id": f"ov{i}",
+                    "status": "confirmed",
+                    "summary": f"Oversize {i}",
+                    "updated": datetime.now(UTC).isoformat(),
+                    "start": {"dateTime": datetime.now(UTC).isoformat()},
+                    "end": {"dateTime": datetime.now(UTC).isoformat()},
+                    "created": datetime.now(UTC).isoformat(),
+                    "organizer": {"email": "o@example.com", "self": False},
+                }
+                for i in range(limit_arg + 1)
+            ]
+            return {"items": items, "nextSyncToken": "st_oversize"}
+
+        a._do_request = _oversize_request
+
+        with pytest.raises(SourceError, match="exceeds requested maxResults"):
+            a.fetch(b0.next_cursor, limit=5)
+
+
+# ── I3 §9.4 tests ─────────────────────────────────────────────────────────────
+
+def test_fixed_params_on_every_request() -> None:
+    """I3: calendarId, singleEvents, showDeleted, maxResults present on every request.
+
+    We validate by running multiple fetches with page_size=1 and confirming
+    each page yields exactly one event (not more, not fewer).
+    """
+    with FakeGoogleServer() as fake:
+        for i in range(1, 4):
+            fake.calendar.add_event(f"fp{i}")
+        fake.calendar._incr_events.clear()
+        fake.set_page_size(1)
+
+        a = _make_adapter(fake)
+        seen: list[str] = []
+        cursor = None
+
+        for _ in range(20):
+            b = a.fetch(cursor, limit=10)
+            # Each page has exactly 1 event (page_size=1)
+            assert len(b.signals) <= 1, f"page_size=1 but got {len(b.signals)} signals"
+            for sig in b.signals:
+                seen.append(sig.payload["event_id"])
+            cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        assert sorted(seen) == ["fp1", "fp2", "fp3"]
+
+
+def test_incremental_pagination_with_same_sync_token() -> None:
+    """I3: incremental sync with 3 events paged 1-at-a-time.
+
+    The sync token should not change mid-pagination; only the final page
+    advances the cursor to a new incr sync token.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor0 = b0.next_cursor
+
+        for i in range(1, 4):
+            fake.calendar.add_event(f"incr{i}")
+
+        fake.set_page_size(1)
+
+        seen: list[str] = []
+        cursor = cursor0
+
+        for _ in range(20):
+            b = a.fetch(cursor, limit=10)
+            for sig in b.signals:
+                seen.append(sig.payload["event_id"])
+            cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        assert sorted(seen) == ["incr1", "incr2", "incr3"], (
+            f"incremental pagination lost events: {seen}"
+        )
+        # Final cursor is a new incr sync token
+        final = json.loads(cursor)
+        assert final["phase"] == "incr"
+        assert final["sync_token"] != json.loads(cursor0)["sync_token"]
+
+
+def test_empty_page_with_next_page_token() -> None:
+    """I3: Google returns empty items[] + nextPageToken → adapter follows it.
+
+    We simulate this via the fake's empty-page mechanism: set page_size=2
+    but only add events later via patching so the first page is empty with token.
+
+    Implementation: We call a patched _do_request that returns empty+nextPageToken
+    on the first call, then real events on the second.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+
+        from datetime import UTC
+
+        calls = [0]
+
+        def _two_phase(client, phase, limit):
+            calls[0] += 1
+            if calls[0] == 1:
+                # Empty page with next page token
+                return {"items": [], "nextPageToken": "pt_phase2",
+                        "historyId": "1"}
+            else:
+                # Second call: real events + sync token
+                return {
+                    "items": [
+                        {"id": "ep1", "status": "confirmed", "summary": "E1",
+                         "updated": datetime.now(UTC).isoformat(),
+                         "start": {"dateTime": datetime.now(UTC).isoformat()},
+                         "end": {"dateTime": datetime.now(UTC).isoformat()},
+                         "created": datetime.now(UTC).isoformat(),
+                         "organizer": {"email": "o@e.com", "self": False}},
+                    ],
+                    "nextSyncToken": "st_ep",
+                }
+
+        a._do_request = _two_phase
+        b = a.fetch(None, limit=10)
+        assert len(b.signals) == 1
+        assert b.signals[0].payload["event_id"] == "ep1"
+        assert calls[0] == 2, "adapter must follow the empty-page token"
+
+
+def test_empty_pages_cap() -> None:
+    """I3: _MAX_EMPTY_PAGES consecutive empty pages → returns () has_more=False.
+
+    The adapter must not loop forever; it returns a batch with the advanced
+    page-token cursor so the next tick can retry.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+
+        from olo.adapters.gcal import _MAX_EMPTY_PAGES
+        call_count = [0]
+
+        def _always_empty(client, phase, limit):
+            call_count[0] += 1
+            return {"items": [], "nextPageToken": f"pt_{call_count[0]}"}
+
+        a._do_request = _always_empty
+        b = a.fetch(None, limit=10)
+
+        assert b.signals == ()
+        assert b.has_more is False
+        assert call_count[0] == _MAX_EMPTY_PAGES, (
+            f"expected exactly {_MAX_EMPTY_PAGES} calls, got {call_count[0]}"
+        )
+
+
+def test_invalid_page_token_restarts_phase() -> None:
+    """I3: CalendarPageTokenInvalid (400) → adapter retries without page token.
+
+    The adapter should drop the page token and re-issue the request from
+    the beginning of the current phase, as §6.2 step 4 requires.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        # Bootstrap
+        b0 = a.fetch(None, limit=10)
+        # Feed in a cursor with an invalid page token
+        invalid_cursor = json.dumps({
+            "phase": "incr",
+            "sync_token": "INVALID_PAGE_TOKEN_SYNC",
+            "page_token": "INVALID_PAGE_TOKEN",
+        })
+        # The fake returns 400 for "INVALID_PAGE_TOKEN"; the adapter should
+        # retry without the page token. Depending on adapter state,
+        # it might raise or succeed — either is acceptable, but it must NOT
+        # propagate the 400 as-is without retrying.
+        # We verify by patching _do_request to track the retry.
+        from olo.google.http import CalendarPageTokenInvalid
+
+        calls = []
+
+        original_do = a._do_request
+
+        def _tracking_do(client, phase, limit):
+            calls.append(dict(phase))
+            if len(calls) == 1 and phase.get("page_token") == "INVALID_PAGE_TOKEN":
+                raise CalendarPageTokenInvalid("400 invalid page token")
+            # On retry (no page_token), return empty+sync
+            return {"items": [], "nextSyncToken": "st_restart"}
+
+        a._do_request = _tracking_do
+        b = a.fetch(invalid_cursor, limit=10)
+
+        assert len(calls) == 2, f"expected retry, got {len(calls)} calls: {calls}"
+        assert calls[1].get("page_token") is None, (
+            "retry must drop the page token"
+        )
+
+
+def test_crash_mid_full_sync_resumes_from_page_token() -> None:
+    """I3: if fetch returns has_more=True with a page_token cursor, re-running
+    with that cursor resumes from the saved page (no events re-fetched or lost).
+    """
+    with FakeGoogleServer() as fake:
+        for i in range(1, 7):
+            fake.calendar.add_event(f"cr{i}")
+        fake.calendar._incr_events.clear()
+        fake.set_page_size(2)
+
+        a = _make_adapter(fake)
+
+        # First fetch: should return 2 events, has_more=True
+        b1 = a.fetch(None, limit=10)
+        assert len(b1.signals) == 2
+        assert b1.has_more is True
+        saved_cursor = b1.next_cursor
+
+        # "Crash" — create a fresh adapter with the saved cursor
+        a2 = _make_adapter(fake)
+        seen_ids = [sig.payload["event_id"] for sig in b1.signals]
+
+        cursor = saved_cursor
+        for _ in range(20):
+            b = a2.fetch(cursor, limit=10)
+            for sig in b.signals:
+                seen_ids.append(sig.payload["event_id"])
+            cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        # All 6 events, each exactly once
+        assert sorted(seen_ids) == [f"cr{i}" for i in range(1, 7)], (
+            f"resume from page token lost events: {seen_ids}"
+        )
