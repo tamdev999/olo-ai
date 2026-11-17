@@ -139,9 +139,11 @@ class GmailAdapter(MonitorAdapter):
             creds = load_credentials(self._alias)
             if not creds.has_gmail_scope():
                 raise AdapterConfigError(
-                    f"account {self._alias!r} has no gmail.metadata scope; "
+                    f"account {self._alias!r} has no gmail scope; "
                     f"run: hermes olo google connect --account {self._alias}"
                 )
+            # M2b: warn if legacy profile (gmail.metadata) but don't fail here;
+            # the full-content fetch will 403 on format=full, which is surfaced then.
             self._client = GoogleClient(creds)
         return self._client
 

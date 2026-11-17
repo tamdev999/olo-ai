@@ -53,7 +53,10 @@ _ALLOWED_PATHS: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/gmail/v1/users/me/profile"),
     ("GET", "/gmail/v1/users/me/history"),
     ("GET", "/gmail/v1/users/me/messages/"),
+    ("GET", "/gmail/v1/users/me/messages"),   # messages.list (M2b)
     ("GET", "/calendar/v3/calendars/primary/events"),
+    ("GET", "/calendar/v3/users/me/calendarList"),  # calendarList.list (M2b)
+    ("GET", "/calendar/v3/calendars/"),             # other calendars (M2b)
 })
 
 
