@@ -334,9 +334,56 @@ def test_history_404_then_reset_then_rebootstrap(e2e_home: Path) -> None:
             f"history 404 must produce failed execution, got: {exec_fail['status']}"
         )
 
-        # Reset checkpoint
-        r = _run(["olo", "checkpoint", "reset", "--source", "gmail_acme"], home)
+        # F1: Olo run row must be failed and checkpoint unchanged (still the bootstrap cursor)
+        old_env = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            from olo.store import connect, get_checkpoint, migrate
+            from olo.paths import db_path
+            conn = connect(db_path())
+            migrate(conn)
+            chk_after_fail = get_checkpoint("gmail_acme", conn)
+            assert chk_after_fail is not None, (
+                "checkpoint must still be set (bootstrap cursor) after 404 fail"
+            )
+            conn.close()
+        finally:
+            if old_env is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old_env
+
+        # Reset checkpoint — requires --confirm flag
+        r = _run(["olo", "checkpoint", "reset", "--source", "gmail_acme",
+                  "--confirm"], home)
         assert r.returncode == 0, f"checkpoint reset failed: {r.stderr}"
+
+        # Verify checkpoint row is gone and audit entry exists
+        old_env = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            from olo.store import connect, get_checkpoint, migrate
+            from olo.paths import db_path
+            conn = connect(db_path())
+            migrate(conn)
+            chk_after_reset = get_checkpoint("gmail_acme", conn)
+            assert chk_after_reset is None, (
+                f"checkpoint must be gone after reset, got {chk_after_reset!r}"
+            )
+            # Audit event must exist
+            audit_row = conn.execute(
+                "SELECT * FROM audit_events WHERE action=? AND detail LIKE ?",
+                ("checkpoint.reset", '%"gmail_acme"%'),
+            ).fetchone()
+            assert audit_row is not None, (
+                "checkpoint.reset audit event must be written"
+            )
+            conn.close()
+        finally:
+            if old_env is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old_env
 
         # Restore fake to accept history requests
         fake.set_min_history_id("1000")
@@ -347,6 +394,29 @@ def test_history_404_then_reset_then_rebootstrap(e2e_home: Path) -> None:
         assert exec_reboot["status"] == "completed", (
             f"re-bootstrap after reset must complete, got: {exec_reboot['status']}"
         )
+
+        # F1: cursor == fake's current historyId (a fresh bootstrap cursor)
+        old_env2 = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            from olo.store import connect, get_checkpoint, migrate
+            from olo.paths import db_path
+            conn = connect(db_path())
+            migrate(conn)
+            reboot_cursor = get_checkpoint("gmail_acme", conn)
+            assert reboot_cursor is not None, (
+                "cursor must be set after re-bootstrap"
+            )
+            assert reboot_cursor == fake.gmail.current_history_id, (
+                f"reboot cursor must == fake historyId, "
+                f"got {reboot_cursor!r} vs {fake.gmail.current_history_id!r}"
+            )
+            conn.close()
+        finally:
+            if old_env2 is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old_env2
 
 
 # ── §9.5: label/deletion change events ───────────────────────────────────────
