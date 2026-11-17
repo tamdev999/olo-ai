@@ -16,13 +16,13 @@ def _make_adapter(
     alias: str = "test",
     lookback_days: int = 7,
 ) -> GcalAdapter:
-    adapter = GcalAdapter({"account": alias, "lookback_days": str(lookback_days)})
+    """Create a GcalAdapter backed by the fake server via the public client= param."""
     creds = fake.make_credentials(alias)
     from olo.google.http import GoogleClient
     client = GoogleClient(creds)
     client._access_token = fake.tokens.access_token
-    adapter._client = client
-    return adapter
+    return GcalAdapter({"account": alias, "lookback_days": str(lookback_days)},
+                       client=client)
 
 
 # ── Construction ──────────────────────────────────────────────────────────────

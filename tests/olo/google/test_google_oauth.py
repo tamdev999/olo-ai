@@ -607,3 +607,198 @@ def test_status_expiry_warning_timing(tmp_path: Path, monkeypatch: pytest.Monkey
 
     creds_8 = _make_creds_with_issued("d8b", _days_ago(8), monkeypatch)
     assert expiry_status(creds_8, now=now) == "expired"
+
+
+# ── C2: POST redirect tests ───────────────────────────────────────────────────
+
+def _make_recording_server() -> tuple:
+    """Return (server, port, received_dict) for a server that records one request."""
+    import http.server
+    received: dict = {}
+
+    class _RecordHandler(http.server.BaseHTTPRequestHandler):
+        def _handle(self) -> None:
+            received["method"] = self.command
+            received["auth"] = self.headers.get("Authorization", "")
+            received["content_type"] = self.headers.get("Content-Type", "")
+            length = int(self.headers.get("Content-Length", 0))
+            received["body"] = self.rfile.read(length) if length else b""
+            body = b'{"access_token":"at","token_type":"Bearer","expires_in":3600}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._handle()
+
+        def do_GET(self) -> None:  # noqa: N802
+            self._handle()
+
+        def log_message(self, *_) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _RecordHandler)
+    port = server.server_address[1]
+    return server, port, received
+
+
+def test_token_exchange_redirect_does_not_forward_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C2: token exchange POST that gets a 302 must not forward the body or
+    Authorization header to the redirect target.
+
+    Server A redirects to server B. Assert B receives neither the
+    Authorization header nor the client_secret in the body.
+    """
+    import http.server
+    import threading
+
+    received_by_b: dict = {}
+
+    class _RedirectTarget(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            received_by_b["auth"] = self.headers.get("Authorization", "")
+            received_by_b["content_type"] = self.headers.get("Content-Type", "")
+            length = int(self.headers.get("Content-Length", 0))
+            received_by_b["body"] = self.rfile.read(length) if length else b""
+            # Return a valid token response
+            body = (
+                b'{"access_token":"at2","refresh_token":"rt2",'
+                b'"token_type":"Bearer","expires_in":3600,'
+                b'"scope":"https://www.googleapis.com/auth/gmail.metadata"}'
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:  # noqa: N802
+            self.do_POST()
+
+        def log_message(self, *_) -> None:
+            pass
+
+    server_b = http.server.HTTPServer(("127.0.0.1", 0), _RedirectTarget)
+    port_b = server_b.server_address[1]
+    t_b = threading.Thread(target=server_b.handle_request, daemon=True)
+    t_b.start()
+
+    class _RedirectHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            # Drain body before redirecting
+            int(self.headers.get("Content-Length", 0))
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length) if length else b""
+            self.send_response(302)
+            self.send_header("Location",
+                             f"http://127.0.0.1:{port_b}/token")
+            self.end_headers()
+
+        def log_message(self, *_) -> None:
+            pass
+
+    server_a = http.server.HTTPServer(("127.0.0.1", 0), _RedirectHandler)
+    port_a = server_a.server_address[1]
+    t_a = threading.Thread(target=server_a.handle_request, daemon=True)
+    t_a.start()
+
+    from olo.google.oauth import _post_token
+    # Attempt a token exchange that will hit server A (which 302s to B)
+    # The call may raise or return an error — we only care that B doesn't
+    # receive credentials
+    try:
+        _post_token(
+            {
+                "grant_type": "authorization_code",
+                "code": "testcode",
+                "client_secret": "SUPER_SECRET_VALUE",
+                "client_id": "cid",
+                "redirect_uri": "http://127.0.0.1:1/",
+                "code_verifier": "v",
+            },
+            api_base_override=f"http://127.0.0.1:{port_a}",
+        )
+    except Exception:
+        pass
+
+    t_a.join(timeout=5)
+    t_b.join(timeout=5)
+    server_a.server_close()
+    server_b.server_close()
+
+    # B must not have received the client_secret or an Authorization header
+    body_b = received_by_b.get("body", b"")
+    assert b"SUPER_SECRET_VALUE" not in body_b, (
+        "C2: client_secret must not reach redirect target"
+    )
+    assert received_by_b.get("auth", "") == "", (
+        "C2: Authorization must not reach redirect target"
+    )
+
+
+def test_revoke_redirect_does_not_forward_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C2: revoke POST that gets a 302 must not forward the token to the redirect target."""
+    import http.server
+    import threading
+
+    received_by_b: dict = {}
+    TOKEN_VALUE = "SECRET_TOKEN_12345"
+
+    class _RecordTarget(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            received_by_b["auth"] = self.headers.get("Authorization", "")
+            length = int(self.headers.get("Content-Length", 0))
+            received_by_b["body"] = self.rfile.read(length) if length else b""
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self) -> None:  # noqa: N802
+            self.do_POST()
+
+        def log_message(self, *_) -> None:
+            pass
+
+    server_b = http.server.HTTPServer(("127.0.0.1", 0), _RecordTarget)
+    port_b = server_b.server_address[1]
+    t_b = threading.Thread(target=server_b.handle_request, daemon=True)
+    t_b.start()
+
+    class _RedirectHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length) if length else b""
+            self.send_response(302)
+            self.send_header("Location",
+                             f"http://127.0.0.1:{port_b}/revoke")
+            self.end_headers()
+
+        def log_message(self, *_) -> None:
+            pass
+
+    server_a = http.server.HTTPServer(("127.0.0.1", 0), _RedirectHandler)
+    port_a = server_a.server_address[1]
+    t_a = threading.Thread(target=server_a.handle_request, daemon=True)
+    t_a.start()
+
+    from olo.google.oauth import revoke_token
+    revoke_token(TOKEN_VALUE, api_base_override=f"http://127.0.0.1:{port_a}")
+
+    t_a.join(timeout=5)
+    t_b.join(timeout=5)
+    server_a.server_close()
+    server_b.server_close()
+
+    body_b = received_by_b.get("body", b"")
+    assert TOKEN_VALUE.encode() not in body_b, (
+        "C2: revoke token value must not reach redirect target"
+    )
+    assert received_by_b.get("auth", "") == "", (
+        "C2: Authorization must not reach redirect target on revoke redirect"
+    )

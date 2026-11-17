@@ -146,7 +146,9 @@ class GcalAdapter(MonitorAdapter):
 
     source: str = "gcal_unknown"
 
-    def __init__(self, options: Mapping[str, str]) -> None:
+    def __init__(
+        self, options: Mapping[str, str], *, client: Optional["GoogleClient"] = None
+    ) -> None:
         alias = options.get("account", "").strip()
         if not alias:
             raise AdapterConfigError("gcal adapter requires option account=<alias>")
@@ -179,7 +181,7 @@ class GcalAdapter(MonitorAdapter):
         self._alias = alias
         self._lookback_days = lookback
         self.source = f"gcal_{alias}"
-        self._client: Optional["GoogleClient"] = None
+        self._client: Optional["GoogleClient"] = client
 
     def _get_client(self) -> "GoogleClient":
         if self._client is None:

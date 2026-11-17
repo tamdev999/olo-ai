@@ -104,7 +104,9 @@ class GmailAdapter(MonitorAdapter):
 
     source: str = "gmail_unknown"
 
-    def __init__(self, options: Mapping[str, str]) -> None:
+    def __init__(
+        self, options: Mapping[str, str], *, client: Optional["GoogleClient"] = None
+    ) -> None:
         alias = options.get("account", "").strip()
         if not alias:
             raise AdapterConfigError(
@@ -123,7 +125,7 @@ class GmailAdapter(MonitorAdapter):
             )
         self._alias = alias
         self.source = f"gmail_{alias}"
-        self._client: Optional["GoogleClient"] = None
+        self._client: Optional["GoogleClient"] = client
 
     def _get_client(self) -> "GoogleClient":
         if self._client is None:

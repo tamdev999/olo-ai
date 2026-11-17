@@ -18,7 +18,6 @@ import http.server
 import json
 import re
 import threading
-import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, UTC
@@ -302,6 +301,8 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
     inject_redirect_to: Optional[str] = None
     email_address: str = "test@example.com"
     granted_scopes: str = ""
+    # F7: Event released by FakeGoogleServer.__exit__ to unblock timeout injection
+    _teardown_event: threading.Event = None
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         body = json.dumps(data).encode()
@@ -318,7 +319,12 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
     def _inject_errors(self) -> bool:
         if self.__class__.inject_timeout_on_next:
             self.__class__.inject_timeout_on_next = False
-            time.sleep(60)
+            # F7: use Event instead of time.sleep(60) so teardown can unblock
+            ev = self.__class__._teardown_event
+            if ev is not None:
+                ev.wait(timeout=60)
+            else:
+                threading.Event().wait(timeout=60)
             return True
         if self.__class__.inject_401_on_next:
             self.__class__.inject_401_on_next = False
@@ -641,12 +647,13 @@ class FakeGoogleServer:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def __enter__(self) -> FakeGoogleServer:
+    def __enter__(self) -> "FakeGoogleServer":
         self._server = http.server.HTTPServer(
             ("127.0.0.1", 0), _FakeGoogleHandler
         )
         self.port = self._server.server_address[1]
         # Set shared state on the handler class
+        self._teardown_ev = threading.Event()
         _FakeGoogleHandler.gmail = self.gmail
         _FakeGoogleHandler.calendar = self.calendar
         _FakeGoogleHandler.tokens = self.tokens
@@ -658,6 +665,7 @@ class FakeGoogleServer:
         _FakeGoogleHandler.inject_timeout_on_next = False
         _FakeGoogleHandler.inject_malformed_on_next = False
         _FakeGoogleHandler.inject_redirect_to = None
+        _FakeGoogleHandler._teardown_event = self._teardown_ev
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
         return self
@@ -666,6 +674,9 @@ class FakeGoogleServer:
         self._server.serve_forever()
 
     def __exit__(self, *_) -> None:
+        # Unblock any pending timeout injection before shutting down
+        if hasattr(self, "_teardown_ev"):
+            self._teardown_ev.set()
         if self._server:
             self._server.shutdown()
             self._server.server_close()

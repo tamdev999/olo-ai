@@ -16,23 +16,16 @@ def _make_adapter(
     tmp_path: Path | None = None,
     monkeypatch=None,
 ) -> GmailAdapter:
-    """Create a GmailAdapter backed by the fake server.
-
-    If tmp_path/monkeypatch are provided, credentials are saved to disk so
-    refresh_access_token can reload them.  Otherwise the client is injected
-    directly (for tests that only need the fetch layer).
-    """
-    adapter = GmailAdapter({"account": alias})
+    """Create a GmailAdapter backed by the fake server via the public client= param."""
     if tmp_path is not None and monkeypatch is not None:
         creds = fake.make_saved_credentials(alias, tmp_path / "home", monkeypatch)
     else:
         creds = fake.make_credentials(alias)
     from olo.google.http import GoogleClient
     client = GoogleClient(creds)
-    # Pre-load the access token so no disk read is needed
+    # Pre-load the access token so no disk read is needed during the test
     client._access_token = fake.tokens.access_token
-    adapter._client = client
-    return adapter
+    return GmailAdapter({"account": alias}, client=client)
 
 
 # ── Construction ──────────────────────────────────────────────────────────────
