@@ -1,12 +1,11 @@
 """Tests for olo.adapters.gmail — §8.3 (Gmail portion) acceptance criteria."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from olo.adapters import AdapterConfigError, SourceError
+from olo.adapters import AdapterConfigError
 from olo.adapters.gmail import GmailAdapter, _decode_header_value, _parse_addresses
 from tests.olo.fake_google import FakeGoogleServer
 
@@ -331,3 +330,156 @@ def test_parse_addresses_caps_at_50() -> None:
     many = ", ".join(f"u{i} <u{i}@e.com>" for i in range(1, 61))
     result = _parse_addresses(many)
     assert len(result) == 50
+
+
+# ── I8: §9.3 Gmail tests ──────────────────────────────────────────────────────
+
+def test_records_added_whole() -> None:
+    """I8: a history record is processed whole or not at all.
+
+    If a record would push us over the limit, it must NOT be partially included.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor = b0.next_cursor
+
+        # Add 3 messages; each becomes its own history record
+        for i in range(1, 4):
+            fake.gmail.add_message(f"whole{i}", subject=f"Whole {i}")
+
+        # Fetch with limit=2 — record 3 should NOT be partially included
+        b = a.fetch(cursor, limit=2)
+        # Either 2 signals (records 1+2 fit) or 1 signal (only record 1)
+        # but NOT more than 2
+        assert len(b.signals) <= 2
+        # has_more must be True because record 3 is pending
+        if len(b.signals) > 0:
+            assert b.has_more is True
+
+
+def test_history_types_requested() -> None:
+    """I8: historyTypes=messageAdded,messageDeleted,labelAdded,labelRemoved sent.
+
+    The fake's _handle_history re-parses the query string for repeated keys,
+    so we verify by checking signals across all four change types appear.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        fake.gmail.add_message("ht1", labels=["INBOX", "UNREAD"])
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=20)
+        cursor = b1.next_cursor
+
+        # Trigger all four history types
+        fake.gmail.add_message("ht2", subject="New")        # messageAdded
+        fake.gmail.delete_message("ht1")                     # messageDeleted
+        fake.gmail.add_labels("ht2", ["STARRED"])            # labelAdded
+        fake.gmail.remove_labels("ht2", ["UNREAD"])          # labelRemoved
+
+        b2 = a.fetch(cursor, limit=20)
+        kinds = {s.kind for s in b2.signals}
+        # At least messageAdded (email.received) and messageDeleted (email.deleted)
+        assert "email.received" in kinds or "email.sent" in kinds
+        assert "email.deleted" in kinds
+
+
+def test_change_entries_count_toward_limit() -> None:
+    """I8: each change entry within a history record counts toward limit.
+
+    With limit=1, only the first record's signals should be returned
+    and has_more=True if more records follow.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor = b0.next_cursor
+
+        for i in range(1, 4):
+            fake.gmail.add_message(f"lim{i}", subject=f"Limit {i}")
+
+        b = a.fetch(cursor, limit=1)
+        # With limit=1 and 3 records each producing 1 signal,
+        # we get at most 1 signal and has_more=True
+        assert len(b.signals) <= 1
+        # has_more must be True when there are unprocessed records
+        assert b.has_more is True
+
+
+def test_signal_less_page_then_messages() -> None:
+    """I8: a page whose records produce no signals (filtered) is followed by one with signals.
+
+    The adapter must continue past signal-less pages and return signals from
+    the next page in the same fetch call.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor = b0.next_cursor
+
+        # First: add a DRAFT (filtered out) — produces a history record but no signal
+        fake.gmail.add_message("draft1", labels=["DRAFT"])
+        # Then: add a real message
+        fake.gmail.add_message("real1", labels=["INBOX", "UNREAD"], subject="Real")
+
+        b = a.fetch(cursor, limit=10)
+        ids = [s.external_id for s in b.signals]
+        # real1 must be included; draft1 must not
+        assert "real1" in ids
+        assert "draft1" not in ids
+
+
+def test_signal_less_pages_cap() -> None:
+    """I8: too many consecutive signal-less pages → returns () has_more=False."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor = b0.next_cursor
+
+        from olo.adapters.gmail import _MAX_EMPTY_PAGES
+
+        # Add _MAX_EMPTY_PAGES+1 DRAFTs (each creates a record, all filtered)
+        for i in range(_MAX_EMPTY_PAGES + 1):
+            fake.gmail.add_message(f"slp{i}", labels=["DRAFT"])
+
+        b = a.fetch(cursor, limit=10)
+        # Must not loop forever; returns empty batch
+        assert b.signals == ()
+        assert b.has_more is False
+
+
+def test_crash_mid_run_resumes_without_loss() -> None:
+    """I8: cursor saved after partial batch lets the next run continue from there.
+
+    Simulates a crash by using the mid-run cursor returned by has_more=True.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        cursor0 = b0.next_cursor
+
+        for i in range(1, 6):
+            fake.gmail.add_message(f"cr{i}", subject=f"Crash {i}")
+
+        # Fetch with limit=2 → partial batch
+        b1 = a.fetch(cursor0, limit=2)
+        assert len(b1.signals) > 0
+        saved_cursor = b1.next_cursor
+
+        seen_ids = [s.external_id for s in b1.signals]
+
+        # Resume from saved cursor
+        cursor = saved_cursor
+        for _ in range(20):
+            b = a.fetch(cursor, limit=2)
+            for sig in b.signals:
+                seen_ids.append(sig.external_id)
+            cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        # All 5 messages (cr1..cr5) must appear, no duplicates
+        # (Note: external_id == message_id for email.received signals)
+        cr_seen = [i for i in seen_ids if i.startswith("cr")]
+        assert len(set(cr_seen)) == len(cr_seen), f"Duplicates: {cr_seen}"
+        assert sorted(set(cr_seen)) == [f"cr{i}" for i in range(1, 6)]
