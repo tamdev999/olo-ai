@@ -569,17 +569,26 @@ class GcalAdapter(MonitorAdapter):
         sync_token: Optional[str],
         page_token: Optional[str],
     ) -> dict:
-        """Call calendarList.list with sync or page token."""
-        params: list[tuple[str, str]] = [
-            ("maxResults", "250"),
-            ("showDeleted", "true"),
-            ("showHidden", "false"),
-            ("minAccessRole", "reader"),
-        ]
+        """Call calendarList.list with sync or page token.
+
+        Per Google API docs: when syncToken is present, only syncToken (and
+        optionally pageToken) may be sent — all other filters are forbidden.
+        """
         if sync_token:
-            params.append(("syncToken", sync_token))
-        if page_token:
-            params.append(("pageToken", page_token))
+            # Incremental: syncToken only (+ optional pageToken)
+            params: list[tuple[str, str]] = [("syncToken", sync_token)]
+            if page_token:
+                params.append(("pageToken", page_token))
+        else:
+            # Full sync: filters allowed
+            params = [
+                ("maxResults", "250"),
+                ("showDeleted", "true"),
+                ("showHidden", "false"),
+                ("minAccessRole", "reader"),
+            ]
+            if page_token:
+                params.append(("pageToken", page_token))
         return client.get_json("calendar", "/users/me/calendarList", params)
 
     # ── Per-calendar events sync ──────────────────────────────────────────────
