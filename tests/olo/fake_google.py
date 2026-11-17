@@ -81,11 +81,19 @@ class FakeGmailState:
         }}]})
         return msg
 
-    def delete_message(self, msg_id: str) -> None:
-        """Remove message and add a messagesDeleted history record."""
+    def delete_message(self, msg_id: str, stub_label_ids: list[str] | None = None) -> None:
+        """Remove message and add a messagesDeleted history record.
+
+        *stub_label_ids*: if given, the deletion stub will carry those labelIds,
+        allowing tests to verify that email.deleted is (or isn't) produced for
+        messages labelled TRASH, SPAM etc.
+        """
         self.deleted_message_ids.add(msg_id)
         self.messages.pop(msg_id, None)
-        self._bump_history({"messagesDeleted": [{"message": {"id": msg_id, "threadId": msg_id}}]})
+        stub: dict = {"id": msg_id, "threadId": msg_id}
+        if stub_label_ids is not None:
+            stub["labelIds"] = stub_label_ids
+        self._bump_history({"messagesDeleted": [{"message": stub}]})
 
     def add_labels(self, msg_id: str, labels: list[str]) -> None:
         if msg_id in self.messages:

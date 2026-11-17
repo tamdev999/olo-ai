@@ -1115,3 +1115,141 @@ def test_signal_less_cap_returns_progress_cursor() -> None:
         assert b2.signals[0].external_id == "r1", (
             f"expected r1, got {b2.signals[0].external_id!r}"
         )
+
+
+# ── P1 regression tests: change-entry filter uses _CHANGE_SKIP_LABELS ─────────
+
+def test_trash_label_added_produces_signal() -> None:
+    """P1: labelsAdded TRASH on an INBOX message produces email.labels_added.
+
+    Before fix: filtered by _SKIP_LABELS (included TRASH) → no signal.
+    After fix: filtered by _CHANGE_SKIP_LABELS (DRAFT/CHAT only) → signal.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        # Bootstrap
+        fake.gmail.add_message("inbox1", labels=["INBOX", "UNREAD"])
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        # Simulate moving to Trash: labelsAdded TRASH, message stub carries TRASH label
+        fake.gmail._bump_history({
+            "labelsAdded": [{"message": {
+                "id": "inbox1", "threadId": "inbox1",
+                "labelIds": ["TRASH"],
+            }, "labelIds": ["TRASH"]}]
+        })
+
+        b = a.fetch(cursor, limit=10)
+        added_sigs = [s for s in b.signals if s.kind == "email.labels_added"]
+        assert len(added_sigs) >= 1, (
+            f"P1: labelsAdded TRASH must produce a signal, got {b.signals}"
+        )
+        trash_labels = [
+            lbl for sig in added_sigs for lbl in sig.payload.get("labels", [])
+            if lbl == "TRASH"
+        ]
+        assert trash_labels, (
+            f"P1: TRASH must appear in labels, got {[s.payload for s in added_sigs]}"
+        )
+
+
+def test_spam_label_added_produces_signal() -> None:
+    """P1: labelsAdded SPAM on an INBOX message produces email.labels_added."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        fake.gmail.add_message("inbox2", labels=["INBOX", "UNREAD"])
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        fake.gmail._bump_history({
+            "labelsAdded": [{"message": {
+                "id": "inbox2", "threadId": "inbox2",
+                "labelIds": ["SPAM"],
+            }, "labelIds": ["SPAM"]}]
+        })
+
+        b = a.fetch(cursor, limit=10)
+        added_sigs = [s for s in b.signals if s.kind == "email.labels_added"]
+        assert len(added_sigs) >= 1, (
+            f"P1: labelsAdded SPAM must produce a signal, got {b.signals}"
+        )
+        spam_labels = [
+            lbl for sig in added_sigs for lbl in sig.payload.get("labels", [])
+            if lbl == "SPAM"
+        ]
+        assert spam_labels, (
+            f"P1: SPAM must appear in labels, got {[s.payload for s in added_sigs]}"
+        )
+
+
+def test_trash_deletion_stub_produces_email_deleted() -> None:
+    """P1: messagesDeleted stub with labelIds=[TRASH] produces email.deleted.
+
+    Before fix: deletion with TRASH stub was filtered by _SKIP_LABELS → no signal.
+    After fix: filtered by _CHANGE_SKIP_LABELS (DRAFT/CHAT only) → signal.
+    """
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        fake.gmail.add_message("trashed1", labels=["INBOX", "UNREAD"])
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        # Permanently delete a trashed message; stub carries TRASH label
+        fake.gmail.delete_message("trashed1", stub_label_ids=["TRASH"])
+
+        b = a.fetch(cursor, limit=10)
+        deleted_sigs = [s for s in b.signals if s.kind == "email.deleted"]
+        assert len(deleted_sigs) >= 1, (
+            f"P1: deletion stub with TRASH label must produce email.deleted, "
+            f"got {b.signals}"
+        )
+
+
+def test_draft_label_change_still_skipped() -> None:
+    """P1 non-regression: label changes on DRAFT messages are still skipped."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        fake.gmail._bump_history({
+            "labelsAdded": [{"message": {
+                "id": "draft1", "threadId": "draft1",
+                "labelIds": ["DRAFT"],
+            }, "labelIds": ["STARRED"]}]
+        })
+
+        b = a.fetch(cursor, limit=10)
+        label_sigs = [s for s in b.signals if s.kind.startswith("email.labels")]
+        assert label_sigs == [], (
+            f"P1: label change on DRAFT must still produce no signal, "
+            f"got {label_sigs}"
+        )
+
+
+def test_chat_deletion_still_skipped() -> None:
+    """P1 non-regression: deletion stub with CHAT label is still skipped."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        b0 = a.fetch(None, limit=10)
+        b1 = a.fetch(b0.next_cursor, limit=10)
+        cursor = b1.next_cursor
+
+        fake.gmail._bump_history({
+            "messagesDeleted": [{"message": {
+                "id": "chat1", "threadId": "chat1",
+                "labelIds": ["CHAT"],
+            }}]
+        })
+
+        b = a.fetch(cursor, limit=10)
+        deleted_sigs = [s for s in b.signals if s.kind == "email.deleted"]
+        assert deleted_sigs == [], (
+            f"P1: deletion with CHAT label must still produce no signal, "
+            f"got {deleted_sigs}"
+        )

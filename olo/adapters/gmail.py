@@ -3,6 +3,7 @@
 §5: sync algorithm, signal mapping, §5.0 empty-page rule.
 I5: empty history[] with nextPageToken raises SourceError at cap.
 I7: alias pattern enforcement.
+P1: change-entry filter uses _CHANGE_SKIP_LABELS={DRAFT,CHAT} not _SKIP_LABELS.
 Registered as "gmail"; per-account source = "gmail_<alias>".
 
 No side effects at import time.
@@ -31,6 +32,10 @@ _SYSTEM_LABELS = frozenset({
     "SENT", "TRASH", "SPAM", "DRAFT", "CHAT",
 })
 _SKIP_LABELS = frozenset({"DRAFT", "SPAM", "TRASH", "CHAT"})
+# P1: change entries (messagesDeleted, labelsAdded, labelsRemoved) skip only
+# DRAFT and CHAT per spec §5.2.  Trashing or spamming a message still produces
+# a signal; permanently deleting a trashed message still produces email.deleted.
+_CHANGE_SKIP_LABELS = frozenset({"DRAFT", "CHAT"})
 _CHANGE_SIGNAL_LABELS = frozenset({
     "INBOX", "UNREAD", "STARRED", "IMPORTANT", "SENT", "TRASH", "SPAM",
 })
@@ -356,9 +361,10 @@ class GmailAdapter(MonitorAdapter):
             msg_id = msg_stub.get("id", "")
             if not msg_id:
                 continue
-            # F5b: skip deletions on DRAFT or CHAT messages (spec §5.2)
+            # P1: change entries skip only DRAFT and CHAT (spec §5.2).
+            # Deletions of TRASH or SPAM messages still produce email.deleted.
             msg_label_ids: list[str] = msg_stub.get("labelIds", [])
-            if any(lbl in _SKIP_LABELS for lbl in msg_label_ids):
+            if any(lbl in _CHANGE_SKIP_LABELS for lbl in msg_label_ids):
                 continue
             ext_id = f"h{record_id}:{msg_id}:deleted"
             signals.append(NormalizedSignal(
@@ -381,9 +387,10 @@ class GmailAdapter(MonitorAdapter):
             for entry in record.get(event_type, []):
                 msg_stub = entry.get("message", {})
                 msg_id = msg_stub.get("id", "")
-                # F5b: skip label changes on DRAFT or CHAT messages (spec §5.2)
+                # P1: change entries skip only DRAFT and CHAT (spec §5.2).
+                # Label changes on TRASH or SPAM messages still produce signals.
                 msg_label_ids = msg_stub.get("labelIds", [])
-                if any(lbl in _SKIP_LABELS for lbl in msg_label_ids):
+                if any(lbl in _CHANGE_SKIP_LABELS for lbl in msg_label_ids):
                     continue
                 changed_labels = [
                     lbl for lbl in entry.get("labelIds", [])
