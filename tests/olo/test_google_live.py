@@ -1085,10 +1085,16 @@ def test_m2b_stage0_gcal_v2_cursor() -> None:
     )
     assert "list" in comp, f"M2b: cursor missing 'list': {cursor!r}"
     assert "cals" in comp, f"M2b: cursor missing 'cals': {cursor!r}"
-    # Primary calendar must be registered
-    assert "primary" in comp["cals"], (
-        f"M2b: primary calendar not in cals cursor: {cursor!r}"
+    # At least one calendar must be registered (Google returns actual cal ID,
+    # not the alias "primary" — the owner's main cal has id == email address)
+    assert len(comp["cals"]) >= 1, (
+        f"M2b: no calendars registered in cals cursor: {cursor!r}"
     )
+    # All registered calendars must have reached incr phase
+    for cal_id, cal_state in comp["cals"].items():
+        assert cal_state.get("phase") in ("incr", "full"), (
+            f"M2b: calendar {cal_id!r} not in expected phase: {cal_state}"
+        )
 
     state = _load_state()
     state["m2b_stage0_gcal_cursor"] = cursor
@@ -1244,7 +1250,12 @@ def test_m2b_stage1_no_forbidden_fields_in_content_signal() -> None:
 # ── M2b Stage 1: calendarList discovery ──────────────────────────────────────
 
 def test_m2b_stage1_calendarlist_discovery() -> None:
-    """M2b Stage 1: v2 cursor registers primary calendar after first run."""
+    """M2b Stage 1: v2 cursor registers calendars after first run.
+
+    Note: Google calendarList returns the actual calendar ID (email address
+    for the primary calendar), not the alias string "primary". The test
+    checks that at least one calendar is registered and has reached incr phase.
+    """
     _skip_unless_stage("1")
     _skip_unless_m2b()
 
@@ -1258,21 +1269,24 @@ def test_m2b_stage1_calendarlist_discovery() -> None:
     assert cursor is not None
     comp = json.loads(cursor)
     assert comp.get("v") == 2
-    assert "primary" in comp.get("cals", {}), (
-        f"M2b: primary calendar not registered after stage 1 run: {cursor!r}"
-    )
-    # Primary must be in incr phase
-    primary = comp["cals"]["primary"]
-    assert primary.get("phase") == "incr", (
-        f"M2b: primary calendar not in incr phase: {primary}"
-    )
-    assert primary.get("sync_token"), (
-        f"M2b: primary calendar missing sync_token: {primary}"
-    )
 
+    cals = comp.get("cals", {})
+    assert len(cals) >= 1, (
+        f"M2b: no calendars registered after stage 1 run: {cursor!r}"
+    )
+    # All calendars must have reached incr phase
+    for cal_id, cal_state in cals.items():
+        assert cal_state.get("phase") == "incr", (
+            f"M2b: calendar {cal_id!r} not in incr phase after stage 1: {cal_state}"
+        )
+        assert cal_state.get("sync_token"), (
+            f"M2b: calendar {cal_id!r} missing sync_token: {cal_state}"
+        )
+
+    cal_ids = list(cals.keys())
     _record_observation("m2b_stage1_gcal_cursor_v", comp.get("v"))
-    _record_observation("m2b_stage1_cals", list(comp["cals"].keys()))
-    print(f"\nM2b Stage 1 Calendar: cals={list(comp['cals'].keys())}, primary={primary}")
+    _record_observation("m2b_stage1_cals", cal_ids)
+    print(f"\nM2b Stage 1 Calendar: cals={cal_ids}")
 
 
 def test_m2b_stage1_gcal_event_signals_have_calendar_id() -> None:
