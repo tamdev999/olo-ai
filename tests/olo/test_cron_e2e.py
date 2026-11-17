@@ -1,8 +1,11 @@
-"""Cron E2E tests and zero-LLM proofs for the Olo pipeline.
+"""Olo M1 cron E2E tests.
 
 §8.5 acceptance criteria.
 Runs real Hermes CLI as subprocesses against a temp HERMES_HOME.
 No time.sleep; uses wait_until for execution completion.
+
+H2 fix: _cron_run_and_wait snapshots execution IDs before the trigger so the
+returned row is always from the run we just fired, not a stale previous row.
 """
 from __future__ import annotations
 
@@ -10,9 +13,8 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import pytest
 
@@ -91,27 +93,92 @@ def _parse_job_id(output: str) -> Optional[str]:
     return None
 
 
-def _wait_for_terminal_execution(home: Path, job_id: str, timeout: float = 60.0) -> dict:
-    """Poll cron executions until a terminal state is reached."""
-    sys.path.insert(0, str(_repo_root()))
-    import hermes_constants
-    # Temporarily point get_hermes_home at our test home
-    orig_home = os.environ.get("HERMES_HOME")
+def _list_executions_in_home(home: Path, job_id: str, limit: int = 500) -> list[dict]:
+    """Return execution rows for job_id with HERMES_HOME set to home."""
+    orig = os.environ.get("HERMES_HOME")
     os.environ["HERMES_HOME"] = str(home)
     try:
-        from cron.executions import list_executions, _TERMINAL_STATES
-        def _is_done():
-            execs = list_executions(job_id=job_id, limit=5)
-            for e in execs:
-                if e["status"] in _TERMINAL_STATES:
-                    return e
-            return None
-        return wait_until(_is_done, timeout=timeout, what=f"terminal execution for {job_id}")
+        from cron.executions import list_executions
+        return list_executions(job_id=job_id, limit=limit)
     finally:
-        if orig_home is None:
+        if orig is None:
             os.environ.pop("HERMES_HOME", None)
         else:
-            os.environ["HERMES_HOME"] = orig_home
+            os.environ["HERMES_HOME"] = orig
+
+
+def _cron_run_and_wait(
+    home: Path,
+    job_id: str,
+    *,
+    expect_status: str,
+    trigger: Optional[Callable[[], None]] = None,
+    timeout: float = 60.0,
+) -> dict:
+    """H2: fire a cron job and return exactly the new execution row.
+
+    'hermes cron run' executes the job synchronously (via _SESSION_ASYNC_DELIVERY
+    in _job_action) and returns exit code 0 for a completed run, 1 for a failed
+    run.  There is no need for 'cron tick'; adding it would create a second
+    execution and corrupt the before/after snapshot.
+
+    1. Snapshot the set of existing execution IDs (all rows, not just limit=5).
+    2. Run the trigger (default: hermes cron run <job_id>).
+    3. For the default trigger:
+       - Assert exit code 0 if expect_status=="completed", else 1.
+       - Assert "Ran now:" appears in stdout (proves synchronous execution).
+    4. wait_until: find new execution rows (id not in snapshot) in terminal state.
+    5. Assert exactly one new row; assert its status == expect_status.
+    6. Return that row.
+    """
+    from cron.executions import _TERMINAL_STATES
+
+    # Step 1: snapshot before
+    before_ids = {e["id"] for e in _list_executions_in_home(home, job_id)}
+
+    # Step 2: trigger
+    if trigger is not None:
+        trigger()
+        run_result = None
+    else:
+        run_result = _run(["cron", "run", job_id], home)
+
+    # Step 3: assert trigger outcome for default trigger
+    if run_result is not None:
+        expected_rc = 0 if expect_status == "completed" else 1
+        assert run_result.returncode == expected_rc, (
+            f"H2: hermes cron run exit code {run_result.returncode} "
+            f"!= expected {expected_rc} for status={expect_status!r}; "
+            f"stdout={run_result.stdout!r}; stderr={run_result.stderr!r}"
+        )
+        assert "Ran now:" in run_result.stdout, (
+            f"H2: 'Ran now:' not found in stdout — was execution synchronous? "
+            f"stdout={run_result.stdout!r}"
+        )
+
+    # Step 4–6: wait for new rows and assert exactly one
+    def _new_terminal() -> Optional[list]:
+        rows = _list_executions_in_home(home, job_id)
+        new = [r for r in rows
+               if r["id"] not in before_ids and r["status"] in _TERMINAL_STATES]
+        return new if new else None
+
+    new_rows = wait_until(
+        _new_terminal,
+        timeout=timeout,
+        what=f"new terminal execution for job {job_id}",
+    )
+
+    assert len(new_rows) == 1, (
+        f"H2: expected exactly 1 new terminal execution, got {len(new_rows)}: "
+        f"{[r['id'] for r in new_rows]}"
+    )
+    new_row = new_rows[0]
+    assert new_row["status"] == expect_status, (
+        f"H2: new execution status={new_row['status']!r} "
+        f"!= expected {expect_status!r}"
+    )
+    return new_row
 
 
 # ── Full E2E: install, setup, cron create, run, tick, verify ─────────────────
@@ -147,17 +214,13 @@ def test_e2e_25_signals_first_fire(e2e_home: Path) -> None:
     job_id = _parse_job_id(result.stdout)
     assert job_id, f"could not parse job id from: {result.stdout}"
 
-    # 3. Mark for immediate run + tick
-    _run(["cron", "run", job_id], home)
-    _run(["cron", "tick"], home)
-
-    # 4. Wait for terminal execution (V3)
-    exec_row = _wait_for_terminal_execution(home, job_id, timeout=60)
+    # 3. Fire and wait
+    exec_row = _cron_run_and_wait(home, job_id, expect_status="completed")
     assert exec_row["status"] == "completed", (
         f"execution status={exec_row['status']} error={exec_row.get('error')}"
     )
 
-    # 5. Verify 25 signals
+    # 4. Verify 25 signals
     from olo.store import connect, count_signals, get_checkpoint, migrate
     from olo.paths import db_path as _dp
     old = os.environ.get("HERMES_HOME")
@@ -175,10 +238,8 @@ def test_e2e_25_signals_first_fire(e2e_home: Path) -> None:
         else:
             os.environ["HERMES_HOME"] = old
 
-    # 6. Second fire: still 25 signals, 0 new inserted
-    _run(["cron", "run", job_id], home)
-    _run(["cron", "tick"], home)
-    _wait_for_terminal_execution(home, job_id, timeout=60)
+    # 5. Second fire: still 25 signals, 0 new inserted
+    _cron_run_and_wait(home, job_id, expect_status="completed")
 
     os.environ["HERMES_HOME"] = str(home)
     try:
@@ -219,17 +280,11 @@ def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
     ], home)
 
     # Fire — should fail
-    _run(["cron", "run", job_id], home)
-    _run(["cron", "tick"], home)
-    exec_fail = _wait_for_terminal_execution(home, job_id, timeout=60)
+    exec_fail = _cron_run_and_wait(home, job_id, expect_status="failed")
 
     # ── Invariant 1: Hermes records a 'failed' execution ─────────────────────
-    # When a no-agent script exits non-zero, Hermes calls
-    # finish_execution(success=False) which sets status='failed' (confirmed in
-    # cron/executions.py::finish_execution: status = 'failed' when success=False).
     assert exec_fail["status"] == "failed", (
-        f"Hermes execution status should be 'failed' for a non-zero exit script, "
-        f"got {exec_fail['status']!r}"
+        f"Hermes execution status should be 'failed', got {exec_fail['status']!r}"
     )
 
     # ── Invariants 2–5: Olo DB state ──────────────────────────────────────────
@@ -237,7 +292,6 @@ def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
     os.environ["HERMES_HOME"] = str(home)
     try:
         from olo.store import connect, count_signals, get_checkpoint, migrate, get_lease
-        from olo.store import get_run
         from olo.paths import db_path as _dp
         db = _dp()
         conn = connect(db)
@@ -282,12 +336,10 @@ def test_e2e_failure_and_recovery(e2e_home: Path) -> None:
         "--force",
     ], home)
 
-    _run(["cron", "run", job_id], home)
-    _run(["cron", "tick"], home)
-    exec_recovery = _wait_for_terminal_execution(home, job_id, timeout=60)
+    exec_recovery = _cron_run_and_wait(home, job_id, expect_status="completed")
 
     # Invariant 6: recovery run succeeds with 40 signals
-    assert exec_recovery["status"] in ("completed", "succeeded"), (
+    assert exec_recovery["status"] == "completed", (
         f"recovery execution status: {exec_recovery['status']}"
     )
 
@@ -327,9 +379,7 @@ def test_zero_llm_no_usage_audit(e2e_home: Path) -> None:
     job_id = _parse_job_id(result.stdout)
     assert job_id
 
-    _run(["cron", "run", job_id], home)
-    _run(["cron", "tick"], home)
-    _wait_for_terminal_execution(home, job_id, timeout=60)
+    _cron_run_and_wait(home, job_id, expect_status="completed")
 
     audit_path = home / "cron" / "usage_audit.jsonl"
     if audit_path.exists():
@@ -353,11 +403,7 @@ def test_zero_llm_no_credentials(e2e_home: Path) -> None:
 
 
 def test_zero_llm_no_agent_constructed_in_process(e2e_home: Path) -> None:
-    """Proof (a): running the olo cron job in-process does not construct an AIAgent.
-
-    Following tests/cron/test_cron_no_agent.py: patch AIAgent where scheduler imports it,
-    and verify the job succeeds without it being called.
-    """
+    """Proof (a): running the olo cron job in-process does not construct an AIAgent."""
     import types
     home = e2e_home
     old = os.environ.get("HERMES_HOME")
@@ -379,7 +425,6 @@ def test_zero_llm_no_agent_constructed_in_process(e2e_home: Path) -> None:
         shim_path.write_text(shim_content, encoding="utf-8")
 
         # Create cron job via Python API
-        from cron import scheduler as sched_mod
         from cron.jobs import create_job
 
         agent_constructed = []
@@ -414,3 +459,45 @@ def test_zero_llm_no_agent_constructed_in_process(e2e_home: Path) -> None:
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = old
+
+
+# ── H2 negative test: stale execution must not be returned ───────────────────
+
+def test_wait_helper_rejects_stale_execution(e2e_home: Path) -> None:
+    """H2: _cron_run_and_wait must not return a row from a previous run.
+
+    After one completed run, call _cron_run_and_wait with trigger=lambda: None
+    (no actual run fired) and a short timeout. It must raise (timeout) instead
+    of returning the previous terminal row.
+
+    Old _wait_for_terminal_execution would have returned the previous row because
+    it queried `list_executions(job_id=..., limit=5)` without comparing against
+    any before-snapshot — meaning the first terminal row in those 5 results
+    was always returned, even if it was from a previous run.
+    """
+    home = e2e_home
+
+    _run(["plugins", "enable", "olo"], home)
+    _run(["olo", "setup", "--source", "synthetic"], home)
+
+    result = _run([
+        "cron", "create", "15m",
+        "--name", "olo-synthetic-stale",
+        "--script", "olo_monitor_synthetic.py",
+        "--no-agent", "--deliver", "local",
+    ], home)
+    job_id = _parse_job_id(result.stdout)
+    assert job_id
+
+    # Complete one run so a terminal row exists
+    _cron_run_and_wait(home, job_id, expect_status="completed")
+
+    # Now call with a no-op trigger — no new execution will be created.
+    # The helper must time out rather than return the stale previous row.
+    with pytest.raises(AssertionError, match="timed out"):
+        _cron_run_and_wait(
+            home, job_id,
+            expect_status="completed",
+            trigger=lambda: None,
+            timeout=2.0,  # short — no run fired
+        )
