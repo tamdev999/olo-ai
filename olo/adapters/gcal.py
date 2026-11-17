@@ -635,9 +635,11 @@ class GcalAdapter(MonitorAdapter):
             next_sync_token = resp.get("nextSyncToken")
 
             # C1 fix: reject over-sized pages
-            if len(events) > limit:
+            # Each event produces 2 signals, so max events = limit // 2
+            max_events = max(1, limit // 2)
+            if len(events) > max_events:
                 raise SourceError(
-                    f"gcal page exceeds requested maxResults ({len(events)} > {limit})"
+                    f"gcal page exceeds requested maxResults ({len(events)} > {max_events})"
                 )
 
             if events:
@@ -746,11 +748,18 @@ class GcalAdapter(MonitorAdapter):
         limit: int,
         cal_id: str = "primary",
     ) -> dict:
-        """Build params and call events.list for the given calendar."""
+        """Build params and call events.list for the given calendar.
+
+        Each event produces 2 signals (calendar.event.changed + calendar.event.content),
+        so maxResults must be limit // 2 to stay within the runner's signal budget.
+        Minimum 1 event per page.
+        """
+        # 2 signals per event: metadata + content blob
+        events_per_page = max(1, min(limit // 2, 2500))
         params: list[tuple[str, str]] = [
             ("singleEvents", "false"),
             ("showDeleted", "true"),
-            ("maxResults", str(min(limit, 2500))),
+            ("maxResults", str(events_per_page)),
         ]
         if phase.get("phase") == "full":
             params.append(("timeMin", phase["time_min"]))
