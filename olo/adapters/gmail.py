@@ -1,9 +1,11 @@
-"""Olo AI — Gmail adapter (metadata-only, no message bodies).
+"""Olo AI — Gmail adapter (metadata-only or full-content depending on scope).
 
 §5: sync algorithm, signal mapping, §5.0 empty-page rule.
 I5: empty history[] with nextPageToken raises SourceError at cap.
 I7: alias pattern enforcement.
 P1: change-entry filter uses _CHANGE_SKIP_LABELS={DRAFT,CHAT} not _SKIP_LABELS.
+B3 (M2b): full-content email.content signals when gmail.readonly scope is present;
+  batch byte budget; backfill phases (bootstrap / resume / gap).
 Registered as "gmail"; per-account source = "gmail_<alias>".
 
 No side effects at import time.
@@ -13,6 +15,7 @@ from __future__ import annotations
 import email.header
 import email.utils
 import hashlib
+import json
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone, UTC
@@ -150,11 +153,25 @@ class GmailAdapter(MonitorAdapter):
     # ── §5.2 sync algorithm ───────────────────────────────────────────────────
 
     def fetch(self, cursor: str | None, *, limit: int) -> FetchBatch:
-        """Return up to *limit* signals; never returns empty with has_more=True."""
+        """Return up to *limit* signals; never returns empty with has_more=True.
+
+        B3: when cursor is a JSON dict with "phase":"backfill", delegates to
+        the backfill path. Otherwise (cursor=None or plain historyId string)
+        uses the incremental/bootstrap path.
+        """
         if limit < 1:
             raise AdapterConfigError(f"fetch limit must be ≥ 1, got {limit}")
 
         client = self._get_client()
+
+        # B3: check for backfill cursor
+        if cursor is not None:
+            try:
+                parsed = json.loads(cursor)
+                if isinstance(parsed, dict) and parsed.get("phase") == "backfill":
+                    return self._backfill_page(client, parsed, limit)
+            except (json.JSONDecodeError, ValueError):
+                pass  # treat as plain historyId string
 
         if cursor is None:
             return self._bootstrap(client)
@@ -167,6 +184,58 @@ class GmailAdapter(MonitorAdapter):
         if not history_id:
             raise SourceError("gmail profile returned no historyId")
         return FetchBatch(signals=(), next_cursor=history_id, has_more=False)
+
+    def _backfill_page(
+        self,
+        client: "GoogleClient",
+        cursor_dict: dict,
+        limit: int,
+    ) -> FetchBatch:
+        """B3: one page of backfill via messages.list.
+
+        Emits email.content only (no email.received/sent — avoids conflicts).
+        When done (no next page token), cursor transitions to the plain numeric
+        resume_history_id so incremental sync continues from there.
+        """
+        from olo.adapters.gmail_full import run_backfill_batch
+
+        after_epoch = cursor_dict.get("after", 0)
+        page_token = cursor_dict.get("page_token")
+        resume_history_id = cursor_dict.get("resume_history_id", "")
+        mode = cursor_dict.get("mode", "bootstrap")
+
+        # Build a minimal connection for the batch (no run_id in this context)
+        signals, next_pt, done = run_backfill_batch(
+            source=self.source,
+            client=client,
+            conn=None,  # no DB context here; store handles blobs in ingest_batch
+            run_id="",
+            after_epoch=int(after_epoch),
+            page_token=page_token,
+            resume_history_id=resume_history_id,
+            mode=mode,
+            limit=limit,
+        )
+
+        if done:
+            # Backfill complete — transition to incremental from resume_history_id
+            next_cursor = resume_history_id
+            has_more = bool(signals)  # if we got signals, more may exist via incremental
+        else:
+            # More backfill pages
+            next_cursor_dict = dict(cursor_dict)
+            next_cursor_dict["page_token"] = next_pt
+            next_cursor = json.dumps(next_cursor_dict)
+            has_more = True
+
+        if not signals:
+            return FetchBatch(signals=(), next_cursor=next_cursor, has_more=False)
+
+        return FetchBatch(
+            signals=tuple(signals),
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
     def _incremental(
         self,
@@ -337,10 +406,22 @@ class GmailAdapter(MonitorAdapter):
         record: dict,
         seen_ids: set[str],
     ) -> list[NormalizedSignal]:
-        """Convert one history record to signals (new messages + change events)."""
+        """Convert one history record to signals (new messages + change events).
+
+        B3: when gmail.readonly scope is present, also fetches format=full
+        and emits email.content alongside email.received/email.sent.
+        """
         record_id = str(record.get("id", ""))
         now_utc = datetime.now(UTC)
         signals: list[NormalizedSignal] = []
+
+        # B3: determine if full content is available
+        full_content = False
+        try:
+            if client._creds.has_gmail_readonly_scope():
+                full_content = True
+        except Exception:
+            pass
 
         for entry in record.get("messagesAdded", []):
             msg_stub = entry.get("message", {})
@@ -357,6 +438,18 @@ class GmailAdapter(MonitorAdapter):
             if sig is not None:
                 signals.append(sig)
                 seen_ids.add(msg_id)
+                # B3: emit email.content when gmail.readonly scope is available
+                if full_content:
+                    try:
+                        raw_full = client.get_message_full(msg_id)
+                        if raw_full:
+                            from olo.adapters.gmail_full import build_email_content_signal
+                            content_sig = build_email_content_signal(
+                                self.source, raw_full, record_id
+                            )
+                            signals.append(content_sig)
+                    except Exception:
+                        pass  # best-effort; metadata signal already emitted
 
         for entry in record.get("messagesDeleted", []):
             msg_stub = entry.get("message", {})

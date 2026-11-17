@@ -255,6 +255,11 @@ class GoogleClient:
         if status == 404 and "/users/me/history" in path:
             raise GmailHistoryExpired("gmail history expired")
 
+        # 400 on history with a numeric startHistoryId → also treat as expired
+        # (B3 §2.3: Google returns 400 for some invalid history IDs, not just 404)
+        if status == 400 and "/users/me/history" in path:
+            raise GmailHistoryExpired(f"gmail history expired (400): {err_message[:100]}")
+
         # 404 on messages → caller handles as deleted (return None via get_message_or_none)
         if status == 404 and re.search(r"/users/me/messages/", path):
             return {}   # sentinel — caller checks for absent "id"
@@ -292,3 +297,22 @@ class GoogleClient:
         if not result.get("id"):
             return None
         return result
+
+    def get_message_full(self, message_id: str) -> Optional[Mapping]:
+        """Fetch a message in full format (M2b); returns None on 404.
+
+        Requires gmail.readonly scope. Raises _GoogleScopeMissing (SourceError)
+        on 403 if the credential only has gmail.metadata.
+        """
+        result = self.get_json(
+            "gmail",
+            f"/users/me/messages/{message_id}",
+            [("format", "full")],
+        )
+        if not result.get("id"):
+            return None
+        return result
+
+    def list_messages(self, params: list[tuple[str, str]]) -> Mapping:
+        """Call messages.list with the given params (M2b backfill)."""
+        return self.get_json("gmail", "/users/me/messages", params)
