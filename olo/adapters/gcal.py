@@ -35,6 +35,10 @@ _EXCLUDED_FIELDS = frozenset({
     "gadget", "htmlLink",
 })
 
+# ── I7: alias pattern ─────────────────────────────────────────────────────────
+import re as _re  # noqa: E402  (re already imported above)
+_ALIAS_RE = _re.compile(r"^[a-z0-9]{1,16}$")
+
 
 def _rfc3339_to_dt(raw: str) -> datetime:
     """Parse an RFC3339 string to a timezone-aware UTC datetime."""
@@ -147,6 +151,13 @@ class GcalAdapter(MonitorAdapter):
         if not alias:
             raise AdapterConfigError("gcal adapter requires option account=<alias>")
 
+        # I7: enforce alias pattern
+        if not _ALIAS_RE.match(alias):
+            raise AdapterConfigError(
+                f"gcal adapter: invalid account alias {alias!r}; "
+                f"must match ^[a-z0-9]{{1,16}}$"
+            )
+
         raw_lb = options.get("lookback_days", "7")
         try:
             lookback = int(raw_lb)
@@ -168,9 +179,9 @@ class GcalAdapter(MonitorAdapter):
         self._alias = alias
         self._lookback_days = lookback
         self.source = f"gcal_{alias}"
-        self._client: Optional[GoogleClient] = None
+        self._client: Optional["GoogleClient"] = None
 
-    def _get_client(self) -> GoogleClient:
+    def _get_client(self) -> "GoogleClient":
         if self._client is None:
             from olo.google.credentials import load_credentials
             from olo.google.http import GoogleClient
@@ -186,7 +197,13 @@ class GcalAdapter(MonitorAdapter):
     # ── §6.2 sync algorithm ───────────────────────────────────────────────────
 
     def fetch(self, cursor: str | None, *, limit: int) -> FetchBatch:
-        """Return up to *limit* signals; never returns empty with has_more=True."""
+        """Return signals from at most ONE signal-bearing page per call.
+
+        C1 fix: a single fetch() may cross any number of empty pages (§5.0),
+        but returns immediately after the first page that yields signals.
+        A page is NEVER truncated; Google is asked for at most min(limit, 2500)
+        items so it cannot return more than limit events.
+        """
         if limit < 1:
             raise AdapterConfigError(f"fetch limit must be ≥ 1, got {limit}")
 
@@ -194,39 +211,45 @@ class GcalAdapter(MonitorAdapter):
         fetch_time = datetime.now(UTC)
 
         if cursor is None:
-            # Bootstrap: start full sync
             time_min = (fetch_time - timedelta(days=self._lookback_days)).isoformat()
             phase = {"phase": "full", "time_min": time_min, "page_token": None}
         else:
             try:
                 phase = json.loads(cursor)
             except (json.JSONDecodeError, ValueError) as exc:
-                raise SourceError(
-                    f"gcal: invalid cursor {cursor!r}: {exc}"
-                ) from exc
+                raise SourceError(f"gcal: invalid cursor {cursor!r}: {exc}") from exc
 
-        return self._fetch_phase(client, phase, limit, fetch_time)
+        return self._fetch_one_page(client, phase, limit, fetch_time)
 
-    def _fetch_phase(
+    def _fetch_one_page(
         self,
-        client: GoogleClient,
+        client: "GoogleClient",
         phase: dict,
         limit: int,
         fetch_time: datetime,
     ) -> FetchBatch:
+        """C1 fix: advance over empty pages; return as soon as one page yields signals.
+
+        Contract:
+        - Never span two signal-bearing pages in one call.
+        - Never truncate a page (SourceError if Google over-delivers).
+        - Empty pages count toward _MAX_EMPTY_PAGES; if the cap is hit, return
+          an advanced-cursor empty batch (has_more=False) so the runner commits
+          the cursor progress and the next tick continues.
+        """
         from olo.google.http import CalendarSyncTokenExpired, CalendarPageTokenInvalid
 
         empty_page_count = 0
-        all_signals: list[NormalizedSignal] = []
         current_phase = dict(phase)
 
         while True:
+            # ── request ──────────────────────────────────────────────────────
             try:
                 resp = self._do_request(client, current_phase, limit)
             except CalendarSyncTokenExpired:
                 raise
             except CalendarPageTokenInvalid:
-                # §6.2 step 4: retry without page token
+                # §6.2 step 4: retry once without the page token
                 current_phase = dict(current_phase)
                 current_phase["page_token"] = None
                 resp = self._do_request(client, current_phase, limit)
@@ -235,68 +258,68 @@ class GcalAdapter(MonitorAdapter):
             next_page_token = resp.get("nextPageToken")
             next_sync_token = resp.get("nextSyncToken")
 
+            # ── C1 fix: reject over-sized pages ───────────────────────────────
+            if len(events) > limit:
+                raise SourceError(
+                    f"gcal page exceeds requested maxResults ({len(events)} > {limit})"
+                )
+
+            # ── signal-bearing page ───────────────────────────────────────────
             if events:
-                for ev in events:
-                    if len(all_signals) >= limit:
-                        break
-                    sig = _event_to_signal(ev, self.source, fetch_time)
-                    all_signals.append(sig)
-                empty_page_count = 0
-            else:
-                # §5.0: empty page
-                empty_page_count += 1
+                signals = tuple(
+                    _event_to_signal(ev, self.source, fetch_time) for ev in events
+                )
+                # Determine cursor after this page
+                if next_sync_token:
+                    # Last page of this sync → transition to incr
+                    next_cursor = json.dumps({
+                        "phase": "incr",
+                        "sync_token": next_sync_token,
+                        "page_token": None,
+                    })
+                    return FetchBatch(signals=signals, next_cursor=next_cursor, has_more=False)
+                elif next_page_token:
+                    # More pages remain
+                    next_cursor = json.dumps({
+                        **current_phase,
+                        "page_token": next_page_token,
+                    })
+                    return FetchBatch(signals=signals, next_cursor=next_cursor, has_more=True)
+                else:
+                    # No token at all — shouldn't happen; treat as end
+                    next_cursor = json.dumps(current_phase)
+                    return FetchBatch(signals=signals, next_cursor=next_cursor, has_more=False)
+
+            # ── empty page ────────────────────────────────────────────────────
+            empty_page_count += 1
 
             if next_sync_token:
-                # Last page of this phase
-                new_cursor = json.dumps({
+                # Empty last page with sync token → cursor advances, done
+                next_cursor = json.dumps({
                     "phase": "incr",
                     "sync_token": next_sync_token,
                     "page_token": None,
                 })
-                if all_signals:
-                    return FetchBatch(
-                        signals=tuple(all_signals),
-                        next_cursor=new_cursor,
-                        has_more=False,
-                    )
-                # Empty last page with sync token
-                return FetchBatch(signals=(), next_cursor=new_cursor, has_more=False)
+                return FetchBatch(signals=(), next_cursor=next_cursor, has_more=False)
 
             if next_page_token:
-                if len(all_signals) >= limit:
-                    # Return what we have; store page_token in cursor
-                    page_cursor = json.dumps({
-                        **current_phase,
-                        "page_token": next_page_token,
-                    })
-                    return FetchBatch(
-                        signals=tuple(all_signals),
-                        next_cursor=page_cursor,
-                        has_more=True,
-                    )
                 if empty_page_count >= _MAX_EMPTY_PAGES:
-                    # §5.0 cap
-                    page_cursor = json.dumps({
+                    # §5.0 cap: return advanced page-token cursor, no signals
+                    next_cursor = json.dumps({
                         **current_phase,
                         "page_token": next_page_token,
                     })
-                    return FetchBatch(signals=(), next_cursor=page_cursor, has_more=False)
-                # Continue to next page
+                    return FetchBatch(signals=(), next_cursor=next_cursor, has_more=False)
+                # Follow the page token (counts toward cap)
                 current_phase = dict(current_phase)
                 current_phase["page_token"] = next_page_token
                 continue
 
-            # No nextPageToken and no nextSyncToken — shouldn't happen, but stop
-            break
+            # Neither token — treat as end of data
+            next_cursor = json.dumps(current_phase)
+            return FetchBatch(signals=(), next_cursor=next_cursor, has_more=False)
 
-        fallback_cursor = json.dumps(current_phase)
-        return FetchBatch(
-            signals=tuple(all_signals),
-            next_cursor=fallback_cursor,
-            has_more=False,
-        )
-
-    def _do_request(self, client: GoogleClient, phase: dict, limit: int) -> dict:
+    def _do_request(self, client: "GoogleClient", phase: dict, limit: int) -> dict:
         """Build params and call events.list."""
         params: list[tuple[str, str]] = [
             ("calendarId", "primary"),
