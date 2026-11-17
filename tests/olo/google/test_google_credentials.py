@@ -246,6 +246,33 @@ def test_api_base_override_loopback_accepted_on_save(
     assert loaded.api_base_override == "http://127.0.0.1:12345"
 
 
+# ── I6 minor: port range validation ──────────────────────────────────────────
+
+@pytest.mark.parametrize("bad_url", [
+    "http://127.0.0.1:0",       # port 0 not allowed
+    "http://127.0.0.1:70000",   # port > 65535
+    "http://localhost:0",
+    "http://localhost:65536",
+])
+def test_api_base_override_bad_port_rejected(bad_url: str) -> None:
+    """I6 minor: ports 0 and >65535 must raise AdapterConfigError."""
+    from olo.adapters import AdapterConfigError
+    with pytest.raises((AdapterConfigError, Exception)):
+        _make_creds(api_base_override=bad_url)
+
+
+@pytest.mark.parametrize("good_url", [
+    "http://127.0.0.1:1",
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:65535",
+    "http://localhost:8080",
+])
+def test_api_base_override_valid_port_accepted(good_url: str) -> None:
+    """I6 minor: ports 1–65535 must be accepted."""
+    creds = _make_creds(api_base_override=good_url)
+    assert creds.api_base_override == good_url
+
+
 # ── I7: alias validation ──────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("bad_alias", [

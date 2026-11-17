@@ -59,7 +59,8 @@ def _validate_api_base_override(value: Optional[str]) -> None:
     """Raise AdapterConfigError if value is not None and not a loopback URL.
 
     Allowed: http://127.0.0.1:<port> or http://localhost:<port>  (§3.5).
-    Port must be explicitly present (1–65535). No path, query, or userinfo.
+    Port must be explicitly present and in range 1–65535.
+    No path, query, userinfo, or fragment allowed.
     """
     if value is None:
         return
@@ -89,10 +90,24 @@ def _validate_api_base_override(value: Optional[str]) -> None:
             f"http://localhost:<port>, got {value!r}"
         )
 
-    # Port must be explicit
-    if parsed.port is None:
+    # Port must be explicit and valid integer (urllib.parse raises ValueError
+    # for non-numeric ports like ":abc")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise AdapterConfigError(
+            f"api_base_override port is not a valid integer, got {value!r}"
+        )
+
+    if port is None:
         raise AdapterConfigError(
             f"api_base_override must include an explicit port, got {value!r}"
+        )
+
+    # I6 minor: port must be in range 1–65535
+    if not (1 <= port <= 65535):
+        raise AdapterConfigError(
+            f"api_base_override port must be 1–65535, got {port} in {value!r}"
         )
 
     # No path (empty or "/" only), no query, no fragment
