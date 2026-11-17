@@ -438,18 +438,19 @@ class GmailAdapter(MonitorAdapter):
             if sig is not None:
                 signals.append(sig)
                 seen_ids.add(msg_id)
-                # B3: emit email.content when gmail.readonly scope is available
+                # B3: emit email.content when gmail.readonly scope is available.
+                # Only skip on None return (404 — message deleted since history
+                # entry was created).  Any SourceError (network failure, 403,
+                # 429) propagates to fail the batch so the checkpoint does not
+                # advance without the content blob — no silent data loss.
                 if full_content:
-                    try:
-                        raw_full = client.get_message_full(msg_id)
-                        if raw_full:
-                            from olo.adapters.gmail_full import build_email_content_signal
-                            content_sig = build_email_content_signal(
-                                self.source, raw_full, record_id
-                            )
-                            signals.append(content_sig)
-                    except Exception:
-                        pass  # best-effort; metadata signal already emitted
+                    raw_full = client.get_message_full(msg_id)
+                    if raw_full:  # None means 404 (deleted) — skip gracefully
+                        from olo.adapters.gmail_full import build_email_content_signal
+                        content_sig = build_email_content_signal(
+                            self.source, raw_full, record_id
+                        )
+                        signals.append(content_sig)
 
         for entry in record.get("messagesDeleted", []):
             msg_stub = entry.get("message", {})

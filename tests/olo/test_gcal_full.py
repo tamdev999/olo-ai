@@ -236,7 +236,7 @@ def test_tc4_independent_cursors_per_calendar() -> None:
 
 def test_tc4_event_external_id_includes_calendar_hash() -> None:
     """T-C4: event external_ids from different calendars don't collide."""
-    from olo.adapters.gcal import _event_to_signal
+    from olo.adapters.gcal import _event_to_signals
     from datetime import UTC
 
     fetch_time = datetime.now(UTC)
@@ -250,8 +250,12 @@ def test_tc4_event_external_id_includes_calendar_hash() -> None:
         "created": "2026-01-01T12:00:00Z",
         "organizer": {"email": "org@example.com", "self": False},
     }
-    sig_primary = _event_to_signal(ev, "gcal_test", fetch_time, "primary")
-    sig_work    = _event_to_signal(ev, "gcal_test", fetch_time, "work@g.c.g.com")
+    sigs_primary = _event_to_signals(ev, "gcal_test", fetch_time, "primary")
+    sigs_work    = _event_to_signals(ev, "gcal_test", fetch_time, "work@g.c.g.com")
+
+    # First signal in each list is the metadata (calendar.event.changed)
+    sig_primary = sigs_primary[0]
+    sig_work    = sigs_work[0]
 
     assert sig_primary.external_id != sig_work.external_id, (
         "events on different calendars must have distinct external_ids"
@@ -403,3 +407,227 @@ def test_tc8_v2_cursor_round_trips_stable() -> None:
         assert comp.get("v") == _CURSOR_V2
         assert "list" in comp
         assert "cals" in comp
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# M2b Calendar content blob tests (B4-content, gcal_full.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_calendar_event_content_signal_emitted() -> None:
+    """B4-content: each calendar.event.changed is accompanied by calendar.event.content."""
+    with FakeGoogleServer() as fake:
+        fake.calendar.add_event("ev1", summary="Standup")
+        fake.calendar._incr_events.clear()
+
+        a = _make_adapter(fake)
+        cursor, all_sigs = _drive_to_steady(a)
+
+        kinds = {s.kind for s in all_sigs}
+        assert "calendar.event.changed" in kinds, (
+            f"expected calendar.event.changed, got {kinds}"
+        )
+        assert "calendar.event.content" in kinds, (
+            f"expected calendar.event.content, got {kinds}"
+        )
+
+        # Counts must match: one content per changed
+        changed_n = sum(1 for s in all_sigs if s.kind == "calendar.event.changed")
+        content_n = sum(1 for s in all_sigs if s.kind == "calendar.event.content")
+        assert content_n == changed_n, (
+            f"expected {changed_n} content signals, got {content_n}"
+        )
+
+
+def test_calendar_event_content_has_blob() -> None:
+    """B4-content: calendar.event.content signal has exactly one ContentBlob."""
+    from olo.adapters.gcal_full import GCAL_EVENT_MEDIA_TYPE
+
+    with FakeGoogleServer() as fake:
+        fake.calendar.add_event("ev1", summary="Meeting")
+        fake.calendar._incr_events.clear()
+
+        a = _make_adapter(fake)
+        _, all_sigs = _drive_to_steady(a)
+
+        content_sigs = [s for s in all_sigs if s.kind == "calendar.event.content"]
+        assert content_sigs, "no calendar.event.content signals found"
+
+        sig = content_sigs[0]
+        assert len(sig.blobs) == 1, f"expected 1 blob, got {len(sig.blobs)}"
+        blob = sig.blobs[0]
+        assert blob.media_type == GCAL_EVENT_MEDIA_TYPE, (
+            f"wrong media_type: {blob.media_type!r}"
+        )
+        assert len(blob.data) > 0
+
+
+def test_calendar_event_content_refs_in_payload() -> None:
+    """B4-content: calendar.event.content payload has content_refs with sha256."""
+    with FakeGoogleServer() as fake:
+        fake.calendar.add_event("ev1", summary="Review")
+        fake.calendar._incr_events.clear()
+
+        a = _make_adapter(fake)
+        _, all_sigs = _drive_to_steady(a)
+
+        content_sigs = [s for s in all_sigs if s.kind == "calendar.event.content"]
+        assert content_sigs
+
+        sig = content_sigs[0]
+        refs = sig.payload.get("content_refs", [])
+        assert len(refs) == 1, f"expected 1 content_ref, got {refs}"
+        ref = refs[0]
+        assert "sha256" in ref
+        assert ref["sha256"] == sig.blobs[0].sha256
+        assert ref["role"] == "event_doc"
+
+
+def test_calendar_event_content_description_in_blob_not_payload() -> None:
+    """B4-content: description is in the blob document but NOT in the metadata payload.
+
+    This is the core privacy/separation invariant:
+    - calendar.event.changed payload: no description (§6.3 M2 invariant preserved)
+    - calendar.event.content blob: contains description (new M2b content)
+    """
+    import hashlib
+    import json
+    from olo.signals import canonical_json
+
+    with FakeGoogleServer() as fake:
+        # Add event with description — fake server should include it in full response
+        fake.calendar.add_event("ev1", summary="Project Review")
+        fake.calendar._incr_events.clear()
+
+        a = _make_adapter(fake)
+        _, all_sigs = _drive_to_steady(a)
+
+        # Metadata signal must NOT contain description
+        changed_sigs = [s for s in all_sigs if s.kind == "calendar.event.changed"]
+        for sig in changed_sigs:
+            assert "description" not in sig.payload, (
+                f"description leaked into calendar.event.changed payload: "
+                f"{sig.payload.keys()}"
+            )
+
+        # Content signal blob should decode to a JSON doc with event fields
+        content_sigs = [s for s in all_sigs if s.kind == "calendar.event.content"]
+        assert content_sigs
+
+        sig = content_sigs[0]
+        blob = sig.blobs[0]
+        doc = json.loads(blob.data.decode())
+        # Must have basic event structure
+        assert "id" in doc or "summary" in doc, (
+            f"event doc missing expected keys: {list(doc.keys())}"
+        )
+        # calendar_id injected by gcal_full.py
+        assert "calendar_id" in doc, (
+            f"calendar_id not injected into event doc: {list(doc.keys())}"
+        )
+
+
+def test_calendar_event_content_blob_stored_via_ingest() -> None:
+    """B4-content: ingest_batch stores calendar.event.content blobs in content_blobs table;
+    blob is retrievable and description is present in blob, absent from signal payload."""
+    import json
+    import sqlite3
+    from datetime import UTC, datetime
+
+    from olo.content import get_blob, load_json_doc
+    from olo.store import (
+        acquire_run, finish_run, ingest_batch, migrate, connect, get_checkpoint
+    )
+    from olo.adapters.gcal_full import build_event_content_signal, GCAL_EVENT_MEDIA_TYPE
+
+    conn = sqlite3.connect(":memory:", isolation_level=None, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    migrate(conn)
+
+    source = "gcal_test"
+    run_id = acquire_run(source, "owner", conn)
+
+    # Build a real event with description
+    raw_event = {
+        "id": "event001",
+        "status": "confirmed",
+        "summary": "Sprint Planning",
+        "description": "Discuss Q4 roadmap. OLO-BODY-MARKER",
+        "start": {"dateTime": "2026-11-17T10:00:00Z"},
+        "end": {"dateTime": "2026-11-17T11:00:00Z"},
+        "created": "2026-11-01T00:00:00Z",
+        "updated": "2026-11-01T00:00:00Z",
+        "organizer": {"email": "alice@example.com", "self": True},
+    }
+    cal_id = "primary"
+    content_sig = build_event_content_signal(source, raw_event, cal_id)
+
+    inserted, _, _ = ingest_batch(
+        source, run_id, (content_sig,), "cursor1", None, conn
+    )
+    finish_run(source, run_id, "succeeded", conn)
+
+    assert inserted == 1, f"expected 1 inserted, got {inserted}"
+
+    # Blob is stored
+    n_blobs = conn.execute(
+        "SELECT COUNT(*) n FROM content_blobs WHERE source=?", (source,)
+    ).fetchone()["n"]
+    assert n_blobs == 1, f"expected 1 blob, got {n_blobs}"
+
+    # Retrieve and decode blob
+    sha = content_sig.blobs[0].sha256
+    raw_bytes = get_blob(conn, source, sha)
+    assert raw_bytes is not None, "get_blob returned None"
+
+    doc = load_json_doc(conn, source, sha)
+    assert doc is not None, "load_json_doc returned None"
+
+    # Description IS in the blob
+    assert doc.get("description") == "Discuss Q4 roadmap. OLO-BODY-MARKER", (
+        f"description not in blob doc: {doc.keys()}"
+    )
+    assert doc.get("calendar_id") == cal_id
+
+    # Description is NOT in the signal payload
+    signal_row = conn.execute(
+        "SELECT payload FROM signals WHERE source=? AND kind='calendar.event.content'",
+        (source,),
+    ).fetchone()
+    assert signal_row is not None
+    payload = json.loads(signal_row["payload"])
+    assert "description" not in payload, (
+        f"description leaked into signal payload: {payload.keys()}"
+    )
+
+    # Verify the body marker text is in the blob but not the signal
+    assert "OLO-BODY-MARKER" in doc["description"]
+    assert "OLO-BODY-MARKER" not in signal_row["payload"]
+
+    conn.close()
+
+
+def test_calendar_event_content_cancelled_also_has_content() -> None:
+    """B4-content: cancelled events also produce calendar.event.content signals."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        cursor, _ = _drive_to_steady(a)
+
+        fake.calendar.add_event("ev1", summary="Cancelled Meeting")
+        fake.calendar.cancel_event("ev1")
+
+        all_sigs = []
+        for _ in range(10):
+            b = a.fetch(cursor, limit=50)
+            all_sigs.extend(b.signals)
+            cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        cancelled = [s for s in all_sigs if s.kind == "calendar.event.cancelled"]
+        content = [s for s in all_sigs if s.kind == "calendar.event.content"]
+
+        assert len(cancelled) >= 1, "expected at least one cancelled signal"
+        assert len(content) >= 1, (
+            f"cancelled event must still produce calendar.event.content, got content={content}"
+        )

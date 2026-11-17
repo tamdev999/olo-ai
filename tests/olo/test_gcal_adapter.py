@@ -534,8 +534,10 @@ def test_empty_page_with_next_page_token() -> None:
         # Inject patched _do_request and do single incremental fetch
         a._do_request = _two_phase
         b = a.fetch(cursor, limit=10)
-        assert len(b.signals) == 1
-        assert b.signals[0].payload["event_id"] == "ep1"
+        # Each event produces calendar.event.changed + calendar.event.content = 2 signals
+        event_sigs = [s for s in b.signals if s.kind == "calendar.event.changed"]
+        assert len(event_sigs) == 1
+        assert event_sigs[0].payload["event_id"] == "ep1"
         assert calls[0] == 2, f"adapter must follow the empty-page token; calls={calls[0]}"
 
 

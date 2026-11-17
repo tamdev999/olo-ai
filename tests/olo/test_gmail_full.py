@@ -504,3 +504,189 @@ def test_canonical_doc_strips_mutable_fields() -> None:
     # id and threadId are kept
     assert doc.get("id") == msg["id"]
     assert doc.get("threadId") == msg["threadId"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Issue 3: Gmail full-content failure handling (no silent data loss)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_get_message_full_source_error_propagates() -> None:
+    """Issue 3: if get_message_full raises SourceError, the batch fails (no silent skip).
+
+    Before the fix: a bare `except Exception: pass` swallowed all errors,
+    advancing the checkpoint without storing the content blob.
+    After the fix: only `None` return (404-deleted) is silently skipped;
+    any SourceError propagates so the batch fails and the checkpoint does NOT advance.
+    """
+    from olo.adapters import SourceError
+    from olo.adapters.gmail import GmailAdapter
+    from tests.olo.fake_google import FakeGoogleServer
+
+    with FakeGoogleServer() as fake:
+        # Bootstrap FIRST (empty mailbox — sets cursor to current historyId)
+        creds = fake.make_credentials("test", gmail_readonly=True)
+        from olo.google.http import GoogleClient
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+        adapter = GmailAdapter({"account": "test"}, client=client)
+
+        b0 = adapter.fetch(None, limit=10)
+        cursor = b0.next_cursor
+
+        # Add message AFTER bootstrap so it appears in incremental history
+        fake.gmail.add_message(
+            "msg001", thread_id="t1", labels=["INBOX"],
+            subject="Test message",
+        )
+
+        # Patch get_message_full to raise SourceError (e.g., transient network failure)
+        network_error_raised = []
+
+        def _failing_get_message_full(msg_id):
+            network_error_raised.append(msg_id)
+            raise SourceError("simulated network failure on format=full fetch")
+
+        client.get_message_full = _failing_get_message_full
+
+        # The fetch must raise SourceError, not silently succeed
+        import pytest
+        with pytest.raises(SourceError, match="simulated network failure"):
+            adapter.fetch(cursor, limit=10)
+
+        # The error was raised (not swallowed)
+        assert network_error_raised, "get_message_full was not called"
+
+
+def test_get_message_full_404_skipped_gracefully() -> None:
+    """Issue 3: if get_message_full returns None (404-deleted), skip gracefully.
+
+    A message that was added to history but deleted before we could fetch it
+    in format=full should still produce email.received/sent (metadata only),
+    without an email.content signal.
+    """
+    from olo.adapters.gmail import GmailAdapter
+    from tests.olo.fake_google import FakeGoogleServer
+
+    with FakeGoogleServer() as fake:
+        # Bootstrap FIRST (empty mailbox)
+        creds = fake.make_credentials("test", gmail_readonly=True)
+        from olo.google.http import GoogleClient
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+        adapter = GmailAdapter({"account": "test"}, client=client)
+
+        b0 = adapter.fetch(None, limit=10)
+        cursor = b0.next_cursor
+
+        # Add message AFTER bootstrap so it appears in incremental history
+        fake.gmail.add_message(
+            "msg001", thread_id="t1", labels=["INBOX"],
+            subject="Will be deleted",
+        )
+
+        # Simulate message deleted before format=full fetch (returns None = 404)
+        client.get_message_full = lambda msg_id: None
+
+        b1 = adapter.fetch(cursor, limit=10)
+
+        # Metadata signal (email.received) is emitted
+        received = [s for s in b1.signals if s.kind == "email.received"]
+        assert len(received) == 1, (
+            f"expected 1 email.received despite 404-on-full: {[s.kind for s in b1.signals]}"
+        )
+
+        # No email.content signal (message was deleted, so no blob)
+        content = [s for s in b1.signals if s.kind == "email.content"]
+        assert len(content) == 0, (
+            f"unexpected email.content signals when format=full returned None: {content}"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Issue 4: Privacy proof — blob round-trip, description in blob not payload
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_gmail_blob_round_trip_body_in_blob_not_payload() -> None:
+    """Issue 4: message body content is retrievable from the blob;
+    it does NOT appear in signals.payload or signals.subject.
+
+    Uses ingest_batch end-to-end so the SQLite storage path is exercised.
+    """
+    import json
+    import sqlite3
+
+    from olo.content import get_blob, load_json_doc, email_text
+    from olo.store import acquire_run, finish_run, ingest_batch, migrate
+    from olo.adapters.gmail_full import build_email_content_signal, GMAIL_MSG_MEDIA_TYPE
+
+    conn = sqlite3.connect(":memory:", isolation_level=None, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    migrate(conn)
+
+    source = "gmail_test"
+    run_id = acquire_run(source, "owner", conn)
+
+    # Build a realistic format=full message with body content
+    import base64
+    secret_body = "Confidential quarterly results: revenue $4.2M. OLO-BODY-MARKER"
+    encoded_body = base64.urlsafe_b64encode(secret_body.encode()).decode().rstrip("=")
+
+    raw_msg = {
+        "id": "msg001",
+        "threadId": "thread001",
+        "internalDate": "1700000000000",
+        "sizeEstimate": 1500,
+        "labelIds": ["INBOX"],
+        "payload": {
+            "mimeType": "text/plain",
+            "headers": [
+                {"name": "Subject", "value": "Q4 Results"},
+                {"name": "From", "value": "alice@example.com"},
+                {"name": "To", "value": "bob@example.com"},
+                {"name": "Date", "value": "Mon, 17 Nov 2026 10:00:00 +0000"},
+                {"name": "Message-ID", "value": "<q4@example.com>"},
+            ],
+            "body": {"data": encoded_body, "size": len(secret_body)},
+            "parts": [],
+        },
+    }
+
+    content_sig = build_email_content_signal(source, raw_msg, "run001")
+    inserted, _, _ = ingest_batch(source, run_id, (content_sig,), "cursor1", None, conn)
+    finish_run(source, run_id, "succeeded", conn)
+    assert inserted == 1
+
+    # ── Verify body IS in the blob ──────────────────────────────────────────
+    sha = content_sig.blobs[0].sha256
+    doc = load_json_doc(conn, source, sha)
+    assert doc is not None, "load_json_doc returned None"
+
+    # email_text() must recover the body content from the blob
+    text = email_text(doc)
+    assert secret_body in text.plain, (
+        f"body content not recovered from blob: got plain={text.plain!r}"
+    )
+    assert "OLO-BODY-MARKER" in text.plain
+
+    # ── Verify body NOT in signals table ────────────────────────────────────
+    signal_row = conn.execute(
+        "SELECT subject, payload FROM signals WHERE source=? AND kind='email.content'",
+        (source,),
+    ).fetchone()
+    assert signal_row is not None
+
+    # Subject is the email subject, not body content
+    assert signal_row["subject"] == "Q4 Results"
+    assert "quarterly results" not in (signal_row["subject"] or "").lower()
+    assert "quarterly results" not in signal_row["payload"].lower()
+    assert "OLO-BODY-MARKER" not in signal_row["payload"]
+
+    # Verify content_refs present and sha256 matches
+    payload = json.loads(signal_row["payload"])
+    refs = payload.get("content_refs", [])
+    assert len(refs) == 1
+    assert refs[0]["sha256"] == sha
+    assert refs[0]["media_type"] == GMAIL_MSG_MEDIA_TYPE
+
+    conn.close()

@@ -4,6 +4,9 @@
 B4 (M2b): composite cursor v2, calendarList discovery, per-calendar paging,
   calendar.calendar.added/removed signals, 410 self-heal per calendar,
   v1 cursor migration, lookback_days 0–365.
+B4-content (M2b): calendar.event.content signals with full event document blob
+  (including description), emitted alongside calendar.event.changed/cancelled.
+  Description is in the blob; it is NOT in the metadata payload (§6.3 privacy).
 
 Registered as "gcal"; per-account source = "gcal_<alias>".
 
@@ -75,10 +78,19 @@ def _truncate(s: Optional[str], n: int) -> Optional[str]:
     return collapsed[:n] if collapsed else None
 
 
-def _event_to_signal(
+def _event_to_signals(
     event: dict, source: str, fetch_time: datetime, calendar_id: str
-) -> NormalizedSignal:
-    """Map a Calendar event dict to a NormalizedSignal."""
+) -> list[NormalizedSignal]:
+    """Map a Calendar event dict to a list of NormalizedSignals.
+
+    Always emits calendar.event.changed or calendar.event.cancelled (metadata).
+    Also emits calendar.event.content (full document blob, including description).
+
+    The description field is stored in the content blob only — never in the
+    metadata payload (§6.3 privacy invariant from M2).
+    """
+    from olo.adapters.gcal_full import build_event_content_signal
+
     event_id = event.get("id", "")
     status = event.get("status", "confirmed")
     summary_raw = event.get("summary")
@@ -107,7 +119,7 @@ def _event_to_signal(
     if summary_raw:
         subject = _truncate(summary_raw, _SIGNAL_SUBJECT_MAX)
 
-    # payload (§6.3 — exclude forbidden fields)
+    # payload (§6.3 — exclude forbidden fields; description lives in the blob)
     organizer = event.get("organizer", {})
     attendees_raw = event.get("attendees", [])[:_MAX_ATTENDEES]
     recurrence_raw = event.get("recurrence", [])[:_MAX_RECURRENCE]
@@ -117,7 +129,7 @@ def _event_to_signal(
     start_val = start.get("dateTime") or start.get("date") or ""
     end_val = end.get("dateTime") or end.get("date") or ""
 
-    payload: dict = {
+    metadata_payload: dict = {
         "event_id": event_id,
         "calendar_id": calendar_id,
         "status": status,
@@ -142,14 +154,23 @@ def _event_to_signal(
         "html_link": None,  # §6.3: excluded
     }
 
-    return NormalizedSignal(
+    metadata_sig = NormalizedSignal(
         source=source,
         external_id=external_id,
         kind=kind,
         occurred_at=occurred_at,
         subject=subject,
-        payload=payload,
+        payload=metadata_payload,
     )
+
+    # Build the content signal with full event document (includes description)
+    try:
+        content_sig = build_event_content_signal(source, event, calendar_id)
+    except Exception:
+        # If blob construction fails (e.g. malformed event), emit metadata only
+        return [metadata_sig]
+
+    return [metadata_sig, content_sig]
 
 
 def _cal_list_external_id(cal_id: str, action: str) -> str:
@@ -592,10 +613,13 @@ class GcalAdapter(MonitorAdapter):
                 )
 
             if events:
-                signals = tuple(
-                    _event_to_signal(ev, self.source, fetch_time, cal_id)
-                    for ev in events
-                )
+                # Each event produces a metadata signal + a content signal (blob)
+                all_event_sigs: list[NormalizedSignal] = []
+                for ev in events:
+                    all_event_sigs.extend(
+                        _event_to_signals(ev, self.source, fetch_time, cal_id)
+                    )
+                signals = tuple(all_event_sigs)
                 new_comp = self._update_comp(
                     comp, cal_id, next_sync_token, next_page_token, current_cal_cursor
                 )

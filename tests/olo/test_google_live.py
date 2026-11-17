@@ -437,12 +437,15 @@ def test_stage1_gmail_inprocess() -> None:
     conn.close()
 
     # 6 email.received (P1-P5, P7) and 2 email.sent (P6, P8)
+    # With M2b full scopes: also 8 email.content (one per message) = 16 total
     received = kinds.get("email.received", 0)
     sent = kinds.get("email.sent", 0)
+    content = kinds.get("email.content", 0)
 
     assert received == 6, f"expected 6 email.received, got {received} (kinds={kinds})"
     assert sent == 2, f"expected 2 email.sent, got {sent} (kinds={kinds})"
-    assert n == 8, f"expected 8 total signals, got {n}"
+    assert content == 8, f"expected 8 email.content (one per P1-P8), got {content} (kinds={kinds})"
+    assert n == 16, f"expected 16 total signals (8 metadata + 8 content), got {n}"
 
     # V1: all calls are GETs (no writes)
     writes = [c for c in spy.calls if c["path"] not in (
@@ -501,9 +504,11 @@ def test_stage1_gcal_inprocess() -> None:
     kinds = _signals_by_kind("gcal_livetest", conn)
     conn.close()
 
-    assert n == 4, f"expected 4 calendar signals (E1-E4), got {n} (kinds={kinds})"
+    assert n == 8, f"expected 8 calendar signals (4 changed + 4 content for E1-E4), got {n} (kinds={kinds})"
     changed = kinds.get("calendar.event.changed", 0)
     assert changed == 4, f"expected 4 calendar.event.changed, got {changed}"
+    content = kinds.get("calendar.event.content", 0)
+    assert content == 4, f"expected 4 calendar.event.content (one per event), got {content}"
 
     # V3: sync token present in cursor
     conn = _db_conn()
@@ -707,9 +712,28 @@ def test_stage3_h1_pagination() -> None:
     conn.close()
 
     added = new_n - stage2_n
-    assert added == 3, (
-        f"Stage 3: expected exactly 3 new signals (Q1,Q2,Q3), got {added} "
-        f"(total={new_n}, kinds={new_kinds})"
+    # With M2b: each Q message produces email.received + email.content = 2 signals.
+    # 3 Q messages × 2 signals = 6 new signals total.
+    assert added == 6, (
+        f"Stage 3: expected exactly 6 new signals (3×email.received + 3×email.content "
+        f"for Q1, Q2, Q3), got {added} new (total={new_n}, kinds={new_kinds})"
+    )
+
+    # Exactly 3 email.received (Q1, Q2, Q3) — no draft signals
+    new_received = new_kinds.get("email.received", 0)
+    stage2_received = _load_state().get("stage2_gmail_kinds", {}).get("email.received", 0)
+    q_received = new_received - stage2_received
+    assert q_received == 3, (
+        f"Stage 3: expected 3 new email.received (Q1,Q2,Q3), got {q_received} "
+        f"(kinds delta={new_kinds})"
+    )
+
+    # Exactly 3 email.content (one per Q message)
+    new_content = new_kinds.get("email.content", 0)
+    stage2_content = _load_state().get("stage2_gmail_kinds", {}).get("email.content", 0)
+    q_content = new_content - stage2_content
+    assert q_content == 3, (
+        f"Stage 3: expected 3 new email.content (Q1,Q2,Q3), got {q_content}"
     )
 
     # Draft signals must be absent
