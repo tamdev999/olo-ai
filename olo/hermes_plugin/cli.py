@@ -284,11 +284,17 @@ def _cmd_setup(args: argparse.Namespace) -> None:
 # ── Google connect ─────────────────────────────────────────────────────────────
 
 def _cmd_google_connect(args: argparse.Namespace) -> None:
-    """OAuth connect for a Google account."""
+    """OAuth connect for a Google account (initial connect or --upgrade to M2b scopes)."""
     alias: str = args.account
     client_secret_file: str = args.client_secret_file
     manual: bool = getattr(args, "manual", False)
     prod: bool = getattr(args, "production", False)
+    upgrade: bool = getattr(args, "upgrade", False)
+    revoke_first: bool = getattr(args, "revoke_first", False)
+
+    if revoke_first and not upgrade:
+        print("olo google connect: --revoke-first requires --upgrade", file=sys.stderr)
+        sys.exit(1)
 
     if not _ALIAS_RE.match(alias):
         print(
@@ -318,6 +324,81 @@ def _cmd_google_connect(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    oauth_status = "production" if prod else "testing"
+
+    # ── M2b upgrade path ──────────────────────────────────────────────────────
+    if upgrade:
+        from olo.google.oauth import upgrade_credentials
+
+        def _connect_fn(scopes):
+            """Obtain consent for *scopes*; return (code, api_base_override)."""
+            from olo.google.oauth import (
+                build_auth_url, connect_loopback, await_loopback_code,
+                parse_manual_redirect,
+            )
+            if manual:
+                import socket
+                with socket.socket() as s:
+                    s.bind(("127.0.0.1", 0))
+                    port = s.getsockname()[1]
+                redirect_uri = f"http://127.0.0.1:{port}/"
+                auth_url, pending = build_auth_url(client_id, redirect_uri, scopes)
+                print(f"\nOpen this URL in your browser:\n\n  {auth_url}\n")
+                print("After authorising, paste the full redirect URL here:")
+                try:
+                    pasted = input("> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    raise RuntimeError("Upgrade cancelled by user.")
+                code = parse_manual_redirect(pasted, pending)
+                if code is None:
+                    raise RuntimeError("Authorisation failed or state mismatch.")
+                return code, None
+            else:
+                auth_url, pending, port = connect_loopback(
+                    client_id, client_secret, alias, scopes,
+                )
+                print(f"\nOpen this URL in your browser:\n\n  {auth_url}\n")
+                print(
+                    f"Waiting for redirect on http://127.0.0.1:{port}/ (300s timeout)..."
+                )
+                code = await_loopback_code(pending, port)
+                if code is None:
+                    raise RuntimeError("Upgrade consent timed out or access denied.")
+                return code, None
+
+        result = upgrade_credentials(
+            alias,
+            revoke_first=revoke_first,
+            connect_fn=_connect_fn,
+            oauth_publishing_status=oauth_status,
+        )
+
+        if result.success:
+            print(f"\nUpgrade complete for account {alias!r}.")
+            print("  scope_profile = full_v1")
+            print("  Existing checkpoints preserved — no reset needed.")
+            if oauth_status == "testing":
+                print("  Warning: Testing-mode tokens expire 7 days after consent.")
+        else:
+            if result.scope_union and result.needs_revoke_first:
+                print(
+                    f"\nolo google connect --upgrade: Google returned both old and new scopes "
+                    f"in the same grant (scope_union).\n"
+                    f"Rerun with --revoke-first to clear the existing project grant first:\n\n"
+                    f"  hermes olo google connect --account {alias} "
+                    f"--client-secret-file {client_secret_file} "
+                    f"--upgrade --revoke-first\n",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"olo google connect --upgrade: failed — {result.reason}",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+        return
+
+    # ── Standard initial connect path ─────────────────────────────────────────
     from olo.google.credentials import REQUIRED_SCOPES, credential_lock, save_credentials
     from olo.google.oauth import (
         connect_loopback, await_loopback_code,
@@ -326,7 +407,6 @@ def _cmd_google_connect(args: argparse.Namespace) -> None:
     )
 
     scopes = REQUIRED_SCOPES
-    oauth_status = "production" if prod else "testing"
 
     if manual:
         import socket
@@ -422,14 +502,18 @@ def _cmd_google_status(args: argparse.Namespace) -> None:
 
         scopes_short = []
         if creds.has_gmail_scope():
-            scopes_short.append("gmail.metadata")
+            scopes_short.append(
+                "gmail.readonly" if creds.has_gmail_readonly_scope() else "gmail.metadata"
+            )
         if creds.has_calendar_scope():
             scopes_short.append("calendar")
 
+        profile_str = creds.scope_profile or "legacy_v1"
         print(f"  {alias}:")
-        print(f"    email_hash: {email_hash(creds.email_address)}")
-        print(f"    scopes:     {scopes_short}")
-        print(f"    status:     {creds.oauth_publishing_status}")
+        print(f"    email_hash:    {email_hash(creds.email_address)}")
+        print(f"    scopes:        {scopes_short}")
+        print(f"    scope_profile: {profile_str}")
+        print(f"    status:        {creds.oauth_publishing_status}")
 
         # Expiry warning for testing mode
         if creds.oauth_publishing_status == "testing":
@@ -635,6 +719,23 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
     gconn.add_argument(
         "--production", action="store_true",
         help="Mark as production OAuth status (not testing)",
+    )
+    gconn.add_argument(
+        "--upgrade", action="store_true",
+        help=(
+            "Upgrade from M2 (gmail.metadata) to M2b (gmail.readonly + "
+            "calendar.events.readonly + calendar.calendarlist.readonly) scopes. "
+            "Preserves existing checkpoints. Use --revoke-first if Google returns "
+            "scope_union (old and new scopes granted together)."
+        ),
+    )
+    gconn.add_argument(
+        "--revoke-first", action="store_true", dest="revoke_first",
+        help=(
+            "Only with --upgrade: revoke the existing token before requesting new "
+            "scopes, then poll until invalid_grant is confirmed. Use when a plain "
+            "--upgrade attempt returns a scope_union error."
+        ),
     )
     gconn.set_defaults(func=_cmd_google_connect)
 

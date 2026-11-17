@@ -243,3 +243,205 @@ def test_two_account_isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert beta.client_id == "cid_beta"
     assert alpha.email_address != beta.email_address
     assert alpha.refresh_token != beta.refresh_token
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# M2b: --upgrade / --revoke-first CLI parsing tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_upgrade_flag_accepted_by_parser() -> None:
+    """setup_parser wires --upgrade onto 'google connect'."""
+    import argparse
+    from olo.hermes_plugin.cli import setup_parser
+
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers(dest="cmd")
+    olo_p = sub.add_parser("olo")
+    setup_parser(olo_p)
+
+    args = p.parse_args(
+        ["olo", "google", "connect",
+         "--account", "test",
+         "--client-secret-file", "/tmp/cs.json",
+         "--upgrade"]
+    )
+    assert args.upgrade is True
+    assert args.revoke_first is False
+
+
+def test_revoke_first_flag_accepted_by_parser() -> None:
+    """--revoke-first is accepted alongside --upgrade."""
+    import argparse
+    from olo.hermes_plugin.cli import setup_parser
+
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers(dest="cmd")
+    olo_p = sub.add_parser("olo")
+    setup_parser(olo_p)
+
+    args = p.parse_args(
+        ["olo", "google", "connect",
+         "--account", "test",
+         "--client-secret-file", "/tmp/cs.json",
+         "--upgrade", "--revoke-first"]
+    )
+    assert args.upgrade is True
+    assert args.revoke_first is True
+
+
+def test_revoke_first_without_upgrade_exits_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--revoke-first without --upgrade must print an error and exit 1."""
+    import argparse, types, sys
+    from olo.hermes_plugin.cli import _cmd_google_connect
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    ns = types.SimpleNamespace(
+        account="test",
+        client_secret_file=str(tmp_path / "cs.json"),
+        manual=False,
+        production=False,
+        upgrade=False,
+        revoke_first=True,
+    )
+    # Create a minimal client-secret file so the file-load check passes
+    (tmp_path / "cs.json").write_text(
+        '{"installed":{"client_id":"cid","client_secret":"cs",'
+        '"redirect_uris":["http://127.0.0.1"]}}'
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        _cmd_google_connect(ns)
+    assert exc_info.value.code == 1
+
+
+def test_upgrade_calls_upgrade_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--upgrade path calls upgrade_credentials() not the basic connect flow."""
+    import types
+    from olo.hermes_plugin.cli import _cmd_google_connect
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Create dummy client secret
+    cs_path = tmp_path / "cs.json"
+    cs_path.write_text(
+        '{"installed":{"client_id":"cid","client_secret":"cs",'
+        '"redirect_uris":["http://127.0.0.1"]}}'
+    )
+
+    called_with: list[tuple] = []
+
+    class _FakeResult:
+        success = True
+        scope_union = False
+        needs_revoke_first = False
+        reason = ""
+
+    def _fake_upgrade(alias, *, revoke_first=False, connect_fn=None,
+                      oauth_publishing_status=None, **kw):
+        called_with.append((alias, revoke_first, oauth_publishing_status))
+        return _FakeResult()
+
+    # Patch where it is imported from inside _cmd_google_connect
+    monkeypatch.setattr("olo.google.oauth.upgrade_credentials", _fake_upgrade)
+
+    ns = types.SimpleNamespace(
+        account="test",
+        client_secret_file=str(cs_path),
+        manual=False,
+        production=False,
+        upgrade=True,
+        revoke_first=False,
+    )
+    _cmd_google_connect(ns)
+
+    assert called_with, "upgrade_credentials was not called"
+    alias_called, revoke_called, status_called = called_with[0]
+    assert alias_called == "test"
+    assert revoke_called is False
+    assert status_called == "testing"
+
+
+def test_upgrade_revoke_first_passed_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--upgrade --revoke-first passes revoke_first=True to upgrade_credentials."""
+    import types
+    from olo.hermes_plugin.cli import _cmd_google_connect
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    cs_path = tmp_path / "cs.json"
+    cs_path.write_text(
+        '{"installed":{"client_id":"cid","client_secret":"cs",'
+        '"redirect_uris":["http://127.0.0.1"]}}'
+    )
+
+    called: list[bool] = []
+
+    class _FakeResult:
+        success = True
+        scope_union = False
+        needs_revoke_first = False
+        reason = ""
+
+    def _fake_upgrade(alias, *, revoke_first=False, connect_fn=None, **kw):
+        called.append(revoke_first)
+        return _FakeResult()
+
+    monkeypatch.setattr("olo.google.oauth.upgrade_credentials", _fake_upgrade)
+
+    ns = types.SimpleNamespace(
+        account="test",
+        client_secret_file=str(cs_path),
+        manual=False,
+        production=False,
+        upgrade=True,
+        revoke_first=True,
+    )
+    _cmd_google_connect(ns)
+
+    assert called == [True], f"expected revoke_first=True, got {called}"
+
+
+def test_upgrade_scope_union_exits_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scope_union result from upgrade_credentials → exit 1 with helpful message."""
+    import types
+    from olo.hermes_plugin.cli import _cmd_google_connect
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    cs_path = tmp_path / "cs.json"
+    cs_path.write_text(
+        '{"installed":{"client_id":"cid","client_secret":"cs",'
+        '"redirect_uris":["http://127.0.0.1"]}}'
+    )
+
+    class _ScopeUnionResult:
+        success = False
+        scope_union = True
+        needs_revoke_first = True
+        reason = "scope_union"
+
+    monkeypatch.setattr(
+        "olo.google.oauth.upgrade_credentials",
+        lambda *a, **kw: _ScopeUnionResult(),
+    )
+
+    ns = types.SimpleNamespace(
+        account="test",
+        client_secret_file=str(cs_path),
+        manual=False,
+        production=False,
+        upgrade=True,
+        revoke_first=False,
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        _cmd_google_connect(ns)
+
+    assert exc_info.value.code == 1

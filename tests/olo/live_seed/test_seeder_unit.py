@@ -380,3 +380,200 @@ def test_client_secret_env_required() -> None:
             from tests.olo.live_seed.seeder import _get_access_token
             with pytest.raises(SeederAccountError, match="No seeder token"):
                 _get_access_token()
+
+
+# ── seed-stage3 (Q1/draft-A/Q2/draft-B/Q3) ───────────────────────────────────
+
+def test_seed_stage3_creates_q1_q2_q3() -> None:
+    """seed_stage3 creates Q1, Q2, Q3 as imported messages."""
+    seeder = GmailSeeder(token="fake", account_email="me@example.com")
+    imported: list[tuple[str, list]] = []  # (raw, label_ids)
+
+    # Draft calls go via _create_draft / _update_draft / _delete_draft
+    # Import calls go via _import_message
+    def _fake_import(raw, label_ids):
+        imported.append((raw, label_ids))
+        idx = len(imported)
+        return {"id": f"q{idx}id", "threadId": f"qt{idx}"}
+
+    draft_ops: list[str] = []
+
+    def _fake_create_draft(raw):
+        draft_ops.append("create")
+        return "draftid001"
+
+    def _fake_update_draft(draft_id, raw):
+        draft_ops.append(f"update:{draft_id}")
+
+    def _fake_delete_draft(draft_id):
+        draft_ops.append(f"delete:{draft_id}")
+
+    seeder._import_message = _fake_import
+    seeder._create_draft = _fake_create_draft
+    seeder._update_draft = _fake_update_draft
+    seeder._delete_draft = _fake_delete_draft
+
+    seeder.seed_stage3("sender@example.com", "tag", n_autosaves=2)
+
+    # 3 messages imported (Q1, Q2, Q3)
+    assert len(imported) == 3, f"expected 3 imported, got {len(imported)}"
+
+    # All are INBOX (received messages)
+    for raw, labels in imported:
+        assert "INBOX" in labels, f"expected INBOX label: {labels}"
+
+    # Q1, Q2, Q3 recorded in created dict
+    assert "Q1" in seeder.created
+    assert "Q2" in seeder.created
+    assert "Q3" in seeder.created
+
+    # Subjects contain run_tag
+    assert "tag" in seeder.created["Q1"]["subject"]
+    assert "tag" in seeder.created["Q2"]["subject"]
+    assert "tag" in seeder.created["Q3"]["subject"]
+
+
+def test_seed_stage3_draft_lifecycle() -> None:
+    """seed_stage3 creates 2 drafts, each with n_autosaves updates then deleted."""
+    seeder = GmailSeeder(token="fake", account_email="me@example.com")
+
+    draft_sequence: list[str] = []
+    draft_id_counter = [0]
+
+    def _fake_import(raw, label_ids):
+        n = len(draft_sequence)
+        return {"id": f"mid{n}", "threadId": f"t{n}"}
+
+    def _fake_create_draft(raw):
+        draft_id_counter[0] += 1
+        did = f"draft{draft_id_counter[0]}"
+        draft_sequence.append(f"create:{did}")
+        return did
+
+    def _fake_update_draft(draft_id, raw):
+        draft_sequence.append(f"update:{draft_id}")
+
+    def _fake_delete_draft(draft_id):
+        draft_sequence.append(f"delete:{draft_id}")
+
+    seeder._import_message = _fake_import
+    seeder._create_draft = _fake_create_draft
+    seeder._update_draft = _fake_update_draft
+    seeder._delete_draft = _fake_delete_draft
+
+    n_saves = 3
+    seeder.seed_stage3("sender@example.com", "tag", n_autosaves=n_saves)
+
+    # Expect: create:draft1, update×3, delete:draft1, create:draft2, update×3, delete:draft2
+    creates = [op for op in draft_sequence if op.startswith("create:")]
+    updates = [op for op in draft_sequence if op.startswith("update:")]
+    deletes = [op for op in draft_sequence if op.startswith("delete:")]
+
+    assert len(creates) == 2, f"expected 2 draft creates, got {creates}"
+    assert len(updates) == n_saves * 2, f"expected {n_saves*2} updates, got {updates}"
+    assert len(deletes) == 2, f"expected 2 draft deletes, got {deletes}"
+
+
+def test_seed_stage3_interleave_order() -> None:
+    """The seeding order must be: Q1 → draft-A → Q2 → draft-B → Q3."""
+    seeder = GmailSeeder(token="fake", account_email="me@example.com")
+    ops: list[str] = []
+    n = [0]
+
+    def _fake_import(raw, label_ids):
+        n[0] += 1
+        ops.append(f"import:{n[0]}")
+        return {"id": f"id{n[0]}", "threadId": f"t{n[0]}"}
+
+    d = [0]
+
+    def _fake_create_draft(raw):
+        d[0] += 1
+        ops.append(f"draft_create:{d[0]}")
+        return f"did{d[0]}"
+
+    def _fake_update_draft(draft_id, raw):
+        ops.append(f"draft_update:{draft_id}")
+
+    def _fake_delete_draft(draft_id):
+        ops.append(f"draft_delete:{draft_id}")
+
+    seeder._import_message = _fake_import
+    seeder._create_draft = _fake_create_draft
+    seeder._update_draft = _fake_update_draft
+    seeder._delete_draft = _fake_delete_draft
+
+    seeder.seed_stage3("sender@example.com", "tag", n_autosaves=1)
+
+    # import:1 (Q1) must come before draft_create:1
+    # draft_delete:did1 must come before import:2 (Q2)
+    # import:2 (Q2) must come before draft_create:2
+    # draft_delete:did2 must come before import:3 (Q3)
+    import_positions = {op: i for i, op in enumerate(ops) if op.startswith("import:")}
+    draft_create_positions = {op: i for i, op in enumerate(ops) if op.startswith("draft_create:")}
+    draft_delete_positions = {op: i for i, op in enumerate(ops) if op.startswith("draft_delete:")}
+
+    assert import_positions["import:1"] < draft_create_positions["draft_create:1"]
+    assert draft_delete_positions["draft_delete:did1"] < import_positions["import:2"]
+    assert import_positions["import:2"] < draft_create_positions["draft_create:2"]
+    assert draft_delete_positions["draft_delete:did2"] < import_positions["import:3"]
+
+
+def test_seed_stage3_all_messages_contain_body_marker() -> None:
+    """Q1–Q3 messages each contain OLO-BODY-MARKER in the decoded body."""
+    import email as _em
+    seeder = GmailSeeder(token="fake", account_email="me@example.com")
+    raws: list[str] = []
+
+    def _fake_import(raw, label_ids):
+        raws.append(raw)
+        idx = len(raws)
+        return {"id": f"id{idx}", "threadId": f"t{idx}"}
+
+    def _fake_create_draft(raw): return "did"
+    def _fake_update_draft(d, raw): pass
+    def _fake_delete_draft(d): pass
+
+    seeder._import_message = _fake_import
+    seeder._create_draft = _fake_create_draft
+    seeder._update_draft = _fake_update_draft
+    seeder._delete_draft = _fake_delete_draft
+
+    seeder.seed_stage3("sender@example.com", "tag", n_autosaves=1)
+
+    assert len(raws) == 3
+    for i, raw in enumerate(raws):
+        msg = _em.message_from_string(raw)
+        body = msg.get_payload(decode=True)
+        decoded = body.decode("utf-8", errors="replace") if body else msg.get_payload()
+        assert BODY_MARKER in decoded, f"Q{i+1}: {BODY_MARKER} missing from body"
+
+
+def test_seed_stage3_q_subjects_distinct() -> None:
+    """Q1, Q2, Q3 must have distinct subjects."""
+    seeder = GmailSeeder(token="fake", account_email="me@example.com")
+    n = [0]
+
+    def _fake_import(raw, label_ids):
+        n[0] += 1
+        return {"id": f"id{n[0]}", "threadId": f"t{n[0]}"}
+
+    def _fake_create_draft(raw): return "did"
+    def _fake_update_draft(d, raw): pass
+    def _fake_delete_draft(d): pass
+
+    seeder._import_message = _fake_import
+    seeder._create_draft = _fake_create_draft
+    seeder._update_draft = _fake_update_draft
+    seeder._delete_draft = _fake_delete_draft
+
+    seeder.seed_stage3("sender@example.com", "tag", n_autosaves=1)
+
+    subjects = {
+        seeder.created["Q1"]["subject"],
+        seeder.created["Q2"]["subject"],
+        seeder.created["Q3"]["subject"],
+    }
+    assert len(subjects) == 3, f"Q subjects must be distinct: {subjects}"
+    for subj in subjects:
+        assert "OLO-Q" in subj, f"Q subject must contain OLO-Q: {subj!r}"

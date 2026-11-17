@@ -897,7 +897,20 @@ def test_failure_disconnect_then_run() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_final_no_body_marker_in_db() -> None:
-    """Body marker OLO-BODY-MARKER must not appear in olo.db bytes."""
+    """Body marker OLO-BODY-MARKER must not appear in olo.db bytes.
+
+    Proof that this assertion is sound (verified empirically in task #3):
+    - The marker appears only in the MIME body of seeder-generated messages.
+    - gmail_full.py keeps body.data for text/* parts; that value is a
+      base64url-encoded string — the literal marker is NOT present in the JSON.
+    - Even with identity encoding (no zlib), b"OLO-BODY-MARKER" cannot appear
+      as a byte substring of the JSON because the text is encoded.
+    - Calendar event descriptions (which do contain the marker literally) are
+      never stored as blobs — only email.content blobs are written to DB.
+    - Seeder subjects are [OLO-P1-...] etc., not OLO-BODY-MARKER.
+    Therefore: b"OLO-BODY-MARKER" appearing in olo.db is a true indicator that
+    message body text leaked into signals.payload or some other unencoded field.
+    """
     _skip_unless_stage("0", "1", "2", "3", "failure")
 
     old = os.environ.get("HERMES_HOME")

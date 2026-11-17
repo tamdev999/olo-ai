@@ -26,11 +26,17 @@ ENVIRONMENT
   OLO_SEEDER_TOKEN_FILE          Optional.  Path to cached token JSON (default:
                                              ~/.olo_seeder_token.json).
   OLO_SEEDER_CREDENTIALS_FILE    Optional.  Alias for OLO_SEEDER_TOKEN_FILE.
+  OLO_SEEDER_SENDER_EMAIL        Required for seed-gmail and seed-stage3.
+  OLO_SEEDER_DRAFT_AUTOSAVES     Optional for seed-stage3 (default: 5).
+  OLO_SEEDER_STATE_FILE          Optional.  Path to fixture state JSON (default:
+                                             ~/.olo_seeder_state.json).
 
 USAGE
 ─────
   python -m tests.olo.live_seed.seeder seed-gmail    # create P1-P8
   python -m tests.olo.live_seed.seeder seed-calendar # create E1-E4
+  python -m tests.olo.live_seed.seeder seed-stage3   # create Q1,draft-A,Q2,draft-B,Q3
+  python -m tests.olo.live_seed.seeder mutate-stage2 # archive P1, star P3, delete P4, etc.
   python -m tests.olo.live_seed.seeder status        # show account + existing fixtures
   python -m tests.olo.live_seed.seeder auth          # run OAuth flow, save token
 
@@ -579,6 +585,160 @@ class GmailSeeder:
         }
         return result
 
+    def _create_draft(self, raw: str) -> str:
+        """Create a Gmail draft and return its draft ID.
+
+        Each create/update/delete produces a history entry with DRAFT label
+        changes. We use this to generate signal-less history records for the
+        H1 pagination regression test (Stage 3).
+        """
+        encoded = _encode_message(raw)
+        url = "https://gmail.googleapis.com/gmail/v1/users/me/drafts"
+        body = json.dumps({"message": {"raw": encoded}}).encode()
+        result = _api_post(url, body, self._token, content_type="application/json")
+        return result.get("id", "")
+
+    def _update_draft(self, draft_id: str, raw: str) -> None:
+        """Update (auto-save) a Gmail draft — creates another history entry."""
+        encoded = _encode_message(raw)
+        url = f"https://gmail.googleapis.com/gmail/v1/users/me/drafts/{draft_id}"
+        body = json.dumps({"message": {"raw": encoded}}).encode()
+        req = urllib.request.Request(
+            url, data=body,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type": "application/json",
+            },
+            method="PUT",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                resp.read()
+        except urllib.error.HTTPError as exc:
+            raw_b = exc.read()
+            raise RuntimeError(
+                f"PUT draft {draft_id} → {exc.code}: {raw_b[:200]}"
+            ) from exc
+
+    def _delete_draft(self, draft_id: str) -> None:
+        """Delete (discard) a Gmail draft — creates another history entry."""
+        url = f"https://gmail.googleapis.com/gmail/v1/users/me/drafts/{draft_id}"
+        _api_delete(url, self._token)
+
+    def _create_draft_with_autosaves(
+        self,
+        label: str,
+        run_tag: str,
+        n_autosaves: int = 5,
+    ) -> None:
+        """Create a draft, auto-save it n_autosaves times, then delete it.
+
+        Generates n_autosaves + 2 history records (create + n updates + delete)
+        all with DRAFT labels — none of which should produce Olo signals.
+        """
+        subject = f"[OLO-DRAFT-{label}-{run_tag}] Draft fixture (discard)"
+        raw = build_mime_message(
+            subject=subject,
+            from_addr=self._email,
+            to_addr=self._email,
+            body_text=f"Draft auto-save fixture for H1 test. Label={label}\n",
+            date=datetime.now(UTC),
+        )
+        draft_id = self._create_draft(raw)
+        if not draft_id:
+            raise RuntimeError(f"Failed to create draft {label!r}")
+        print(f"    draft {label} created (id={draft_id!r}), auto-saving {n_autosaves}x…", end=" ")
+        for i in range(n_autosaves):
+            updated_raw = build_mime_message(
+                subject=subject,
+                from_addr=self._email,
+                to_addr=self._email,
+                body_text=(
+                    f"Draft auto-save fixture for H1 test. Label={label} "
+                    f"revision={i+1}\n"
+                ),
+                date=datetime.now(UTC),
+            )
+            self._update_draft(draft_id, updated_raw)
+        self._delete_draft(draft_id)
+        print("deleted ✓")
+
+    def seed_q1(self, sender: str, run_tag: str) -> dict:
+        """Stage 3 / Q1: first pagination test message (email.received)."""
+        subject = f"[OLO-Q1-{run_tag}] H1 pagination test 1"
+        mid = _make_message_id(f"q1-{run_tag}")
+        raw = build_mime_message(
+            subject=subject, from_addr=sender, to_addr=self._email,
+            body_text=f"Q1 H1 pagination fixture.\nRun tag: {run_tag}\n",
+            message_id=mid, date=datetime.now(UTC) - timedelta(minutes=3),
+        )
+        result = self._import_message(raw, ["INBOX", "UNREAD"])
+        self.created["Q1"] = {
+            "id": result["id"], "thread_id": result.get("threadId", result["id"]),
+            "message_id_header": mid, "subject": subject,
+        }
+        return result
+
+    def seed_q2(self, sender: str, run_tag: str) -> dict:
+        """Stage 3 / Q2: second pagination test message."""
+        subject = f"[OLO-Q2-{run_tag}] H1 pagination test 2"
+        mid = _make_message_id(f"q2-{run_tag}")
+        raw = build_mime_message(
+            subject=subject, from_addr=sender, to_addr=self._email,
+            body_text=f"Q2 H1 pagination fixture.\nRun tag: {run_tag}\n",
+            message_id=mid, date=datetime.now(UTC) - timedelta(minutes=2),
+        )
+        result = self._import_message(raw, ["INBOX", "UNREAD"])
+        self.created["Q2"] = {
+            "id": result["id"], "thread_id": result.get("threadId", result["id"]),
+            "message_id_header": mid, "subject": subject,
+        }
+        return result
+
+    def seed_q3(self, sender: str, run_tag: str) -> dict:
+        """Stage 3 / Q3: third pagination test message."""
+        subject = f"[OLO-Q3-{run_tag}] H1 pagination test 3"
+        mid = _make_message_id(f"q3-{run_tag}")
+        raw = build_mime_message(
+            subject=subject, from_addr=sender, to_addr=self._email,
+            body_text=f"Q3 H1 pagination fixture.\nRun tag: {run_tag}\n",
+            message_id=mid, date=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        result = self._import_message(raw, ["INBOX", "UNREAD"])
+        self.created["Q3"] = {
+            "id": result["id"], "thread_id": result.get("threadId", result["id"]),
+            "message_id_header": mid, "subject": subject,
+        }
+        return result
+
+    def seed_stage3(self, sender: str, run_tag: str, n_autosaves: int = 5) -> None:
+        """Seed H1 regression fixtures: Q1, draft-A (×n_autosaves), Q2, draft-B, Q3.
+
+        The sequence creates interleaved real messages and DRAFT-only history
+        records. With limit=1 in the adapter, the paging must cross signal-less
+        DRAFT records between Q messages — exercising the H1 fix that keeps
+        startHistoryId constant within a single fetch().
+        """
+        print(f"  Seeding Q1…", end=" ")
+        self.seed_q1(sender, run_tag)
+        print(f"id={self.created['Q1']['id']}")
+
+        print(f"  Creating draft-A ({n_autosaves} auto-saves)…")
+        self._create_draft_with_autosaves("A", run_tag, n_autosaves)
+
+        print(f"  Seeding Q2…", end=" ")
+        self.seed_q2(sender, run_tag)
+        print(f"id={self.created['Q2']['id']}")
+
+        print(f"  Creating draft-B ({n_autosaves} auto-saves)…")
+        self._create_draft_with_autosaves("B", run_tag, n_autosaves)
+
+        print(f"  Seeding Q3…", end=" ")
+        self.seed_q3(sender, run_tag)
+        print(f"id={self.created['Q3']['id']}")
+
+        print("  Stage 3 fixtures complete (Q1, draft-A, Q2, draft-B, Q3).")
+
     def archive_p1(self) -> None:
         """Stage 2: remove INBOX label from P1 (archive)."""
         p1 = self.created.get("P1") or self._load_fixture("P1")
@@ -967,6 +1127,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Done. Fixture state → {p}")
         return 0
 
+    if cmd == "seed-stage3":
+        sender = os.environ.get("OLO_SEEDER_SENDER_EMAIL", "")
+        if not sender:
+            print("ERROR: OLO_SEEDER_SENDER_EMAIL must be set to a sender email address.")
+            return 1
+        n_autosaves = int(os.environ.get("OLO_SEEDER_DRAFT_AUTOSAVES", "5"))
+        state = load_fixture_state()
+        run_tag = state.get("run_tag") or datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+        token = _get_access_token()
+        tok = _load_token()
+        _assert_allowed_account(tok.get("email", ""))
+        seeder = GmailSeeder(token, tok["email"])
+        print(
+            f"\nSeeding Stage 3 H1 fixtures "
+            f"(run_tag={run_tag!r}, sender={sender!r}, "
+            f"draft_autosaves={n_autosaves})…"
+        )
+        seeder.seed_stage3(sender, run_tag, n_autosaves=n_autosaves)
+        state.setdefault("gmail", {}).update(seeder.created)
+        state["saved_at"] = datetime.now(UTC).isoformat()
+        p = _fixture_state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        print(f"Done. Fixture state → {p}")
+        return 0
+
     if cmd == "mutate-stage2":
         token = _get_access_token()
         tok = _load_token()
@@ -987,7 +1173,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Stage 2 mutations complete.")
         return 0
 
-    print(f"Unknown command: {cmd!r}. Valid: auth, status, seed-gmail, seed-calendar, mutate-stage2")
+    print(f"Unknown command: {cmd!r}. Valid: auth, status, seed-gmail, seed-calendar, seed-stage3, mutate-stage2")
     return 1
 
 
