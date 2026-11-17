@@ -37,12 +37,6 @@ _MAX_RECURRENCE = 20
 _SIGNAL_SUBJECT_MAX = 256
 _MAX_CALENDARS = 50   # calendarList cap; warn if exceeded
 
-_EXCLUDED_FIELDS = frozenset({
-    "description", "attachments", "conferenceData",
-    "extendedProperties", "hangoutLink", "source",
-    "gadget", "htmlLink",
-})
-
 # Composite cursor schema version
 _CURSOR_V2 = 2
 
@@ -366,9 +360,34 @@ class GcalAdapter(MonitorAdapter):
         list_state = comp.get("list")
         cals_state: dict = comp.get("cals") or {}
 
-        # 1. calendarList bootstrap or mid-pagination
+        # 1. calendarList bootstrap or mid-pagination.
+        # After calendarList completes, immediately proceed to events if no signals
+        # (avoids returning has_more=True with empty signals, which the runner rejects).
         if list_state is None or (isinstance(list_state, dict) and list_state.get("page_token")):
-            return self._fetch_calendar_list(client, comp, limit, fetch_time)
+            cal_list_result = self._fetch_calendar_list(client, comp, limit, fetch_time)
+            if cal_list_result.signals:
+                # Calendar-list signals (added/removed) — return them
+                return cal_list_result
+            if not cal_list_result.has_more:
+                # No signals and nothing more pending — return the empty batch
+                return cal_list_result
+            # No signals but has_more=True (calendars registered, events pending).
+            # Immediately dispatch to events so the runner gets a non-empty result.
+            new_comp = json.loads(cal_list_result.next_cursor)
+            new_cals = new_comp.get("cals") or {}
+            for cal_id, cal_cursor in new_cals.items():
+                if isinstance(cal_cursor, dict):
+                    if cal_cursor.get("page_token") or cal_cursor.get("phase") == "full":
+                        return self._fetch_calendar_events(
+                            client, new_comp, cal_id, cal_cursor, limit, fetch_time
+                        )
+            for cal_id, cal_cursor in new_cals.items():
+                if isinstance(cal_cursor, dict) and cal_cursor.get("phase") == "incr":
+                    return self._fetch_calendar_events(
+                        client, new_comp, cal_id, cal_cursor, limit, fetch_time
+                    )
+            # No calendars left to sync — return empty
+            return cal_list_result
 
         # 2. Any calendar with pending work (non-incr cursor, or has_more page_token)
         for cal_id, cal_cursor in cals_state.items():

@@ -1,11 +1,13 @@
 """Olo M2b — Calendar full-content canonicalisation and calendar.event.content signals.
 
-§2.3 (M2b, Calendar): canonical event document, calendar.event.content signal.
+§6.3 (M2b extension, Calendar): canonical event document, calendar.event.content signal.
+Extends §6 (Calendar sync) and §2.1–2.2 (ContentBlob) from B1.
 
-Parallel to gmail_full.py for Gmail.  The canonical event document stores the
+Parallel to gmail_full.py (§2.3, Gmail).  The canonical event document stores the
 full Google Calendar event resource including description, conferenceData, and
 attachments metadata — fields excluded from the metadata-only
-calendar.event.changed payload by §6.3.
+calendar.event.changed payload by §6.3 (M2 privacy invariant preserved:
+description never appears in signals.payload, only in content_blobs).
 
 Nothing here touches Olo's OAuth or any write path.
 No side effects at import time.
