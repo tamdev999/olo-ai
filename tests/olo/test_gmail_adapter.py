@@ -259,11 +259,27 @@ def test_duplicate_message_ids_in_batch_deduped() -> None:
 # ── History 404 ───────────────────────────────────────────────────────────────
 
 def test_history_404_fails_no_rebootstrap() -> None:
+    """History 404 (expired) auto-detects gap mode instead of raising.
+
+    After fix: GmailHistoryExpired is caught by _incremental; a gap-mode
+    backfill cursor is returned (not an exception). The checkpoint is NOT
+    re-bootstrapped (which would lose the gap interval). The returned cursor
+    is a JSON dict with phase='backfill' and mode='gap'.
+    """
     with FakeGoogleServer() as fake:
         a = _make_adapter(fake)
         fake.set_min_history_id("9999999")
-        with pytest.raises(Exception):
-            a.fetch("100", limit=10)
+        b = a.fetch("100", limit=10)
+        # Must return gap cursor, not raise
+        assert b.signals == (), "gap detection must return empty signals batch"
+        assert b.has_more is False, "has_more must be False on gap detection"
+        import json as _j
+        try:
+            cd = _j.loads(b.next_cursor)
+            assert cd.get("phase") == "backfill"
+            assert cd.get("mode") == "gap"
+        except (ValueError, _j.JSONDecodeError):
+            pytest.fail(f"Expected gap backfill cursor JSON, got {b.next_cursor!r}")
 
 
 # ── §5.0 empty-page rule ──────────────────────────────────────────────────────

@@ -663,9 +663,17 @@ def _cmd_checkpoint_reset(args: argparse.Namespace) -> None:
         # Delete checkpoint
         conn.execute("DELETE FROM sync_checkpoints WHERE source=?", (source,))
 
+        # Fix 2: store the actual previous historyId (for Gmail sources) in the
+        # audit so that gap recovery can reference it.  For non-numeric cursors
+        # (e.g. backfill JSON or calendar cursor) store None for previous_history_id.
+        previous_history_id: str | None = None
+        if old_cursor and old_cursor.lstrip("-").isdigit():
+            previous_history_id = old_cursor
+
         _audit(conn, "cli:checkpoint", "checkpoint.reset", {
             "source": source,
             "old_cursor_hash": old_cursor_hash,
+            "previous_history_id": previous_history_id,
             "reason": "operator",
         }, now=utc_now())
         conn.execute("COMMIT")

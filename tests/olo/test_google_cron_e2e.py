@@ -388,23 +388,37 @@ def test_history_404_then_reset_then_rebootstrap(e2e_home: Path) -> None:
         # Bootstrap first
         _cron_run_and_wait(home, job_id, expect_status="completed")
 
-        # Force 404 on next history.list
+        # Force 404 on next history.list — gap auto-detection kicks in
         fake.set_min_history_id("9999999")
 
-        exec_fail = _cron_run_and_wait(home, job_id, expect_status="failed")
+        # With gap auto-detection: run succeeds (gap cursor written), NOT fails
+        exec_gap = _cron_run_and_wait(home, job_id, expect_status="completed")
 
-        # F1: checkpoint unchanged after the 404 fail
+        # F1: checkpoint must now be a gap-mode backfill cursor (not an error state)
         old_env = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = str(home)
         try:
+            import json as _json
             from olo.store import connect, get_checkpoint, migrate
             from olo.paths import db_path
             conn = connect(db_path())
             migrate(conn)
-            chk_after_fail = get_checkpoint("gmail_acme", conn)
-            assert chk_after_fail is not None, (
-                "checkpoint must still be set (bootstrap cursor) after 404 fail"
+            chk_after_gap = get_checkpoint("gmail_acme", conn)
+            assert chk_after_gap is not None, (
+                "checkpoint must be set (gap backfill cursor) after 404 gap detection"
             )
+            try:
+                cd = _json.loads(chk_after_gap)
+                assert cd.get("phase") == "backfill", (
+                    f"checkpoint must be backfill cursor, got {chk_after_gap!r}"
+                )
+                assert cd.get("mode") == "gap", (
+                    f"checkpoint mode must be 'gap', got {cd.get('mode')!r}"
+                )
+            except (_json.JSONDecodeError, ValueError):
+                pytest.fail(
+                    f"checkpoint is not a gap JSON cursor: {chk_after_gap!r}"
+                )
             conn.close()
         finally:
             if old_env is None:
