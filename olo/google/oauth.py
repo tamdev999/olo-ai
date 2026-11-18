@@ -254,6 +254,7 @@ def exchange_code(
     *,
     api_base_override: Optional[str] = None,
     oauth_publishing_status: str = "testing",
+    revoke_on_profile_failure: bool = True,
 ) -> GoogleAccountCredentials:
     """Exchange an authorisation code for tokens; return GoogleAccountCredentials.
 
@@ -326,11 +327,15 @@ def exchange_code(
         try:
             email = _get_profile(access_token, api_base_override=api_base_override)
         except Exception as exc:
-            # Abort connect: revoke the new token before raising
-            try:
-                revoke_token(access_token, api_base_override=api_base_override)
-            except Exception:
-                pass
+            # P1-9: Only revoke on fresh initial connect (revoke_on_profile_failure=True).
+            # During an upgrade, the access_token shares the project grant with the
+            # existing refresh_token; revoking it would invalidate the existing
+            # working credentials. upgrade_credentials() sets revoke_on_profile_failure=False.
+            if revoke_on_profile_failure:
+                try:
+                    revoke_token(access_token, api_base_override=api_base_override)
+                except Exception:
+                    pass
             raise ValueError(f"gmail profile fetch failed during connect: {exc}") from exc
 
     return GoogleAccountCredentials(
@@ -665,6 +670,7 @@ def upgrade_credentials(
                 alias,
                 api_base_override=result_api_base,
                 oauth_publishing_status=oauth_publishing_status or existing.oauth_publishing_status,
+                revoke_on_profile_failure=False,  # P1-9: upgrade must NOT revoke existing grant
             )
         except ValueError as exc:
             reason_str = str(exc)

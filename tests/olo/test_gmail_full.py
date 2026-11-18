@@ -266,30 +266,24 @@ def test_tg8_signal_budget_tracking() -> None:
 # ── T-G11: 400 on history → GmailHistoryExpired ───────────────────────────────
 
 def test_tg11_history_400_raises_expired() -> None:
-    """T-G11: B3 — 400 on /users/me/history now raises GmailHistoryExpired."""
+    """T-G11 (fix 9): 400 on /users/me/history raises GmailHistoryExpired; no swallowed exceptions."""
     from tests.olo.fake_google import FakeGoogleServer
     from olo.google.http import GmailHistoryExpired, GoogleClient
 
     with FakeGoogleServer() as fake:
-        creds = fake.make_credentials("test")
+        creds = fake.make_credentials("test", gmail_readonly=True)
         client = GoogleClient(creds)
         client._access_token = fake.tokens.access_token
 
-        # Inject a non-numeric cursor to trigger the strict fake's 400
-        # The H1-strict fake returns 400 for mismatched page tokens,
-        # but we need to simulate a 400 from the history endpoint.
-        # Use the inject_bad_cursor approach via direct get_json with bad startHistoryId
-        try:
-            resp = client.get_json("gmail", "/users/me/history", [
+        # A non-numeric startHistoryId causes the fake to return 400,
+        # which http.py maps to GmailHistoryExpired (§2.3 fix).
+        # Fix 9: assert the specific exception — no swallowing allowed.
+        with pytest.raises(GmailHistoryExpired):
+            client.get_json("gmail", "/users/me/history", [
                 ("startHistoryId", "NOTANUMBER"),
                 ("historyTypes", "messageAdded"),
                 ("maxResults", "1"),
             ])
-            # On Windows fake, this returns 400 → GmailHistoryExpired (from http.py B3 fix)
-        except GmailHistoryExpired:
-            pass  # expected
-        except Exception:
-            pass  # fake may handle differently on some platforms
 
 
 # ── T-G15: resume backfill uses R=C, never H0 ─────────────────────────────────
@@ -518,31 +512,71 @@ def test_tg16_backfill_cursor_requires_resume_history_id() -> None:
 # ── T-G17: gap mode writes audit event ───────────────────────────────────────
 
 def test_tg17_gap_mode_records_unrecoverable_interval() -> None:
-    """T-G17 (behavioral): gap mode cursor completes backfill and returns to incremental.
+    """T-G17 (fix 9): gap mode is detected via _backfill_mode_from_audit and the
+    adapter runs a real backfill through the gap, terminating at H0.
 
-    Gap mode is used when history.list(C) has expired.  The backfill scans
-    messages.list to recover what it can; it then resumes incremental from H0.
-
-    Demonstrates that:
-    - A gap cursor advances through backfill pages (messages.list)
-    - After completion, cursor returns to incremental (plain historyId)
-    - The adapter does NOT crash or stall
+    Tests the auto-detection path: signals exist but no numeric historyId cursor
+    → gap mode is selected → messages.list scan → cursor == H0 at completion.
+    This exercises the real _backfill_mode_from_audit() path, not just cursor JSON.
     """
+    import sqlite3
     from olo.adapters.gmail import GmailAdapter
+    from olo.adapters.gmail_full import _backfill_mode_from_audit
+    from olo.store import connect, migrate, acquire_run, finish_run, ingest_batch
+    from olo.signals import NormalizedSignal
     from tests.olo.fake_google import FakeGoogleServer
 
     with FakeGoogleServer() as fake:
-        from olo.google.http import GoogleClient
         creds = fake.make_credentials("test", gmail_readonly=True)
+        from olo.google.http import GoogleClient
         client = GoogleClient(creds)
         client._access_token = fake.tokens.access_token
 
-        fake.gmail.add_message("m1", labels=["INBOX"], subject="Gap msg")
+        # Build an in-memory DB that mimics "gap" state:
+        # signals exist but no checkpoint (or non-numeric checkpoint)
+        conn = sqlite3.connect(":memory:", isolation_level=None, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        migrate(conn)
 
-        adapter = GmailAdapter({"account": "test"}, client=client)
+        source = "gmail_test"
+        # Insert a synthetic signal to make count_signals > 0
+        run_id_tmp = acquire_run(source, "owner", conn)
+        fake_sig = NormalizedSignal(
+            source=source,
+            external_id="synthetic_x",
+            kind="email.received",
+            occurred_at=datetime.now(UTC),
+            subject="Synthetic",
+            payload={"message_id": "x", "thread_id": "tx",
+                     "label_ids": ["INBOX"], "size_estimate": 0,
+                     "history_id": "0",
+                     "headers": {"from": [], "to": [], "cc": [],
+                                 "subject": "", "date": "",
+                                 "message_id_header": "", "in_reply_to": ""}},
+        )
+        ingest_batch(source, run_id_tmp, (fake_sig,), "5000", None, conn)
+        finish_run(source, run_id_tmp, "succeeded", conn)
 
-        # Inject a gap cursor — resume_history_id is H0 (the mailbox tip after gap)
+        # Gap condition: signals exist BUT checkpoint is deleted/expired
+        # (represents history.list(C) returning 404 — checkpoint was purged)
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM sync_checkpoints WHERE source=?", (source,))
+        conn.execute("COMMIT")
+
+        # No checkpoint → _backfill_mode_from_audit should detect "gap"
+        mode = _backfill_mode_from_audit(source, conn)
+        assert mode == "gap", (
+            f"T-G17 FAIL: expected gap mode (signals exist, no checkpoint), "
+            f"got {mode!r}"
+        )
+
+        # Now run a real gap backfill through the adapter
+        # Set H0 = current mailbox historyId
+        fake.gmail.add_message("g1", thread_id="tg1", labels=["INBOX"],
+                               subject="Gap recovery message")
         H0 = fake.gmail.current_history_id
+
         gap_cursor = json.dumps({
             "phase": "backfill",
             "mode": "gap",
@@ -551,6 +585,7 @@ def test_tg17_gap_mode_records_unrecoverable_interval() -> None:
             "page_token": None,
         })
 
+        adapter = GmailAdapter({"account": "test"}, client=client)
         result_cursor = gap_cursor
         for _ in range(10):
             b = adapter.fetch(result_cursor, limit=10)
@@ -558,15 +593,20 @@ def test_tg17_gap_mode_records_unrecoverable_interval() -> None:
             if not b.has_more:
                 break
 
-        # After gap backfill completes, cursor must equal H0 (incremental resumes from there)
+        # After gap backfill completes, cursor must equal H0
+        final = result_cursor
         try:
-            parsed = json.loads(result_cursor)
+            parsed = json.loads(final)
             if isinstance(parsed, dict) and parsed.get("phase") == "backfill":
-                assert parsed["resume_history_id"] == H0
+                assert parsed["resume_history_id"] == H0, (
+                    f"T-G17 FAIL: resume_history_id={parsed['resume_history_id']!r} != H0={H0!r}"
+                )
+            else:
+                assert final == H0, f"T-G17 FAIL: cursor={final!r} != H0={H0!r}"
         except (json.JSONDecodeError, ValueError):
-            assert result_cursor == H0, (
-                f"T-G17 FAIL: cursor after gap backfill={result_cursor!r} != H0={H0!r}"
-            )
+            assert final == H0, f"T-G17 FAIL: cursor={final!r} != H0={H0!r}"
+
+        conn.close()
 
 
 # ── email.content signal shape ────────────────────────────────────────────────

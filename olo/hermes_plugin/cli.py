@@ -178,11 +178,12 @@ def _cmd_setup(args: argparse.Namespace) -> None:
     alias = options.get("account", "")
     if source in ("gmail", "gcal") and alias:
         try:
-            from olo.google.credentials import load_credentials
+            from olo.google.credentials import load_credentials, GMAIL_READONLY_SCOPE
             creds = load_credentials(alias)
+            # Accept both legacy (gmail.metadata) and M2b (gmail.readonly) scopes
             if source == "gmail" and not creds.has_gmail_scope():
                 print(
-                    f"olo setup: account {alias!r} has no gmail.metadata scope. "
+                    f"olo setup: account {alias!r} has no Gmail scope. "
                     f"Run: hermes olo google connect --account {alias}",
                     file=sys.stderr,
                 )
@@ -737,7 +738,41 @@ def _cmd_backfill(args: argparse.Namespace) -> None:
         else:
             mode = "bootstrap"
 
-    resume_history_id = current_cursor if (current_cursor and current_cursor.lstrip("-").isdigit()) else "0"
+    # N1 fix: resume_history_id must be a real historyId, never the string "0".
+    # When mode=bootstrap (no existing numeric checkpoint), we must capture the
+    # current mailbox historyId NOW so that after backfill completes, incremental
+    # sync picks up from the correct point rather than attempting history.list(0)
+    # which Google rejects with 400/404.
+    if current_cursor and current_cursor.lstrip("-").isdigit():
+        # Existing numeric historyId — use it directly
+        resume_history_id = current_cursor
+    else:
+        # No checkpoint or non-numeric cursor — fetch live historyId from Gmail API
+        from olo.google.credentials import load_credentials
+        from olo.google.http import GoogleClient
+        try:
+            alias = source[len("gmail_"):]  # strip "gmail_" prefix
+            creds = load_credentials(alias)
+            gclient = GoogleClient(creds)
+            profile = gclient.get_json("gmail", "/users/me/profile", [])
+            live_hid = str(profile.get("historyId", ""))
+            if not live_hid or not live_hid.isdigit():
+                print(
+                    f"olo backfill: could not obtain a live historyId for {source!r}. "
+                    "Run the Gmail cron job once first to establish a checkpoint.",
+                    file=sys.stderr,
+                )
+                conn.close()
+                sys.exit(1)
+            resume_history_id = live_hid
+        except Exception as e:
+            print(
+                f"olo backfill: failed to fetch current historyId for {source!r}: {e}. "
+                "Run the Gmail cron job once first to establish a checkpoint.",
+                file=sys.stderr,
+            )
+            conn.close()
+            sys.exit(1)
 
     backfill_cursor = _json.dumps({
         "phase": "backfill",

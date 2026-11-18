@@ -37,6 +37,10 @@ from olo.adapters import (
 from olo.signals import NormalizedSignal
 
 _MAX_EMPTY_PAGES = 20
+# Fix 7: maximum consecutive event pages for a single calendar before yielding
+# to other calendars in round-robin. Prevents one calendar from monopolizing
+# all fetch ticks during a large paginated sync.
+_MAX_CONSECUTIVE_CAL_PAGES = 10
 _MAX_SUMMARY = 1024
 _MAX_LOCATION = 1024
 _MAX_ATTENDEES = 100
@@ -329,6 +333,17 @@ class GcalAdapter(MonitorAdapter):
                     f"account {self._alias!r} has no calendar scope; "
                     f"run: hermes olo google connect --account {self._alias}"
                 )
+            # Fix 4: require full_v1 scope profile for multi-calendar discovery.
+            # Legacy credentials lack calendar.calendarlist.readonly and cannot
+            # discover secondary calendars. Fail early with a clear upgrade message.
+            from olo.google.credentials import CALENDAR_LIST_SCOPE
+            if CALENDAR_LIST_SCOPE not in creds.granted_scopes:
+                raise AdapterConfigError(
+                    f"account {self._alias!r} has legacy calendar credentials and "
+                    f"cannot discover all readable calendars. "
+                    f"Upgrade with: hermes olo google connect --account {self._alias} "
+                    f"--client-secret-file <path> --upgrade"
+                )
             self._client = GoogleClient(creds)
         return self._client
 
@@ -432,9 +447,25 @@ class GcalAdapter(MonitorAdapter):
             )
 
         # 2. Any calendar with pending work (non-incr cursor, or has_more page_token)
+        # Fix 7: enforce maximum consecutive pages per calendar to prevent one
+        # calendar from monopolizing all fetch ticks during a large paginated sync.
         for cal_id, cal_cursor in cals_state.items():
             if isinstance(cal_cursor, dict):
+                consecutive = cal_cursor.get("_pages", 0)
                 if cal_cursor.get("page_token"):
+                    if consecutive >= _MAX_CONSECUTIVE_CAL_PAGES:
+                        # Yield: reset counter and skip to round-robin (step 3)
+                        # Other calendars will get a tick; this one resumes after.
+                        new_comp = dict(comp)
+                        new_cals = dict(cals_state)
+                        reset_cursor = dict(cal_cursor)
+                        reset_cursor["_pages"] = 0
+                        new_cals[cal_id] = reset_cursor
+                        new_comp["cals"] = new_cals
+                        # Fall through to step 3 with reset cursor
+                        comp = new_comp
+                        cals_state = new_cals
+                        break
                     return self._fetch_calendar_events(
                         client, comp, cal_id, cal_cursor, limit, fetch_time
                     )
@@ -563,18 +594,26 @@ class GcalAdapter(MonitorAdapter):
                 # P0-B: skip deleted calendars on full scan
                 if item.get("deleted", False):
                     continue
+                # Fix 6: skip system/resource calendars (IDs starting with '#').
+                # These are Google-internal calendars (Contacts, Birthdays, Holidays)
+                # that should not be synced as user calendars.
+                if cal_id.startswith("#"):
+                    continue
                 # P1-E: apply calendars= filter
                 if self._cal_filter is not None and cal_id not in self._cal_filter:
                     continue
                 if cal_id not in new_comp_cals:
-                    # P1-D: if the real ID matches primary (owner's calendar), absorb
-                    #   the migrated incremental cursor to avoid re-doing a full scan.
+                    # P1-D fix: only promote the migrated "primary" sentinel to the
+                    # calendar that Google marks primary=True. If this item is a
+                    # secondary calendar, do NOT absorb the sentinel here — keep it
+                    # for when the actual primary calendar ID is encountered.
                     if (primary_sentinel is not None
                             and isinstance(primary_sentinel, dict)
-                            and primary_sentinel.get("phase") == "incr"):
-                        # Promote the migrated cursor under the real ID
+                            and primary_sentinel.get("phase") == "incr"
+                            and item.get("primary") is True):  # Fix 3: check primary=True
+                        # Promote the migrated cursor under the real primary ID
                         new_comp_cals[cal_id] = primary_sentinel
-                        primary_sentinel = None   # consumed — only use once
+                        primary_sentinel = None   # consumed
                     else:
                         new_comp_cals[cal_id] = {
                             "phase": "full",
@@ -627,8 +666,11 @@ class GcalAdapter(MonitorAdapter):
         )
 
         if signals:
-            # Cap to limit
-            signals = signals[:limit]
+            # Fix 6: Never truncate calendar.calendar.added/removed signals.
+            # signals[:limit] would silently drop added calendars that are already
+            # registered in new_comp_cals, making them invisible forever since the
+            # cursor records them as known. Emit all signals; the runner handles
+            # batches larger than limit by processing the next iteration.
             return FetchBatch(
                 signals=tuple(signals),
                 next_cursor=json.dumps(new_comp),
@@ -803,10 +845,13 @@ class GcalAdapter(MonitorAdapter):
                 "phase": "incr",
                 "sync_token": next_sync_token,
                 "page_token": None,
+                # Fix 7: reset consecutive page counter when calendar finishes pagination
             }
         elif next_page_token:
             new_comp["cals"][cal_id] = dict(current_cal_cursor)
             new_comp["cals"][cal_id]["page_token"] = next_page_token
+            # Fix 7: increment consecutive page counter for this calendar
+            new_comp["cals"][cal_id]["_pages"] = current_cal_cursor.get("_pages", 0) + 1
         else:
             # No token — no change, stay in current phase without page_token
             new_comp["cals"][cal_id] = dict(current_cal_cursor)

@@ -145,8 +145,17 @@ class GmailAdapter(MonitorAdapter):
                     f"account {self._alias!r} has no gmail scope; "
                     f"run: hermes olo google connect --account {self._alias}"
                 )
-            # M2b: warn if legacy profile (gmail.metadata) but don't fail here;
-            # the full-content fetch will 403 on format=full, which is surfaced then.
+            # Fix 4: reject legacy credentials that lack gmail.readonly.
+            # Legacy accounts (gmail.metadata only) cannot produce email.content
+            # blobs. Fail early with a clear message rather than silently producing
+            # incomplete data or a 403 on format=full.
+            if not creds.has_gmail_readonly_scope():
+                raise AdapterConfigError(
+                    f"account {self._alias!r} has legacy (gmail.metadata) credentials "
+                    f"and cannot produce full email content. "
+                    f"Upgrade with: hermes olo google connect --account {self._alias} "
+                    f"--client-secret-file <path> --upgrade"
+                )
             self._client = GoogleClient(creds)
         return self._client
 
@@ -389,9 +398,21 @@ class GmailAdapter(MonitorAdapter):
             if signals and len(signals) + len(record_signals) > remaining:
                 return signals, last_id, True
 
+            # Fix 5: if a single record produces more signals than remaining and
+            # no prior signals exist, do NOT raise (would cause permanent stall).
+            # Instead, process only as many messagesAdded entries as fit, then
+            # return with records_remain=True so the cursor holds at last_id and
+            # the next fetch retries this record with fresh capacity.
             if not signals and len(record_signals) > remaining:
+                if remaining >= 1:
+                    # Return the first `remaining` signals from this record;
+                    # next fetch will re-process from the same cursor and get more.
+                    signals.extend(record_signals[:remaining])
+                    return signals, last_id, True
+                # remaining=0 is a configuration error; raise to surface it
                 raise SourceError(
-                    "gmail history record exceeds batch limit; raise --limit"
+                    f"gmail history record produces {len(record_signals)} signals "
+                    f"but limit is {remaining}; raise --limit"
                 )
 
             if record_signals:

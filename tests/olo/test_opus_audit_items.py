@@ -203,19 +203,38 @@ class TestItem3ScopeEnforcement:
             b = adapter.fetch(None, limit=10)
             assert b.next_cursor is not None
 
-    def test_gmail_adapter_accepts_legacy_credentials(self) -> None:
-        """GmailAdapter works with legacy credentials (gmail.metadata scope)."""
-        with FakeGoogleServer() as fake:
-            from olo.google.http import GoogleClient
-            creds = fake.make_credentials("test")  # legacy by default
-            assert GMAIL_METADATA_SCOPE in creds.granted_scopes
+    def test_gmail_adapter_rejects_legacy_credentials(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 4: GmailAdapter rejects legacy credentials (gmail.metadata only).
 
-            client = GoogleClient(creds)
-            client._access_token = fake.tokens.access_token
-            adapter = GmailAdapter({"account": "test"}, client=client)
+        Legacy credentials cannot produce email.content blobs (would 403 on
+        format=full). The adapter must fail early with AdapterConfigError rather
+        than producing incomplete data.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-            b = adapter.fetch(None, limit=10)
-            assert b.next_cursor is not None
+        from datetime import UTC, datetime
+        legacy_creds = GoogleAccountCredentials(
+            alias="legacytest",
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt",
+            granted_scopes=frozenset({GMAIL_METADATA_SCOPE}),
+            email_address="test@example.com",
+            refresh_token_issued_at=datetime.now(UTC),
+            oauth_publishing_status="testing",
+            api_base_override=None,
+            scope_profile=SCOPE_PROFILE_LEGACY,
+        )
+        from olo.google.credentials import credential_lock, save_credentials
+        with credential_lock("legacytest"):
+            save_credentials(legacy_creds)
+
+        adapter = GmailAdapter({"account": "legacytest"})
+        # Must reject with AdapterConfigError — not succeed silently
+        with pytest.raises(AdapterConfigError, match="legacy"):
+            adapter.fetch(None, limit=10)
 
     def test_new_account_connect_requests_v2_scopes(self) -> None:
         """P1-C: standard 'google connect' requests REQUIRED_SCOPES_V2 (not legacy).
