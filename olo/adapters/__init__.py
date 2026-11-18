@@ -40,11 +40,19 @@ class FetchBatch:
     - An empty ``signals`` tuple is valid only when ``has_more`` is False.
     - ``next_cursor`` is None only when ``total == 0`` and nothing was ever
       fetched; the runner skips the checkpoint write in that case (§5.7 step 3).
+
+    pending_audit_events: adapter-generated audit events to be committed
+    atomically with signals and the checkpoint inside ingest_batch.  Each
+    entry is a dict with keys: actor, action, detail (all strings).  Optional
+    subject_type and subject_id keys are forwarded to _audit.
+    The runner passes these straight through to ingest_batch; adapters must
+    NOT write them to the DB directly (that would break atomicity).
     """
 
     signals: tuple[NormalizedSignal, ...]
     next_cursor: str | None
     has_more: bool
+    pending_audit_events: tuple[dict, ...] = ()
 
 
 # ── MonitorAdapter ABC ────────────────────────────────────────────────────────

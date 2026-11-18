@@ -258,46 +258,43 @@ class GmailAdapter(MonitorAdapter):
             next_cursor = resume_history_id
             has_more = False
 
-            # Fix 5: emit backfill.completed audit event.  Best-effort: a DB
-            # connection failure must not break the backfill completion itself.
-            try:
-                from olo.paths import db_path
-                from olo.store import connect as _connect, migrate as _migrate, \
-                    _audit as _audit_fn, utc_now
-                _db = _connect(db_path())
-                _migrate(_db)
-                audit_detail: dict = {
-                    "source": self.source,
-                    "mode": mode,
-                    "resume_history_id": resume_history_id,
-                }
-                # Include gap-specific fields when present in the cursor
-                if mode == "gap":
-                    for _k in ("previous_cursor", "restart_point"):
-                        if _k in cursor_dict:
-                            audit_detail[_k] = cursor_dict[_k]
-                _audit_fn(_db, "adapter:gmail", "backfill.completed", audit_detail)
-                try:
-                    _db.execute("COMMIT")
-                except Exception:
-                    pass
-                _db.close()
-            except Exception:
-                pass  # audit failure must not abort backfill
+            # Carry backfill.completed as a pending audit event so it is committed
+            # atomically with the checkpoint inside ingest_batch.  This guarantees:
+            # - Failed commit → no phantom audit event.
+            # - Successful retry → exactly one audit event (committed with batch).
+            audit_detail: dict = {
+                "source": self.source,
+                "mode": mode,
+                "resume_history_id": resume_history_id,
+            }
+            if mode == "gap":
+                for _k in ("previous_cursor", "restart_point"):
+                    if _k in cursor_dict:
+                        audit_detail[_k] = cursor_dict[_k]
+            pending_audit: tuple[dict, ...] = ({
+                "actor": "adapter:gmail",
+                "action": "backfill.completed",
+                "detail": audit_detail,
+            },)
         else:
             # More backfill pages
             next_cursor_dict = dict(cursor_dict)
             next_cursor_dict["page_token"] = next_pt
             next_cursor = json.dumps(next_cursor_dict)
             has_more = True
+            pending_audit = ()
 
         if not signals:
-            return FetchBatch(signals=(), next_cursor=next_cursor, has_more=False)
+            return FetchBatch(
+                signals=(), next_cursor=next_cursor, has_more=False,
+                pending_audit_events=pending_audit,
+            )
 
         return FetchBatch(
             signals=tuple(signals),
             next_cursor=next_cursor,
             has_more=has_more,
+            pending_audit_events=pending_audit,
         )
 
     def _incremental(
@@ -459,15 +456,16 @@ class GmailAdapter(MonitorAdapter):
         client: "GoogleClient",
         previous_cursor: str,
     ) -> FetchBatch:
-        """Fix 2: handle an expired history (GmailHistoryExpired from history.list).
+        """Handle an expired history (GmailHistoryExpired from history.list).
 
         1. Fetches current mailbox historyId H0 from the profile endpoint.
-        2. Emits a gmail.history_gap audit event (best-effort) with:
-             previous_cursor — the stale historyId that caused the 404
-             restart_point   — H0, the new resume position
-             recovery_window — {"from": previous_cursor, "to": H0}
-        3. Returns a gap-mode backfill cursor so the next fetch performs a
-           full messages.list scan from epoch 0 through H0.
+        2. Carries a gmail.history_gap audit event as pending_audit_events so
+           it is committed atomically with the gap cursor inside ingest_batch.
+           Atomicity guarantee:
+           - Failed ingest_batch commit → no phantom audit event.
+           - Successful retry → exactly one gmail.history_gap audit.
+        3. Returns a gap-mode backfill cursor (has_more=False, signals=()) so
+           the runner commits the cursor and exits cleanly.
 
         The checkpoint is NOT advanced past the gap until backfill completes
         (backfill done=True transitions the cursor to H0 for incremental sync).
@@ -488,26 +486,17 @@ class GmailAdapter(MonitorAdapter):
                 "run 'hermes olo checkpoint reset' then re-bootstrap"
             )
 
-        # 2. Emit gmail.history_gap audit (best-effort)
-        try:
-            from olo.paths import db_path
-            from olo.store import connect as _connect, migrate as _migrate, \
-                _audit as _audit_fn, utc_now
-            _db = _connect(db_path())
-            _migrate(_db)
-            _audit_fn(_db, "adapter:gmail", "gmail.history_gap", {
+        # 2. Build gap audit event as pending — committed atomically with cursor.
+        gap_audit_event: dict = {
+            "actor": "adapter:gmail",
+            "action": "gmail.history_gap",
+            "detail": {
                 "source": self.source,
                 "previous_cursor": previous_cursor,
                 "restart_point": H0,
                 "recovery_window": {"from": previous_cursor, "to": H0},
-            })
-            try:
-                _db.execute("COMMIT")
-            except Exception:
-                pass
-            _db.close()
-        except Exception:
-            pass  # audit failure must not abort gap recovery
+            },
+        }
 
         # 3. Return gap-mode backfill cursor (empty signals; has_more=False so the
         # runner commits this cursor and exits cleanly).  The next run will see
@@ -521,7 +510,12 @@ class GmailAdapter(MonitorAdapter):
             "previous_cursor": previous_cursor,
             "restart_point": H0,
         })
-        return FetchBatch(signals=(), next_cursor=gap_cursor, has_more=False)
+        return FetchBatch(
+            signals=(),
+            next_cursor=gap_cursor,
+            has_more=False,
+            pending_audit_events=(gap_audit_event,),
+        )
 
     def _process_records(
         self,
