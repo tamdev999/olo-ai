@@ -1755,52 +1755,69 @@ class TestFix5BackfillGapHandling:
     def test_backfill_completed_audit_emitted_on_done(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Fix 5c: backfill.completed audit is emitted when done=True."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        """Fix 5c: backfill.completed audit is committed atomically when done=True.
+
+        Audit is now carried in FetchBatch.pending_audit_events and committed
+        inside ingest_batch — not written via a separate DB connection.
+        Test uses run_source to exercise the full commit path.
+        """
+        # Align HERMES_HOME with db_path() so credential save uses same home
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        db = tmp_path / "olo" / "olo.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
 
         with FakeGoogleServer() as fake:
+            creds = fake.make_credentials("bca", gmail_readonly=True)
+            with credential_lock("bca"):
+                save_credentials(creds)
+
             from olo.google.http import GoogleClient
-            creds = fake.make_credentials("test", gmail_readonly=True)
             client = GoogleClient(creds)
             client._access_token = fake.tokens.access_token
-            adapter = GmailAdapter({"account": "test"}, client=client)
+            adapter = GmailAdapter({"account": "bca"}, client=client)
 
             # Bootstrap
-            b0 = adapter.fetch(None, limit=10)
-            C = b0.next_cursor
+            run_source(adapter, limit=10, db_path=db)
+            conn_c = _connect(db)
+            C = get_checkpoint("gmail_bca", conn_c)
+            conn_c.close()
 
-            # Add one message so backfill has something to do
+            # Add one message so backfill has content to scan
             fake.gmail.add_message("cm1", thread_id="tc1", labels=["INBOX"],
                                    subject="Completion audit test")
 
-            # Set up the DB so the adapter can write the audit
-            from olo.paths import db_path as _db_path
-            from olo.store import connect as _conn, migrate as _mig
-            db = _db_path()
-            conn_setup = _conn(db)
-            _mig(conn_setup)
-            conn_setup.close()
-
-            # Run backfill to completion (empty messages.list → done immediately)
+            # Inject a gap-mode backfill cursor directly
+            conn_inj = _connect(db)
             gap_cursor = json.dumps({
-                "phase": "backfill",
-                "mode": "gap",
-                "after": 0,
-                "page_token": None,
-                "resume_history_id": C,
-                "previous_cursor": "4999",
-                "restart_point": C,
+                "phase": "backfill", "mode": "gap", "after": 0,
+                "page_token": None, "resume_history_id": C,
+                "previous_cursor": "4999", "restart_point": C,
             })
+            fake_run = "fakebca0001"
+            conn_inj.execute("BEGIN IMMEDIATE")
+            conn_inj.execute(
+                "INSERT OR IGNORE INTO ingest_runs"
+                "(id,source,owner,started_at,status) VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run, "gmail_bca"),
+            )
+            conn_inj.execute(
+                "UPDATE sync_checkpoints SET cursor=?,updated_at=datetime('now'),run_id=?"
+                " WHERE source='gmail_bca'",
+                (gap_cursor, fake_run),
+            )
+            conn_inj.execute("COMMIT")
+            conn_inj.close()
 
-            cur = gap_cursor
+            # Drive backfill to completion through run_source
             for _ in range(20):
-                b = adapter.fetch(cur, limit=10)
-                cur = b.next_cursor
-                if not b.has_more:
+                r = run_source(adapter, limit=10, db_path=db)
+                if r.status == "succeeded":
                     break
+                assert r.status == "partial", f"unexpected run status: {r!r}"
 
-            # Check audit_events for backfill.completed
-            conn_check = _conn(db)
+            # backfill.completed must be in audit_events (committed atomically)
+            conn_check = _connect(db)
             audit_row = conn_check.execute(
                 "SELECT detail FROM audit_events "
                 "WHERE actor='adapter:gmail' AND action='backfill.completed' "
@@ -1809,8 +1826,8 @@ class TestFix5BackfillGapHandling:
             conn_check.close()
 
             assert audit_row is not None, (
-                "Fix 5 FAIL: backfill.completed audit event was NOT emitted. "
-                "Operators cannot confirm backfill completion or query gap metadata."
+                "Fix 5 FAIL: backfill.completed audit event was NOT committed. "
+                "Audit must be committed atomically with the checkpoint."
             )
             import json as _j
             detail = _j.loads(audit_row["detail"])
@@ -2496,4 +2513,298 @@ class TestFix7HistoryGapAutoDetection:
             assert detail["previous_history_id"] == "7777", (
                 f"Fix 7 FAIL: previous_history_id={detail['previous_history_id']!r} "
                 f"!= '7777'"
+            )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fix 8: Audit transaction integrity — atomic commit with signals + checkpoint
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFix8AuditTransactionIntegrity:
+    """Audit events (backfill.completed, gmail.history_gap) must be committed
+    atomically with their corresponding signals and checkpoint update.
+
+    Original defective behaviour: the adapter opened a separate DB connection
+    inside _backfill_page / _handle_history_gap and wrote the audit event
+    before ingest_batch had committed — a failed ingest_batch left a phantom
+    audit event in the DB, and retries produced duplicate audit events.
+
+    After fix: audit events travel as FetchBatch.pending_audit_events and are
+    committed inside ingest_batch's BEGIN IMMEDIATE … COMMIT block.
+
+    Four regression tests (Opus requirement):
+    1. Failed final backfill commit  → zero completion audits.
+    2. Successful retry              → exactly one completion audit.
+    3. Failed gap-transition commit  → no committed gap audit.
+    4. Successful retry              → exactly one gap audit.
+    """
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _count_audit(
+        self, db: Path, action: str, actor: str = "adapter:gmail"
+    ) -> int:
+        conn = _connect(db)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE actor=? AND action=?",
+            (actor, action),
+        ).fetchone()[0]
+        conn.close()
+        return n
+
+    def _make_gmail_adapter_full(
+        self, fake: "FakeGoogleServer", alias: str, db: Path,
+        monkeypatch,
+    ) -> GmailAdapter:
+        monkeypatch.setenv("HERMES_HOME", str(db.parent.parent))
+        creds = fake.make_credentials(alias, gmail_readonly=True)
+        with credential_lock(alias):
+            save_credentials(creds)
+        from olo.google.http import GoogleClient
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+        adapter = GmailAdapter({"account": alias}, client=client)
+        return adapter
+
+    # ── test 1: failed backfill commit → zero completion audits ───────────────
+
+    def test_failed_backfill_commit_zero_completion_audits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Atomic: ingest_batch fails before commit → backfill.completed NOT written.
+
+        Uses _fault='before_commit' to simulate a crash between signal write
+        and the final COMMIT.  The transaction rolls back, so the audit event
+        carried in pending_audit_events is also rolled back.
+        """
+        from olo.store import AdapterContractError, CheckpointMoved, LeaseLost
+
+        db = tmp_path / "olo" / "olo.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+
+        with FakeGoogleServer() as fake:
+            adapter = self._make_gmail_adapter_full(fake, "fbz", db, monkeypatch)
+
+            # Bootstrap
+            run_source(adapter, limit=10, db_path=db)
+            conn_c = _connect(db)
+            C = get_checkpoint("gmail_fbz", conn_c)
+            conn_c.close()
+
+            # Add a message so backfill has content
+            fake.gmail.add_message("fbz1", thread_id="tfbz1", labels=["INBOX"],
+                                   subject="Fault test")
+
+            # Inject gap backfill cursor
+            conn_inj = _connect(db)
+            gap_cur = json.dumps({
+                "phase": "backfill", "mode": "gap", "after": 0,
+                "page_token": None, "resume_history_id": C,
+                "previous_cursor": "1", "restart_point": C,
+            })
+            fake_run = "fakefbz0001"
+            conn_inj.execute("BEGIN IMMEDIATE")
+            conn_inj.execute(
+                "INSERT OR IGNORE INTO ingest_runs"
+                "(id,source,owner,started_at,status) VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run, "gmail_fbz"),
+            )
+            conn_inj.execute(
+                "UPDATE sync_checkpoints SET cursor=?,updated_at=datetime('now'),run_id=?"
+                " WHERE source='gmail_fbz'",
+                (gap_cur, fake_run),
+            )
+            conn_inj.execute("COMMIT")
+            conn_inj.close()
+
+            # Inject a fault at "before_commit" — COMMIT never executes
+            fault_fired: list[str] = []
+
+            def _fault(name: str) -> None:
+                if name == "before_commit":
+                    fault_fired.append(name)
+                    raise RuntimeError("injected fault before commit")
+
+            # run_source will catch the exception and record failure
+            try:
+                run_source(adapter, limit=10, db_path=db, _fault=_fault)
+            except Exception:
+                pass  # expected
+
+            # Zero backfill.completed audits: transaction was rolled back
+            n = self._count_audit(db, "backfill.completed")
+            assert n == 0, (
+                f"Atomic FAIL (test 1): {n} backfill.completed audit event(s) "
+                "written despite rolled-back transaction. Audit must be atomic."
+            )
+            # Confirm fault actually fired
+            assert "before_commit" in fault_fired, \
+                "Fault was not injected — test is invalid"
+
+    # ── test 2: successful retry → exactly one completion audit ───────────────
+
+    def test_successful_retry_exactly_one_completion_audit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Atomic: failed commit + successful retry → exactly 1 backfill.completed.
+
+        After the fault (test 1 scenario), a second run_source with no fault
+        must commit successfully and write exactly one backfill.completed audit.
+        """
+        db = tmp_path / "olo" / "olo.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+
+        with FakeGoogleServer() as fake:
+            adapter = self._make_gmail_adapter_full(fake, "fbz2", db, monkeypatch)
+
+            # Bootstrap
+            run_source(adapter, limit=10, db_path=db)
+            conn_c = _connect(db)
+            C = get_checkpoint("gmail_fbz2", conn_c)
+            conn_c.close()
+
+            fake.gmail.add_message("fbz2m", thread_id="tfbz2", labels=["INBOX"],
+                                   subject="Retry audit test")
+
+            # Inject gap backfill cursor
+            conn_inj = _connect(db)
+            gap_cur = json.dumps({
+                "phase": "backfill", "mode": "gap", "after": 0,
+                "page_token": None, "resume_history_id": C,
+                "previous_cursor": "1", "restart_point": C,
+            })
+            fake_run = "fakefbz0002"
+            conn_inj.execute("BEGIN IMMEDIATE")
+            conn_inj.execute(
+                "INSERT OR IGNORE INTO ingest_runs"
+                "(id,source,owner,started_at,status) VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run, "gmail_fbz2"),
+            )
+            conn_inj.execute(
+                "UPDATE sync_checkpoints SET cursor=?,updated_at=datetime('now'),run_id=?"
+                " WHERE source='gmail_fbz2'",
+                (gap_cur, fake_run),
+            )
+            conn_inj.execute("COMMIT")
+            conn_inj.close()
+
+            # First run: inject fault → no audit
+            def _fault_first(name: str) -> None:
+                if name == "before_commit":
+                    raise RuntimeError("injected fault")
+
+            try:
+                run_source(adapter, limit=10, db_path=db, _fault=_fault_first)
+            except Exception:
+                pass
+
+            # Verify zero audits after failed run
+            assert self._count_audit(db, "backfill.completed") == 0, \
+                "Pre-condition: audit must be 0 after failed run"
+
+            # Second run: no fault → succeeds
+            for _ in range(10):
+                r = run_source(adapter, limit=10, db_path=db)
+                if r.status == "succeeded":
+                    break
+                assert r.status == "partial"
+
+            # Exactly one backfill.completed audit
+            n = self._count_audit(db, "backfill.completed")
+            assert n == 1, (
+                f"Atomic FAIL (test 2): expected 1 backfill.completed, got {n}. "
+                "Retry must produce exactly one atomic audit."
+            )
+
+    # ── test 3: failed gap-transition commit → no committed gap audit ─────────
+
+    def test_failed_gap_commit_no_gap_audit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Atomic: gap detection + ingest_batch fault → no gmail.history_gap audit.
+
+        When history expires and _handle_history_gap is called, the gap audit
+        is queued as pending_audit_events.  If ingest_batch fails before COMMIT
+        (fault at before_commit), the audit is rolled back — zero gap audits.
+        """
+        db = tmp_path / "olo" / "olo.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+
+        with FakeGoogleServer() as fake:
+            adapter = self._make_gmail_adapter_full(fake, "gap3", db, monkeypatch)
+
+            # Bootstrap
+            run_source(adapter, limit=10, db_path=db)
+
+            # Add a message then expire history
+            fake.gmail.add_message("gap3m", thread_id="tg3", labels=["INBOX"],
+                                   subject="Gap atomic test")
+            new_min = str(int(fake.gmail.current_history_id) + 100)
+            fake.set_min_history_id(new_min)
+
+            # Inject fault at before_commit for the gap-detection run
+            def _fault(name: str) -> None:
+                if name == "before_commit":
+                    raise RuntimeError("injected fault on gap commit")
+
+            try:
+                run_source(adapter, limit=10, db_path=db, _fault=_fault)
+            except Exception:
+                pass
+
+            # Zero gmail.history_gap audits (transaction rolled back)
+            n = self._count_audit(db, "gmail.history_gap")
+            assert n == 0, (
+                f"Atomic FAIL (test 3): {n} gmail.history_gap audit(s) written "
+                "despite rolled-back transaction. Gap audit must be atomic."
+            )
+
+    # ── test 4: successful retry → exactly one gap audit ─────────────────────
+
+    def test_successful_gap_retry_exactly_one_gap_audit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Atomic: failed gap commit + successful retry → exactly 1 gmail.history_gap.
+
+        After a failed gap-transition run (test 3 scenario), the checkpoint is
+        still the old historyId (not the gap cursor).  On retry, gap detection
+        fires again, and the successful commit writes exactly one audit event.
+        """
+        db = tmp_path / "olo" / "olo.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+
+        with FakeGoogleServer() as fake:
+            adapter = self._make_gmail_adapter_full(fake, "gap4", db, monkeypatch)
+
+            # Bootstrap
+            run_source(adapter, limit=10, db_path=db)
+
+            # Expire history
+            fake.gmail.add_message("gap4m", thread_id="tg4", labels=["INBOX"],
+                                   subject="Gap retry test")
+            new_min = str(int(fake.gmail.current_history_id) + 100)
+            fake.set_min_history_id(new_min)
+
+            # First run: fault → rolled back (zero audits)
+            def _fault_first(name: str) -> None:
+                if name == "before_commit":
+                    raise RuntimeError("injected fault")
+
+            try:
+                run_source(adapter, limit=10, db_path=db, _fault=_fault_first)
+            except Exception:
+                pass
+
+            assert self._count_audit(db, "gmail.history_gap") == 0, \
+                "Pre-condition: zero gap audits after failed run"
+
+            # Second run: no fault → succeeds, writes exactly one gap audit
+            r = run_source(adapter, limit=10, db_path=db)
+            assert r.status in ("succeeded", "partial"), (
+                f"Retry run failed: {r!r}"
+            )
+
+            n = self._count_audit(db, "gmail.history_gap")
+            assert n == 1, (
+                f"Atomic FAIL (test 4): expected 1 gmail.history_gap audit, got {n}. "
+                "Retry must produce exactly one atomic gap audit."
             )

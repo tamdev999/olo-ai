@@ -481,8 +481,16 @@ def ingest_batch(
     conn: sqlite3.Connection,
     clock: Callable[[], datetime] = utc_now,
     _fault: Optional[Callable[[str], None]] = None,
+    pending_audit_events: tuple[dict, ...] = (),
 ) -> tuple[int, int, int]:
     """Atomically commit one batch: blobs + signals + checkpoint + counter update.
+
+    pending_audit_events: adapter-generated audit events (e.g. backfill.completed,
+    gmail.history_gap) to be written atomically with the checkpoint.  Each dict
+    must have 'actor', 'action', and 'detail' keys; optional 'subject_type' and
+    'subject_id' keys are forwarded to _audit.  Written inside the same
+    BEGIN IMMEDIATE … COMMIT block as signals and the checkpoint so they are
+    committed exactly once — rolled back on any failure, written on retry.
 
     Returns (inserted, duplicates, conflicts).
     Raises LeaseLost, CheckpointMoved, AdapterContractError, or any exception
@@ -650,6 +658,22 @@ def ingest_batch(
             " WHERE id = ?",
             (len(batch_signals), inserted, duplicates, conflicts, run_id),
         )
+
+        # 4b. Commit adapter-generated audit events atomically with the batch.
+        # These are events like backfill.completed or gmail.history_gap that the
+        # adapter set in FetchBatch.pending_audit_events.  Writing them here
+        # (inside BEGIN IMMEDIATE … COMMIT) guarantees atomicity: they are
+        # committed exactly once with the checkpoint, and rolled back on failure.
+        for evt in pending_audit_events:
+            _audit(
+                conn,
+                evt.get("actor", f"adapter:{source}"),
+                evt.get("action", "adapter.event"),
+                evt.get("detail", {}),
+                subject_type=evt.get("subject_type"),
+                subject_id=evt.get("subject_id"),
+                now=now,
+            )
 
         # 5. Audit batch commit
         _audit(conn, f"runner:{source}", "batch.committed", {
