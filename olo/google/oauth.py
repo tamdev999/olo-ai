@@ -682,9 +682,8 @@ def upgrade_credentials(
             )
 
         # 4. Verify before saving
-        verify_access_token: Optional[str] = None
         try:
-            verify_access_token = _verify_new_credentials(new_creds, result_api_base)
+            _verify_new_credentials(new_creds, result_api_base)
         except Exception as exc:
             _audit_fn(_db_conn, "cli:google", "google.upgrade.failed", {
                 "alias": alias, "reason": f"verification_failed: {exc}",
@@ -692,12 +691,16 @@ def upgrade_credentials(
             try: _db_conn.execute("COMMIT")
             except Exception: pass
             _db_conn.close()
-            # P1-G: revoke the new token so it doesn't remain live at Google.
-            if verify_access_token:
-                try:
-                    revoke_token(verify_access_token, api_base_override=result_api_base)
-                except Exception:
-                    pass  # best-effort revoke; don't hide the original error
+            # P1-G CORRECTED: Do NOT revoke the new token on verification failure.
+            #
+            # Revocation is project-wide: revoking the new access_token would also
+            # invalidate the existing working refresh_token (they share a project
+            # grant at Google).  The old credential file (pre_upgrade_path) is still
+            # intact; no production access is interrupted.  The candidate tokens
+            # are simply discarded (not saved) so they expire naturally (~1 hour).
+            #
+            # Opus test-infrastructure requirement: verification-failure tests must
+            # assert that zero revoke requests were made.
             return UpgradeResult(reason=f"post-consent verification failed: {exc}")
 
         # 5. Save atomically

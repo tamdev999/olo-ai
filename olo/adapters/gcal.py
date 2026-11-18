@@ -407,15 +407,29 @@ class GcalAdapter(MonitorAdapter):
             for cal_id, cal_cursor in new_cals.items():
                 if isinstance(cal_cursor, dict):
                     if cal_cursor.get("page_token") or cal_cursor.get("phase") == "full":
-                        return self._fetch_calendar_events(
+                        result = self._fetch_calendar_events(
                             client, new_comp, cal_id, cal_cursor, limit, fetch_time
                         )
+                        if result.signals or not result.has_more:
+                            return result
+                        # Empty + still pending → update comp and continue cascade
+                        new_comp = json.loads(result.next_cursor)
+                        new_cals = new_comp.get("cals") or {}
             for cal_id, cal_cursor in new_cals.items():
                 if isinstance(cal_cursor, dict) and cal_cursor.get("phase") == "incr":
-                    return self._fetch_calendar_events(
+                    result = self._fetch_calendar_events(
                         client, new_comp, cal_id, cal_cursor, limit, fetch_time
                     )
-            return cal_list_result
+                    if result.signals or not result.has_more:
+                        return result
+                    new_comp = json.loads(result.next_cursor)
+                    new_cals = new_comp.get("cals") or {}
+            # All cascaded calendars exhausted with no signals
+            return FetchBatch(
+                signals=(),
+                next_cursor=json.dumps(new_comp),
+                has_more=self._any_pending(new_comp, exclude_cal=None),
+            )
 
         # 2. Any calendar with pending work (non-incr cursor, or has_more page_token)
         for cal_id, cal_cursor in cals_state.items():
