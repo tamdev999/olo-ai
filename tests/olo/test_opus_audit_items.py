@@ -1006,3 +1006,877 @@ class TestItem7VerificationFailureNoRevoke:
         assert len(revoke_calls) == 0, (
             f"P1-G FAIL: revoke attempted on early verification failure: {revoke_calls}"
         )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fix 1: Gmail batch-size — no permanent stall at limit=1
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFix1BatchSizeNoStall:
+    """A V2 record (email.received + email.content) must fully ingest even at limit=1.
+
+    Original defective behavior: _process_records returned record_signals[:1]
+    with the cursor UNCHANGED.  On every subsequent call with limit=1 it would
+    return only email.received again; email.content was never stored (permanent
+    stall).
+
+    After fix: when no prior signals exist the whole record is included even if
+    it exceeds remaining, so both email.received and email.content are returned
+    in a single batch.
+    """
+
+    def test_limit_1_does_not_stall_v2_record(self) -> None:
+        """Fix 1 regression: limit=1 must NOT permanently stall email.content.
+
+        A single messagesAdded record produces 2 signals with V2 credentials
+        (email.received + email.content).  At limit=1 the old code returned
+        only email.received and kept the cursor unchanged, stalling forever.
+        After fix: both signals are returned in one batch, cursor advances.
+        """
+        with FakeGoogleServer() as fake:
+            from olo.google.http import GoogleClient
+            creds = fake.make_credentials("test", gmail_readonly=True)
+            client = GoogleClient(creds)
+            client._access_token = fake.tokens.access_token
+            adapter = GmailAdapter({"account": "test"}, client=client)
+
+            # Bootstrap
+            b0 = adapter.fetch(None, limit=10)
+            C = b0.next_cursor
+
+            # Add one message — produces email.received + email.content
+            fake.gmail.add_message("m1", thread_id="t1", labels=["INBOX"],
+                                   subject="Stall test")
+
+            # Fetch at limit=1 — MUST return BOTH signals (not just email.received)
+            b1 = adapter.fetch(C, limit=1)
+
+            kinds = {s.kind for s in b1.signals}
+            assert "email.received" in kinds, (
+                "Fix 1 FAIL: email.received missing from limit=1 fetch"
+            )
+            assert "email.content" in kinds, (
+                f"Fix 1 FAIL: email.content MISSING at limit=1 — permanent stall reproduced! "
+                f"kinds={kinds}"
+            )
+            # Cursor must have advanced past the record
+            assert b1.next_cursor != C, (
+                f"Fix 1 FAIL: cursor did not advance (still {b1.next_cursor!r} == C={C!r})"
+            )
+
+    def test_limit_1_cursor_advances_so_next_fetch_is_idempotent(self) -> None:
+        """Fix 1: after the first fetch the cursor advances; a second fetch is empty."""
+        with FakeGoogleServer() as fake:
+            from olo.google.http import GoogleClient
+            creds = fake.make_credentials("test", gmail_readonly=True)
+            client = GoogleClient(creds)
+            client._access_token = fake.tokens.access_token
+            adapter = GmailAdapter({"account": "test"}, client=client)
+
+            b0 = adapter.fetch(None, limit=10)
+            C = b0.next_cursor
+            fake.gmail.add_message("m1", thread_id="t1", labels=["INBOX"],
+                                   subject="Idempotence check")
+
+            b1 = adapter.fetch(C, limit=1)
+            # Cursor must advance so a subsequent call does NOT re-process m1
+            assert b1.next_cursor != C
+
+            # Second fetch from the advanced cursor — no new messages → empty
+            b2 = adapter.fetch(b1.next_cursor, limit=1)
+            received_ids = [s.external_id for s in b2.signals if s.kind == "email.received"]
+            assert "m1" not in received_ids, (
+                f"Fix 1 FAIL: m1 was re-processed on second fetch (cursor did not advance). "
+                f"signals={b2.signals}"
+            )
+
+    def test_multiple_records_still_respect_limit_on_second_record(self) -> None:
+        """Fix 1: second record is deferred when first record already filled budget."""
+        with FakeGoogleServer() as fake:
+            from olo.google.http import GoogleClient
+            creds = fake.make_credentials("test", gmail_readonly=True)
+            client = GoogleClient(creds)
+            client._access_token = fake.tokens.access_token
+            adapter = GmailAdapter({"account": "test"}, client=client)
+
+            b0 = adapter.fetch(None, limit=10)
+            C = b0.next_cursor
+            # Add two messages in separate history records
+            fake.gmail.add_message("ma", thread_id="ta", labels=["INBOX"],
+                                   subject="First")
+            fake.gmail.add_message("mb", thread_id="tb", labels=["INBOX"],
+                                   subject="Second")
+
+            # limit=2 — first record uses 2 signals (received+content),
+            # second record should be deferred (records_remain=True)
+            b1 = adapter.fetch(C, limit=2)
+
+            # Must get signals for ma only (mb is deferred)
+            sig_ids = {s.external_id for s in b1.signals}
+            assert "ma" in sig_ids or "c:ma" in sig_ids, (
+                f"Fix 1 FAIL: expected ma in first batch. sig_ids={sig_ids}"
+            )
+            # has_more must be True when mb is deferred
+            if b1.has_more:
+                # Good: mb will be fetched on next call
+                b2 = adapter.fetch(b1.next_cursor, limit=2)
+                sig_ids2 = {s.external_id for s in b2.signals}
+                assert "mb" in sig_ids2 or "c:mb" in sig_ids2, (
+                    f"Fix 1 FAIL: mb not in second batch. sig_ids2={sig_ids2}"
+                )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fix 2: 48 MiB incremental byte budget
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFix2IncrementalByteBudget:
+    """70 × ~1 MiB messages must ingest without exceeding the 64 MiB batch limit.
+
+    Original defective behavior: no byte budget on the incremental path.
+    70 messages × 1 MiB blobs = 70 MiB would exceed ingest_batch's 64 MiB
+    hard-stop (AdapterContractError), causing the run to fail and the checkpoint
+    to not advance.
+
+    After fix: _process_records stops at 48 MiB (soft stop), so each
+    FetchBatch stays well under the 64 MiB hard limit.
+    """
+
+    def _make_1mib_message(self, msg_id: str) -> dict:
+        """Build a ~1 MiB format=full Gmail message dict."""
+        import base64 as _b64
+        body = "x" * (1 * 1024 * 1024)
+        encoded = _b64.urlsafe_b64encode(body.encode()).decode()
+        return {
+            "id": msg_id,
+            "threadId": f"t{msg_id}",
+            "internalDate": "1700000000000",
+            "sizeEstimate": len(body),
+            "labelIds": ["INBOX"],
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "Subject", "value": f"Large {msg_id}"},
+                    {"name": "From", "value": "a@e.com"},
+                    {"name": "To", "value": "b@e.com"},
+                    {"name": "Message-ID", "value": f"<{msg_id}>"},
+                    {"name": "Date", "value": "Mon, 1 Jan 2026 00:00:00 +0000"},
+                ],
+                "body": {"data": encoded, "size": len(body)},
+                "parts": [],
+            },
+        }
+
+    def test_70_large_messages_do_not_exceed_64mib_per_batch(self) -> None:
+        """Fix 2: 70 × ~1 MiB messages ingest without exceeding the 64 MiB limit.
+
+        We mock get_message_full to return ~1 MiB messages and drive the adapter
+        until all 70 are processed.  Each FetchBatch must have total blob bytes
+        ≤ 64 MiB.  The combined signal count across all batches must be 70
+        email.received + 70 email.content (140 total), proving no messages lost.
+        """
+        from olo.adapters.gmail import GmailAdapter
+        from olo.signals import MAX_BATCH_BLOB_BYTES
+
+        NUM_MSGS = 70
+
+        with FakeGoogleServer() as fake:
+            from olo.google.http import GoogleClient
+            creds = fake.make_credentials("test", gmail_readonly=True)
+            client = GoogleClient(creds)
+            client._access_token = fake.tokens.access_token
+
+            adapter = GmailAdapter({"account": "test"}, client=client)
+
+            # Bootstrap FIRST (empty mailbox)
+            b0 = adapter.fetch(None, limit=100)
+            C = b0.next_cursor
+
+            # Add NUM_MSGS messages AFTER bootstrap so they appear in history
+            for i in range(NUM_MSGS):
+                fake.gmail.add_message(f"big{i}", thread_id=f"t{i}",
+                                       labels=["INBOX"], subject=f"Big {i}")
+
+            # Patch get_message_full to return ~1 MiB bodies
+            originals: dict = {}
+
+            def _large_full(msg_id: str) -> dict:
+                if msg_id not in originals:
+                    originals[msg_id] = self._make_1mib_message(msg_id)
+                return originals[msg_id]
+
+            client.get_message_full = _large_full
+
+            all_signals = []
+            batch_violations: list[str] = []
+            cur = C
+
+            for iteration in range(200):  # generous iteration budget
+                b = adapter.fetch(cur, limit=100)
+                if b.signals:
+                    # Check blob bytes for this batch
+                    batch_bytes = sum(
+                        len(blob.data)
+                        for sig in b.signals
+                        for blob in (sig.blobs or ())
+                    )
+                    if batch_bytes > MAX_BATCH_BLOB_BYTES:
+                        batch_violations.append(
+                            f"iteration {iteration}: {batch_bytes} bytes > "
+                            f"{MAX_BATCH_BLOB_BYTES}"
+                        )
+                    all_signals.extend(b.signals)
+                cur = b.next_cursor
+                if not b.has_more:
+                    break
+
+            assert not batch_violations, (
+                f"Fix 2 FAIL: batch(es) exceeded 64 MiB hard limit:\n"
+                + "\n".join(batch_violations)
+            )
+
+            received = [s for s in all_signals if s.kind == "email.received"]
+            content = [s for s in all_signals if s.kind == "email.content"]
+            assert len(received) == NUM_MSGS, (
+                f"Fix 2 FAIL: expected {NUM_MSGS} email.received, got {len(received)}"
+            )
+            assert len(content) == NUM_MSGS, (
+                f"Fix 2 FAIL: expected {NUM_MSGS} email.content, got {len(content)}"
+            )
+
+    def test_byte_budget_stops_at_safe_record_boundary(self) -> None:
+        """Fix 2: soft stop occurs at record boundary, not mid-record.
+
+        50 messages each produce blobs totalling > 48 MiB.
+        The adapter must stop before all 50 are processed, returning
+        has_more=True, and must stay under the 64 MiB hard limit.
+        """
+        from olo.adapters.gmail import GmailAdapter
+
+        with FakeGoogleServer() as fake:
+            from olo.google.http import GoogleClient
+            creds = fake.make_credentials("test", gmail_readonly=True)
+            client = GoogleClient(creds)
+            client._access_token = fake.tokens.access_token
+
+            adapter = GmailAdapter({"account": "test"}, client=client)
+
+            # Bootstrap FIRST (empty mailbox)
+            b0 = adapter.fetch(None, limit=100)
+            C = b0.next_cursor
+
+            # Add 50 messages AFTER bootstrap so they appear in history
+            for i in range(50):
+                fake.gmail.add_message(f"bnd{i}", thread_id=f"t{i}",
+                                       labels=["INBOX"], subject=f"Boundary {i}")
+
+            originals: dict = {}
+
+            def _large_full(msg_id: str) -> dict:
+                if msg_id not in originals:
+                    originals[msg_id] = self._make_1mib_message(msg_id)
+                return originals[msg_id]
+
+            client.get_message_full = _large_full
+
+            # First incremental fetch must soft-stop well before all 50
+            b1 = adapter.fetch(C, limit=100)
+
+            # Verify no batch exceeds 64 MiB
+            batch_bytes = sum(
+                len(blob.data)
+                for sig in b1.signals
+                for blob in (sig.blobs or ())
+            )
+            from olo.signals import MAX_BATCH_BLOB_BYTES
+            assert batch_bytes <= MAX_BATCH_BLOB_BYTES, (
+                f"Fix 2 FAIL: first batch is {batch_bytes} bytes, "
+                f"exceeds hard limit {MAX_BATCH_BLOB_BYTES}"
+            )
+            # has_more should be True (not all 50 fit in one batch)
+            assert b1.has_more, (
+                "Fix 2 FAIL: expected has_more=True for 50 × 1 MiB messages "
+                "but got False — byte budget not enforced"
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fix 3: OAuth profile failures — zero revocations
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFix3NoRevokeOnProfileFailure:
+    """exchange_code must NEVER revoke on profile failure (normal connect OR upgrade).
+
+    Original defective behavior: revoke_on_profile_failure=True was the default
+    for normal connect.  A transient profile-fetch error would call revoke_token
+    with the access_token, which is project-wide and also invalidates any
+    existing refresh_token for the same project/user combination.
+
+    After fix: revoke_on_profile_failure defaults to False; the revoke call is
+    removed from the profile-failure path entirely.
+    """
+
+    def test_normal_connect_profile_failure_zero_revokes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 3: profile failure on normal connect → zero revoke calls."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        import unittest.mock as _mock
+        from datetime import UTC, datetime
+        from olo.google.oauth import GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO
+
+        revoke_calls: list[str] = []
+
+        # Grant exactly REQUIRED_SCOPES_V2 so scope_union guard does not trigger
+        v2_scopes_str = " ".join(sorted(REQUIRED_SCOPES_V2))
+        with FakeGoogleServer(email="user@example.com",
+                              granted_scopes=v2_scopes_str) as fake:
+            from olo.google.oauth import (
+                exchange_code, PendingOAuth, build_auth_url,
+            )
+            _, pending = build_auth_url(
+                "cid", "http://127.0.0.1:1/", REQUIRED_SCOPES_V2,
+                api_base_override=fake.base_url,
+            )
+            pending2 = PendingOAuth(
+                state=pending.state,
+                code_verifier=pending.code_verifier,
+                redirect_uri="http://127.0.0.1:1/",
+                scopes=REQUIRED_SCOPES_V2,
+            )
+
+            def _fail_profile(access_token, **kwargs):
+                raise Exception("simulated profile 500 — transient error")
+
+            def _spy_revoke(token, **kwargs):
+                revoke_calls.append(token)
+
+            with _mock.patch("olo.google.oauth._get_profile",
+                             side_effect=_fail_profile), \
+                 _mock.patch("olo.google.oauth.revoke_token",
+                             side_effect=_spy_revoke):
+                with pytest.raises(ValueError, match="profile fetch failed"):
+                    exchange_code(
+                        "test_auth_code_123", pending2,
+                        "cid", "csecret", "alias",
+                        api_base_override=fake.base_url,
+                    )
+
+        assert len(revoke_calls) == 0, (
+            f"Fix 3 FAIL (normal connect): revoke called {len(revoke_calls)} "
+            f"time(s) on profile failure: {revoke_calls}. "
+            "Revocation is project-wide and invalidates existing credentials."
+        )
+
+    def test_upgrade_connect_profile_failure_zero_revokes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 3: profile failure on upgrade connect → zero revoke calls."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        import unittest.mock as _mock
+
+        revoke_calls: list[str] = []
+
+        v2_scopes_str = " ".join(sorted(REQUIRED_SCOPES_V2))
+        with FakeGoogleServer(email="user@example.com",
+                              granted_scopes=v2_scopes_str) as fake:
+            from olo.google.oauth import exchange_code, PendingOAuth, build_auth_url
+
+            _, pending = build_auth_url(
+                "cid", "http://127.0.0.1:1/", REQUIRED_SCOPES_V2,
+                api_base_override=fake.base_url,
+            )
+            pending2 = PendingOAuth(
+                state=pending.state,
+                code_verifier=pending.code_verifier,
+                redirect_uri="http://127.0.0.1:1/",
+                scopes=REQUIRED_SCOPES_V2,
+            )
+
+            def _fail_profile(access_token, **kwargs):
+                raise Exception("simulated profile 503 — service unavailable")
+
+            def _spy_revoke(token, **kwargs):
+                revoke_calls.append(token)
+
+            with _mock.patch("olo.google.oauth._get_profile",
+                             side_effect=_fail_profile), \
+                 _mock.patch("olo.google.oauth.revoke_token",
+                             side_effect=_spy_revoke):
+                # upgrade path explicitly passes revoke_on_profile_failure=False
+                with pytest.raises(ValueError, match="profile fetch failed"):
+                    exchange_code(
+                        "test_auth_code_123", pending2,
+                        "cid", "csecret", "alias",
+                        api_base_override=fake.base_url,
+                        revoke_on_profile_failure=False,
+                    )
+
+        assert len(revoke_calls) == 0, (
+            f"Fix 3 FAIL (upgrade): revoke called {len(revoke_calls)} time(s): "
+            f"{revoke_calls}"
+        )
+
+    def test_existing_credentials_unchanged_after_profile_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 3: existing saved credentials are intact after profile failure on normal connect."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        import unittest.mock as _mock
+        from datetime import UTC, datetime
+
+        # Save old credentials first (alias must match ^[a-z0-9]{1,16}$)
+        old_creds = GoogleAccountCredentials(
+            alias="pftest",
+            client_id="cid",
+            client_secret="cs",
+            refresh_token="rt_existing_preserved",
+            granted_scopes=REQUIRED_SCOPES,
+            email_address="pf@example.com",
+            refresh_token_issued_at=datetime.now(UTC),
+            oauth_publishing_status="testing",
+            api_base_override=None,
+            scope_profile=SCOPE_PROFILE_LEGACY,
+        )
+        with credential_lock("pftest"):
+            save_credentials(old_creds)
+
+        v2_scopes_str = " ".join(sorted(REQUIRED_SCOPES_V2))
+        with FakeGoogleServer(email="pf@example.com",
+                              granted_scopes=v2_scopes_str) as fake:
+            from olo.google.oauth import exchange_code, PendingOAuth, build_auth_url
+
+            _, pending = build_auth_url(
+                "cid", "http://127.0.0.1:1/", REQUIRED_SCOPES_V2,
+                api_base_override=fake.base_url,
+            )
+            pending2 = PendingOAuth(
+                state=pending.state,
+                code_verifier=pending.code_verifier,
+                redirect_uri="http://127.0.0.1:1/",
+                scopes=REQUIRED_SCOPES_V2,
+            )
+
+            def _fail_profile(access_token, **kwargs):
+                raise Exception("profile failure")
+
+            with _mock.patch("olo.google.oauth._get_profile",
+                             side_effect=_fail_profile):
+                with pytest.raises(ValueError):
+                    exchange_code(
+                        "test_auth_code_123", pending2,
+                        "cid", "csecret", "pftest",
+                        api_base_override=fake.base_url,
+                    )
+
+        # Old credentials must be untouched — exchange_code doesn't save to disk
+        # but if revoke had been called it would have invalidated the token
+        still = load_credentials("pftest")
+        assert still.refresh_token == "rt_existing_preserved", (
+            f"Fix 3 FAIL: old credentials were overwritten. "
+            f"rt={still.refresh_token!r}"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fix 4: Backfill date window (--days N)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFix4BackfillDateWindow:
+    """--days N must restrict messages.list to messages within N days.
+
+    Original defective behavior: 'after' was always 0 in the backfill cursor,
+    causing the entire mailbox to be scanned regardless of --days.
+
+    After fix: after_epoch is set to now - N*86400 and passed through the cursor.
+    """
+
+    def test_days_flag_sets_after_epoch_in_cursor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 4: --days N sets a non-zero after_epoch in the backfill cursor JSON."""
+        import argparse, time as _time, json as _json
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        with FakeGoogleServer() as fake:
+            creds = fake.make_credentials("alias", gmail_readonly=True)
+            with credential_lock("alias"):
+                save_credentials(creds)
+
+            # Set up DB with a Gmail source checkpoint
+            from olo.paths import db_path as _db_path
+            from olo.store import connect as _conn, migrate as _mig
+            db = _db_path()
+            conn = _conn(db)
+            _mig(conn)
+
+            # Insert a fake checkpoint so backfill can resolve the alias
+            fake_run = "fakeid123"
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO ingest_runs(id,source,owner,started_at,status)"
+                " VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run, "gmail_alias"),
+            )
+            conn.execute(
+                "INSERT INTO sync_checkpoints(source,cursor,updated_at,run_id)"
+                " VALUES (?,?,datetime('now'),?)",
+                ("gmail_alias", fake.gmail.current_history_id, fake_run),
+            )
+            conn.execute("COMMIT")
+            conn.close()
+
+            from olo.hermes_plugin.cli import _cmd_backfill
+
+            before = int(_time.time())
+            ns = argparse.Namespace(source="gmail_alias", mode=None, days=30)
+            _cmd_backfill(ns)
+            after = int(_time.time())
+
+            # Read back the cursor
+            conn2 = _conn(db)
+            row = conn2.execute(
+                "SELECT cursor FROM sync_checkpoints WHERE source='gmail_alias'"
+            ).fetchone()
+            conn2.close()
+
+            assert row is not None
+            cursor_dict = _json.loads(row["cursor"])
+            assert cursor_dict["phase"] == "backfill"
+            assert cursor_dict["after"] > 0, (
+                f"Fix 4 FAIL: after_epoch is 0 (--days 30 not applied). "
+                f"cursor={cursor_dict!r}"
+            )
+            # after_epoch should be approximately now - 30 days
+            expected_after = before - 30 * 86400
+            assert cursor_dict["after"] >= expected_after - 5, (
+                f"Fix 4 FAIL: after_epoch too small. "
+                f"got {cursor_dict['after']}, expected >= {expected_after - 5}"
+            )
+            assert cursor_dict["after"] <= after - 30 * 86400 + 5, (
+                f"Fix 4 FAIL: after_epoch too large. "
+                f"got {cursor_dict['after']}, now-30d={after - 30 * 86400}"
+            )
+
+    def test_no_days_flag_sets_after_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 4: without --days, after remains 0 (full mailbox scan)."""
+        import argparse, json as _json
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        with FakeGoogleServer() as fake:
+            creds = fake.make_credentials("alias2", gmail_readonly=True)
+            with credential_lock("alias2"):
+                save_credentials(creds)
+
+            from olo.paths import db_path as _db_path
+            from olo.store import connect as _conn, migrate as _mig
+            db = _db_path()
+            conn = _conn(db)
+            _mig(conn)
+            fake_run = "fakeid456"
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO ingest_runs(id,source,owner,started_at,status)"
+                " VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run, "gmail_alias2"),
+            )
+            conn.execute(
+                "INSERT INTO sync_checkpoints(source,cursor,updated_at,run_id)"
+                " VALUES (?,?,datetime('now'),?)",
+                ("gmail_alias2", fake.gmail.current_history_id, fake_run),
+            )
+            conn.execute("COMMIT")
+            conn.close()
+
+            from olo.hermes_plugin.cli import _cmd_backfill
+            ns = argparse.Namespace(source="gmail_alias2", mode=None, days=None)
+            _cmd_backfill(ns)
+
+            conn2 = _conn(db)
+            row = conn2.execute(
+                "SELECT cursor FROM sync_checkpoints WHERE source='gmail_alias2'"
+            ).fetchone()
+            conn2.close()
+
+            cursor_dict = _json.loads(row["cursor"])
+            assert cursor_dict["after"] == 0, (
+                f"Fix 4 FAIL: without --days, after should be 0, got "
+                f"{cursor_dict['after']}"
+            )
+
+    def test_days_window_filters_messages_in_backfill(self) -> None:
+        """Fix 4: backfill with after_epoch skips old messages in messages.list.
+
+        Old messages (epoch 0) must NOT appear when after_epoch is set to
+        a recent time. The fake server's _handle_messages_list applies the
+        after:{epoch} filter using internalDate.
+        """
+        import time as _time
+
+        with FakeGoogleServer() as fake:
+            from olo.google.http import GoogleClient
+            creds = fake.make_credentials("test", gmail_readonly=True)
+            client = GoogleClient(creds)
+            client._access_token = fake.tokens.access_token
+            adapter = GmailAdapter({"account": "test"}, client=client)
+
+            # Bootstrap
+            b0 = adapter.fetch(None, limit=10)
+            C = b0.next_cursor
+
+            # Add an OLD message (internalDate far in the past)
+            old_epoch_ms = str(int((_time.time() - 60 * 86400) * 1000))  # 60 days ago
+            fake.gmail.add_message("old_msg", thread_id="to", labels=["INBOX"],
+                                   subject="Old message",
+                                   internal_date_ms=old_epoch_ms)
+
+            # Add a RECENT message (now)
+            recent_epoch_ms = str(int(_time.time() * 1000))
+            fake.gmail.add_message("new_msg", thread_id="tn", labels=["INBOX"],
+                                   subject="New message",
+                                   internal_date_ms=recent_epoch_ms)
+
+            # Backfill with after_epoch = 30 days ago — should see new_msg, not old_msg
+            after_epoch = int(_time.time()) - 30 * 86400
+            backfill_cursor = json.dumps({
+                "phase": "backfill",
+                "mode": "bootstrap",
+                "after": after_epoch,
+                "page_token": None,
+                "resume_history_id": C,
+            })
+
+            b_bf = adapter.fetch(backfill_cursor, limit=10)
+
+            msg_ids = {s.payload.get("message_id", "") for s in b_bf.signals}
+            # new_msg is within window → should appear in backfill
+            # old_msg is outside window → must NOT appear
+            assert "old_msg" not in msg_ids, (
+                f"Fix 4 FAIL: old_msg appeared in windowed backfill. "
+                f"msg_ids={msg_ids}"
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fix 5: Backfill gap handling — previous_cursor, restart_point, completion audit
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFix5BackfillGapHandling:
+    """Gap mode must record previous_cursor + restart_point and emit backfill.completed.
+
+    Original defective behavior:
+    (a) No previous_cursor/restart_point stored in cursor JSON — gap interval
+        was not traceable after the fact.
+    (b) No backfill.completed audit event — operators couldn't confirm
+        completion or query the gap metadata from audit_events.
+
+    After fix:
+    (a) mode=gap cursor JSON contains previous_cursor and restart_point.
+    (b) backfill.started audit contains restart_point and previous_cursor_hash.
+    (c) backfill.completed audit is emitted when done=True.
+    """
+
+    def test_gap_cursor_contains_previous_cursor_and_restart_point(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 5a: gap-mode cursor JSON has previous_cursor and restart_point."""
+        import argparse, json as _json
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        with FakeGoogleServer() as fake:
+            creds = fake.make_credentials("gap1", gmail_readonly=True)
+            with credential_lock("gap1"):
+                save_credentials(creds)
+
+            from olo.paths import db_path as _db_path
+            from olo.store import connect as _conn, migrate as _mig
+            db = _db_path()
+            conn = _conn(db)
+            _mig(conn)
+
+            # Insert a fake checkpoint for gmail_gap1 (old cursor = "5000")
+            old_cursor = "5000"
+            fake_run = "fakegap1234"
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO ingest_runs(id,source,owner,started_at,status)"
+                " VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run, "gmail_gap1"),
+            )
+            conn.execute(
+                "INSERT INTO sync_checkpoints(source,cursor,updated_at,run_id)"
+                " VALUES (?,?,datetime('now'),?)",
+                ("gmail_gap1", old_cursor, fake_run),
+            )
+            conn.execute("COMMIT")
+
+            # Insert a signal to trigger gap detection (signals > 0 → mode=gap)
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO signals"
+                "(source,external_id,kind,occurred_at,subject,payload,run_id)"
+                " VALUES (?,?,?,?,?,?,?)",
+                ("gmail_gap1", "syn_gap", "email.received",
+                 "2026-01-01T00:00:00+00:00", "Gap test", "{}", fake_run),
+            )
+            conn.execute("COMMIT")
+
+            # Now delete the checkpoint to simulate expired history
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM sync_checkpoints WHERE source='gmail_gap1'")
+            conn.execute("COMMIT")
+            conn.close()
+
+            from olo.hermes_plugin.cli import _cmd_backfill
+            ns = argparse.Namespace(source="gmail_gap1", mode="gap", days=None)
+            _cmd_backfill(ns)
+
+            # Read back cursor
+            conn4 = _conn(db)
+            row = conn4.execute(
+                "SELECT cursor FROM sync_checkpoints WHERE source='gmail_gap1'"
+            ).fetchone()
+            conn4.close()
+
+            assert row is not None, "Fix 5 FAIL: no checkpoint written for gap mode"
+            cursor_dict = _json.loads(row["cursor"])
+            assert cursor_dict.get("mode") == "gap", (
+                f"Fix 5 FAIL: mode is {cursor_dict.get('mode')!r}, expected 'gap'"
+            )
+            assert "restart_point" in cursor_dict, (
+                f"Fix 5 FAIL: restart_point missing from gap cursor. "
+                f"cursor={cursor_dict!r}"
+            )
+            assert "previous_cursor" in cursor_dict, (
+                f"Fix 5 FAIL: previous_cursor missing from gap cursor. "
+                f"cursor={cursor_dict!r}"
+            )
+
+    def test_backfill_completed_audit_emitted_on_done(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 5c: backfill.completed audit is emitted when done=True."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        with FakeGoogleServer() as fake:
+            from olo.google.http import GoogleClient
+            creds = fake.make_credentials("test", gmail_readonly=True)
+            client = GoogleClient(creds)
+            client._access_token = fake.tokens.access_token
+            adapter = GmailAdapter({"account": "test"}, client=client)
+
+            # Bootstrap
+            b0 = adapter.fetch(None, limit=10)
+            C = b0.next_cursor
+
+            # Add one message so backfill has something to do
+            fake.gmail.add_message("cm1", thread_id="tc1", labels=["INBOX"],
+                                   subject="Completion audit test")
+
+            # Set up the DB so the adapter can write the audit
+            from olo.paths import db_path as _db_path
+            from olo.store import connect as _conn, migrate as _mig
+            db = _db_path()
+            conn_setup = _conn(db)
+            _mig(conn_setup)
+            conn_setup.close()
+
+            # Run backfill to completion (empty messages.list → done immediately)
+            gap_cursor = json.dumps({
+                "phase": "backfill",
+                "mode": "gap",
+                "after": 0,
+                "page_token": None,
+                "resume_history_id": C,
+                "previous_cursor": "4999",
+                "restart_point": C,
+            })
+
+            cur = gap_cursor
+            for _ in range(20):
+                b = adapter.fetch(cur, limit=10)
+                cur = b.next_cursor
+                if not b.has_more:
+                    break
+
+            # Check audit_events for backfill.completed
+            conn_check = _conn(db)
+            audit_row = conn_check.execute(
+                "SELECT detail FROM audit_events "
+                "WHERE actor='adapter:gmail' AND action='backfill.completed' "
+                "LIMIT 1"
+            ).fetchone()
+            conn_check.close()
+
+            assert audit_row is not None, (
+                "Fix 5 FAIL: backfill.completed audit event was NOT emitted. "
+                "Operators cannot confirm backfill completion or query gap metadata."
+            )
+            import json as _j
+            detail = _j.loads(audit_row["detail"])
+            assert detail.get("mode") == "gap", (
+                f"Fix 5 FAIL: backfill.completed audit missing mode. detail={detail!r}"
+            )
+            assert "resume_history_id" in detail, (
+                f"Fix 5 FAIL: backfill.completed audit missing resume_history_id. "
+                f"detail={detail!r}"
+            )
+
+    def test_gap_audit_started_contains_restart_point(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fix 5b: backfill.started audit for gap mode contains restart_point."""
+        import argparse, json as _j
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        with FakeGoogleServer() as fake:
+            creds = fake.make_credentials("gapaudit", gmail_readonly=True)
+            with credential_lock("gapaudit"):
+                save_credentials(creds)
+
+            from olo.paths import db_path as _db_path
+            from olo.store import connect as _conn, migrate as _mig
+            db = _db_path()
+            conn = _conn(db)
+            _mig(conn)
+            fake_run = "fakeaudit1"
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO ingest_runs(id,source,owner,started_at,status)"
+                " VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run, "gmail_gapaudit"),
+            )
+            conn.execute(
+                "INSERT INTO sync_checkpoints(source,cursor,updated_at,run_id)"
+                " VALUES (?,?,datetime('now'),?)",
+                ("gmail_gapaudit", fake.gmail.current_history_id, fake_run),
+            )
+            conn.execute("COMMIT")
+            conn.close()
+
+            from olo.hermes_plugin.cli import _cmd_backfill
+            ns = argparse.Namespace(source="gmail_gapaudit", mode="gap", days=None)
+            _cmd_backfill(ns)
+
+            conn2 = _conn(db)
+            audit_row = conn2.execute(
+                "SELECT detail FROM audit_events "
+                "WHERE actor='cli:backfill' AND action='backfill.started' "
+                "LIMIT 1"
+            ).fetchone()
+            conn2.close()
+
+            assert audit_row is not None, \
+                "Fix 5 FAIL: backfill.started audit not found"
+            detail = _j.loads(audit_row["detail"])
+            assert detail.get("mode") == "gap", \
+                f"Fix 5 FAIL: backfill.started mode != 'gap'. detail={detail!r}"
+            assert "restart_point" in detail, (
+                f"Fix 5 FAIL: restart_point missing from backfill.started audit. "
+                f"detail={detail!r}"
+            )

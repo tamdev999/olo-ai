@@ -205,6 +205,10 @@ class GmailAdapter(MonitorAdapter):
         Emits email.content only (no email.received/sent — avoids conflicts).
         When done (no next page token), cursor transitions to the plain numeric
         resume_history_id so incremental sync continues from there.
+
+        Fix 5: emits a backfill.completed audit event when done=True, recording
+        the mode, resume_history_id, and (for gap mode) the previous_cursor and
+        restart_point that were stored in the cursor dict.
         """
         from olo.adapters.gmail_full import run_backfill_batch
 
@@ -230,6 +234,33 @@ class GmailAdapter(MonitorAdapter):
             # Backfill complete — transition to incremental from resume_history_id
             next_cursor = resume_history_id
             has_more = bool(signals)  # if we got signals, more may exist via incremental
+
+            # Fix 5: emit backfill.completed audit event.  Best-effort: a DB
+            # connection failure must not break the backfill completion itself.
+            try:
+                from olo.paths import db_path
+                from olo.store import connect as _connect, migrate as _migrate, \
+                    _audit as _audit_fn, utc_now
+                _db = _connect(db_path())
+                _migrate(_db)
+                audit_detail: dict = {
+                    "source": self.source,
+                    "mode": mode,
+                    "resume_history_id": resume_history_id,
+                }
+                # Include gap-specific fields when present in the cursor
+                if mode == "gap":
+                    for _k in ("previous_cursor", "restart_point"):
+                        if _k in cursor_dict:
+                            audit_detail[_k] = cursor_dict[_k]
+                _audit_fn(_db, "adapter:gmail", "backfill.completed", audit_detail)
+                try:
+                    _db.execute("COMMIT")
+                except Exception:
+                    pass
+                _db.close()
+            except Exception:
+                pass  # audit failure must not abort backfill
         else:
             # More backfill pages
             next_cursor_dict = dict(cursor_dict)
@@ -370,6 +401,11 @@ class GmailAdapter(MonitorAdapter):
             has_more=final_has_more,
         )
 
+    # Fix 2: 48 MiB incremental byte budget (mirrors run_backfill_batch).
+    # Prevents the 64 MiB ingest_batch hard-stop when many large messages
+    # arrive in a single incremental fetch.
+    _INCREMENTAL_BLOB_BUDGET_BYTES: int = 48 * 1024 * 1024
+
     def _process_records(
         self,
         client: "GoogleClient",
@@ -380,11 +416,27 @@ class GmailAdapter(MonitorAdapter):
         """Process history records into signals.
 
         Returns (signals, last_included_record_id, records_remain).
-        A record is included whole or not at all.
+
+        Signal-budget rules (Fix 1 + Fix 2):
+        - Signal count budget: *remaining* is a soft target.  A record is
+          included whole even if it pushes the total above *remaining*, EXCEPT
+          when prior signals already exist — then we defer the record to the
+          next fetch (cursor = last committed id).
+          This eliminates the permanent-stall when limit=1 and a V2 record
+          produces 2 signals (email.received + email.content): previously the
+          code returned only [:1] signals with the cursor unchanged, so
+          email.content was never stored.
+        - Byte budget: cumulative blob bytes across all signals in this call
+          are capped at _INCREMENTAL_BLOB_BUDGET_BYTES (48 MiB).  When the
+          budget is exceeded AND at least one record has already been committed,
+          the current record is deferred (records_remain=True).  When the FIRST
+          record alone exceeds the budget, it is included anyway (a single
+          record must always make forward progress).
         """
         signals: list[NormalizedSignal] = []
         last_id = base_cursor
         seen_message_ids: set[str] = set()
+        batch_blob_bytes = 0
 
         for record in records:
             record_id = str(record.get("id", ""))
@@ -395,28 +447,32 @@ class GmailAdapter(MonitorAdapter):
                 client, record, seen_message_ids
             )
 
+            # Measure blob bytes this record would add
+            record_blob_bytes = sum(
+                len(b.data)
+                for s in record_signals
+                for b in (s.blobs or ())
+            )
+
+            # Fix 2: byte-budget gate (only defer if we already have signals)
+            over_byte_budget = (
+                signals and
+                batch_blob_bytes + record_blob_bytes > self._INCREMENTAL_BLOB_BUDGET_BYTES
+            )
+            if over_byte_budget:
+                return signals, last_id, True
+
+            # Fix 1: signal-count gate — defer only when we already have signals.
+            # When no prior signals exist the record is ALWAYS included whole,
+            # even if it exceeds remaining.  Truncating at [:remaining] caused a
+            # permanent stall: email.content was never stored because the cursor
+            # never advanced past the record.
             if signals and len(signals) + len(record_signals) > remaining:
                 return signals, last_id, True
 
-            # Fix 5: if a single record produces more signals than remaining and
-            # no prior signals exist, do NOT raise (would cause permanent stall).
-            # Instead, process only as many messagesAdded entries as fit, then
-            # return with records_remain=True so the cursor holds at last_id and
-            # the next fetch retries this record with fresh capacity.
-            if not signals and len(record_signals) > remaining:
-                if remaining >= 1:
-                    # Return the first `remaining` signals from this record;
-                    # next fetch will re-process from the same cursor and get more.
-                    signals.extend(record_signals[:remaining])
-                    return signals, last_id, True
-                # remaining=0 is a configuration error; raise to surface it
-                raise SourceError(
-                    f"gmail history record produces {len(record_signals)} signals "
-                    f"but limit is {remaining}; raise --limit"
-                )
-
             if record_signals:
                 signals.extend(record_signals)
+                batch_blob_bytes += record_blob_bytes
             last_id = record_id
 
         return signals, last_id, False

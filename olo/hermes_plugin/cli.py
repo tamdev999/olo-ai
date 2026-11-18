@@ -694,9 +694,13 @@ def _cmd_backfill(args: argparse.Namespace) -> None:
       - 'resume' if a numeric historyId checkpoint exists
       - 'gap'    if signals exist but no historyId (history expired)
       - 'bootstrap' otherwise (new account)
+
+    --days N restricts the backfill to messages received within the last N days.
+    Without --days the entire mailbox is scanned (after=0).
     """
     source: str = args.source
     mode: str | None = getattr(args, "mode", None)
+    days: int | None = getattr(args, "days", None)
 
     if not source.startswith("gmail_"):
         print(
@@ -774,12 +778,29 @@ def _cmd_backfill(args: argparse.Namespace) -> None:
             conn.close()
             sys.exit(1)
 
+    # Fix 4: compute after_epoch from --days N; 0 means scan the entire mailbox.
+    after_epoch = 0
+    if days is not None and days > 0:
+        import time as _time
+        after_epoch = int(_time.time()) - days * 86400
+
+    # Fix 5: for gap mode, record the previous cursor so the history gap is
+    # traceable (previous_cursor = what was there before we injected the gap
+    # backfill, restart_point = the live historyId we captured above).
+    gap_meta: dict = {}
+    if mode == "gap":
+        gap_meta = {
+            "previous_cursor": current_cursor,  # may be None
+            "restart_point": resume_history_id,
+        }
+
     backfill_cursor = _json.dumps({
         "phase": "backfill",
         "mode": mode,
-        "after": 0,
+        "after": after_epoch,
         "page_token": None,
         "resume_history_id": resume_history_id,
+        **gap_meta,
     })
 
     conn.execute("BEGIN IMMEDIATE")
@@ -808,6 +829,13 @@ def _cmd_backfill(args: argparse.Namespace) -> None:
             "source": source,
             "mode": mode,
             "resume_history_id": resume_history_id,
+            "after_epoch": after_epoch,
+            **({
+                "previous_cursor_hash": __import__("hashlib").sha256(
+                    (current_cursor or "").encode()
+                ).hexdigest() if current_cursor else None,
+                "restart_point": resume_history_id,
+            } if mode == "gap" else {}),
         }, now=utc_now())
         conn.execute("COMMIT")
     except Exception:
@@ -989,6 +1017,17 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
             "Backfill mode (default: auto-detected from checkpoint). "
             "bootstrap=scan all messages; resume=continue from existing checkpoint; "
             "gap=acknowledge an unrecoverable history gap then scan forward."
+        ),
+    )
+    backfill_p.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Restrict backfill to messages received within the last N days "
+            "(applies a Gmail after:<epoch> filter). "
+            "Omit to scan the entire mailbox."
         ),
     )
     backfill_p.set_defaults(func=_cmd_backfill)

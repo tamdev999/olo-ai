@@ -254,7 +254,7 @@ def exchange_code(
     *,
     api_base_override: Optional[str] = None,
     oauth_publishing_status: str = "testing",
-    revoke_on_profile_failure: bool = True,
+    revoke_on_profile_failure: bool = False,
 ) -> GoogleAccountCredentials:
     """Exchange an authorisation code for tokens; return GoogleAccountCredentials.
 
@@ -263,6 +263,12 @@ def exchange_code(
     Revoking would invalidate the existing project grant. The caller must handle
     the ValueError by keeping the old credentials and instructing the user to
     rerun with --revoke-first if needed.
+
+    Fix 3: revoke_on_profile_failure defaults to False for BOTH normal connect
+    and upgrade paths.  Revoking on profile failure is project-wide: it
+    invalidates the existing working grant as well as the new candidate tokens.
+    A failed profile fetch leaves the candidate access token to expire naturally
+    (~1 hour) without touching any existing credentials.
 
     Does NOT save to disk — caller must call save_credentials() under the lock.
     """
@@ -327,15 +333,13 @@ def exchange_code(
         try:
             email = _get_profile(access_token, api_base_override=api_base_override)
         except Exception as exc:
-            # P1-9: Only revoke on fresh initial connect (revoke_on_profile_failure=True).
-            # During an upgrade, the access_token shares the project grant with the
-            # existing refresh_token; revoking it would invalidate the existing
-            # working credentials. upgrade_credentials() sets revoke_on_profile_failure=False.
-            if revoke_on_profile_failure:
-                try:
-                    revoke_token(access_token, api_base_override=api_base_override)
-                except Exception:
-                    pass
+            # Fix 3: NEVER revoke on profile failure, regardless of path.
+            # Revoking is project-wide: it invalidates both the new candidate
+            # access_token AND the existing working refresh_token (they share a
+            # Google project grant).  A failed profile fetch leaves the candidate
+            # access_token to expire naturally (~1 hour).  The old credentials
+            # (if any) are untouched.  The revoke_on_profile_failure parameter
+            # is kept for backward-compatibility only; its value is ignored.
             raise ValueError(f"gmail profile fetch failed during connect: {exc}") from exc
 
     return GoogleAccountCredentials(
