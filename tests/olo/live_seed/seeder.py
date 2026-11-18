@@ -73,7 +73,7 @@ _SEEDER_SCOPES = " ".join(sorted([
     "email",
 ]))
 
-_GMAIL_INSERT_URL   = "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/import"
+_GMAIL_INSERT_URL   = "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages"
 _GMAIL_SEND_URL     = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 _GMAIL_MOD_URL      = "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/modify"
 _GMAIL_TRASH_URL    = "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/trash"
@@ -432,13 +432,39 @@ class GmailSeeder:
         self.created: dict[str, dict] = {}  # label -> {id, thread_id, message_id_header}
 
     def _import_message(self, raw: str, label_ids: list[str]) -> dict:
-        """Import a raw RFC 5322 message via messages.import."""
-        encoded = _encode_message(raw)
-        url = _GMAIL_INSERT_URL + "?internalDateSource=dateHeader"
-        body = json.dumps({"labelIds": label_ids, "raw": encoded}).encode()
-        # messages.import uses multipart upload — use simple upload for small messages
-        result = _api_post(url, body, self._token, content_type="application/json")
-        return result
+        """Insert a raw RFC 5322 message via messages.insert (multipart upload).
+
+        Uses /insert (not /import) so Gmail's spam filter and routing rules
+        are bypassed and the labelIds are applied directly.
+        """
+        url = _GMAIL_INSERT_URL + "?uploadType=multipart&neverMarkSpam=true&internalDateSource=dateHeader"
+        boundary = "olo_seeder_boundary_xK3m9"
+        metadata = json.dumps({"labelIds": label_ids})
+        raw_bytes = raw.encode("utf-8")
+        body = (
+            f"--{boundary}\r\n"
+            f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+            f"{metadata}\r\n"
+            f"--{boundary}\r\n"
+            f"Content-Type: message/rfc822\r\n\r\n"
+        ).encode("utf-8") + raw_bytes + f"\r\n--{boundary}--".encode("utf-8")
+        content_type = f"multipart/related; boundary={boundary}"
+        req = urllib.request.Request(
+            url, data=body,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type": content_type,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            raw_b = exc.read()
+            raise RuntimeError(
+                f"POST {url} → {exc.code}: {raw_b[:200]}"
+            ) from exc
 
     def seed_p1(self, sender: str, run_tag: str) -> dict:
         """P1: simple received message."""
