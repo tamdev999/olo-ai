@@ -231,29 +231,36 @@ def test_gmail_seeder_p5_p6_same_thread() -> None:
         "subject": "P5 subject",
     }
 
-    # Patch the _import_message to return a fake response
+    # P6 now calls _insert_sent (From==account → SENT label via messages.insert)
     def _fake_import(raw, label_ids):
         return {"id": "p6id", "threadId": "thread001"}
 
-    seeder._import_message = _fake_import
+    seeder._insert_sent = _fake_import
     seeder.seed_p6("sender@example.com", "tag")
 
     assert seeder.created["P6"]["thread_id"] == "thread001"
 
 
 def test_gmail_seeder_p8_self_email() -> None:
-    """P8 is imported with INBOX+SENT labels (self-email)."""
+    """P8 uses _insert_sent with INBOX+SENT labels (self-email).
+
+    messages.insert is used for P8 because Gmail's self-email detection
+    (From==account) automatically applies SENT regardless of labelIds.
+    Using /import with neverMarkSpam for a self-email would not help; using
+    /insert matches the actual SENT label behavior we want.
+    """
     seeder = GmailSeeder(token="fake", account_email="me@example.com")
     captured: list[dict] = []
 
-    def _fake_import(raw, label_ids):
+    # P8 calls _insert_sent (not _import_message)
+    def _fake_sent(raw, label_ids):
         captured.append({"raw": raw, "label_ids": label_ids})
         return {"id": "p8id", "threadId": "p8id"}
 
-    seeder._import_message = _fake_import
+    seeder._insert_sent = _fake_sent
     seeder.seed_p8("tag")
 
-    assert captured, "import_message was not called"
+    assert captured, "_insert_sent was not called for P8"
     labels = captured[0]["label_ids"]
     assert "INBOX" in labels, f"INBOX missing from P8 labels: {labels}"
     assert "SENT" in labels, f"SENT missing from P8 labels: {labels}"
@@ -270,12 +277,19 @@ def test_gmail_seeder_all_messages_contain_body_marker() -> None:
     seeder = GmailSeeder(token="fake", account_email="me@example.com")
     raws: list[str] = []
 
-    def _fake_import(raw, label_ids):
+    def _fake_receive(raw, label_ids):
         raws.append(raw)
         idx = len(raws)
         return {"id": f"id{idx}", "threadId": f"thread{idx}"}
 
-    seeder._import_message = _fake_import
+    def _fake_send(raw, label_ids):
+        raws.append(raw)
+        idx = len(raws)
+        return {"id": f"id{idx}", "threadId": f"thread{idx}"}
+
+    seeder._insert_received = _fake_receive
+    seeder._insert_sent = _fake_send
+    seeder._import_message = _fake_receive  # backward compat alias
 
     sender = "sender@example.com"
     tag = "test"
@@ -639,3 +653,87 @@ def test_seeder_client_secret_project_id_differs_from_olo_project(tmp_path: Path
 
     assert seeder_pid, "seeder project_id is empty"
     assert olo_pid, "olo project_id is empty"
+
+
+# ── Req 2: sender != account guard ───────────────────────────────────────────
+
+def test_seed_all_raises_when_sender_equals_account() -> None:
+    """seed_all raises SeederAccountError when sender == account email.
+
+    Gmail applies SENT label when From: matches the authenticated account.
+    Using sender==account for P1-P5/P7 would produce email.sent instead of
+    email.received. The guard prevents this silently wrong configuration.
+    """
+    from tests.olo.live_seed.seeder import SeederAccountError
+    seeder = GmailSeeder(token="fake", account_email="test@example.com")
+    with pytest.raises(SeederAccountError, match="differ from the test account"):
+        seeder.seed_all("test@example.com", "tag")
+
+
+def test_seed_all_accepted_with_external_sender() -> None:
+    """seed_all with a fake external sender passes the guard."""
+    seeder = GmailSeeder(token="fake", account_email="test@example.com")
+
+    # Patch all seed methods to no-op
+    def _noop(raw, label_ids):
+        return {"id": "x", "threadId": "x"}
+
+    seeder._insert_received = _noop
+    seeder._insert_sent = _noop
+    seeder._import_message = _noop
+    # Provide P5 so P6/P7 don't raise about missing P5
+    seeder.created["P5"] = {
+        "id": "p5", "thread_id": "t5",
+        "message_id_header": "<p5>", "subject": "P5",
+    }
+    seeder.created["P6"] = {
+        "id": "p6", "thread_id": "t5",
+        "message_id_header": "<p6>", "subject": "P6",
+    }
+    # Must not raise
+    seeder.seed_all("external@olo-seed.example.com", "tag")
+
+
+def test_received_uses_import_endpoint() -> None:
+    """P1-P5, P7 use _insert_received (messages.import with neverMarkSpam=true)."""
+    seeder = GmailSeeder(token="fake", account_email="me@example.com")
+    received_calls: list[tuple] = []
+    sent_calls: list[tuple] = []
+
+    def _fake_received(raw, label_ids):
+        received_calls.append((raw, label_ids))
+        return {"id": "rx", "threadId": "tx"}
+
+    def _fake_sent(raw, label_ids):
+        sent_calls.append((raw, label_ids))
+        return {"id": "sx", "threadId": "sx"}
+
+    seeder._insert_received = _fake_received
+    seeder._insert_sent = _fake_sent
+
+    seeder.seed_p1("external@olo-seed.example.com", "tag")
+    seeder.seed_p2("external@olo-seed.example.com", "tag")
+    seeder.seed_p3("external@olo-seed.example.com", "tag")
+    seeder.seed_p4("external@olo-seed.example.com", "tag")
+    seeder.seed_p5("external@olo-seed.example.com", "tag")
+    seeder.seed_p6("external@olo-seed.example.com", "tag")
+    seeder.seed_p7("external@olo-seed.example.com", "tag")
+    seeder.seed_p8("tag")
+
+    # P1-P5, P7 → received (6 calls)
+    assert len(received_calls) == 6, (
+        f"expected 6 _insert_received calls, got {len(received_calls)}"
+    )
+    # P6, P8 → sent (2 calls)
+    assert len(sent_calls) == 2, (
+        f"expected 2 _insert_sent calls, got {len(sent_calls)}"
+    )
+    # All received have INBOX label
+    for raw, labels in received_calls:
+        assert "INBOX" in labels, f"INBOX missing from received labels: {labels}"
+    # P6 has SENT
+    assert "SENT" in sent_calls[0][1], f"SENT missing from P6 labels"
+    # P8 has INBOX+SENT
+    assert "INBOX" in sent_calls[1][1] and "SENT" in sent_calls[1][1], (
+        f"P8 must have INBOX+SENT: {sent_calls[1][1]}"
+    )

@@ -74,6 +74,7 @@ _SEEDER_SCOPES = " ".join(sorted([
 ]))
 
 _GMAIL_INSERT_URL   = "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages"
+_GMAIL_IMPORT_URL   = "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/import"
 _GMAIL_SEND_URL     = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 _GMAIL_MOD_URL      = "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/modify"
 _GMAIL_TRASH_URL    = "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/trash"
@@ -431,13 +432,43 @@ class GmailSeeder:
         self._email = account_email
         self.created: dict[str, dict] = {}  # label -> {id, thread_id, message_id_header}
 
-    def _import_message(self, raw: str, label_ids: list[str]) -> dict:
-        """Insert a raw RFC 5322 message via messages.insert (multipart upload).
+    def _insert_received(self, raw: str, label_ids: list[str]) -> dict:
+        """Insert a received message via messages.import (multipart upload).
 
-        Uses /insert (not /import) so Gmail's spam filter and routing rules
-        are bypassed and the labelIds are applied directly.
+        Uses /import (not /insert) so that:
+        - neverMarkSpam=true prevents spam routing
+        - The From: header is an external address → Gmail does NOT apply SENT
+        - labelIds (INBOX, UNREAD) are applied as requested
+
+        Per Gmail API docs: messages.import with neverMarkSpam=true is the
+        correct endpoint for seeding received messages without spam routing.
+        messages.insert would apply SENT if From==account; messages.import
+        with an external From address and neverMarkSpam=true avoids this.
         """
-        url = _GMAIL_INSERT_URL + "?uploadType=multipart&neverMarkSpam=true&internalDateSource=dateHeader"
+        url = (
+            _GMAIL_IMPORT_URL
+            + "?uploadType=multipart"
+            + "&neverMarkSpam=true"
+            + "&internalDateSource=dateHeader"
+        )
+        return self._multipart_post(url, raw, label_ids)
+
+    def _insert_sent(self, raw: str, label_ids: list[str]) -> dict:
+        """Insert a sent message via messages.insert (multipart upload).
+
+        Uses /insert for messages where From==account. Gmail applies SENT
+        automatically. neverMarkSpam is NOT a valid parameter here (only on
+        /import); do not pass it.
+        """
+        url = (
+            _GMAIL_INSERT_URL
+            + "?uploadType=multipart"
+            + "&internalDateSource=dateHeader"
+        )
+        return self._multipart_post(url, raw, label_ids)
+
+    def _multipart_post(self, url: str, raw: str, label_ids: list[str]) -> dict:
+        """POST a multipart/related request with JSON metadata + RFC 5322 message."""
         boundary = "olo_seeder_boundary_xK3m9"
         metadata = json.dumps({"labelIds": label_ids})
         raw_bytes = raw.encode("utf-8")
@@ -465,6 +496,11 @@ class GmailSeeder:
             raise RuntimeError(
                 f"POST {url} → {exc.code}: {raw_b[:200]}"
             ) from exc
+
+    # ── backward-compat alias used by unit tests ──────────────────────────────
+    def _import_message(self, raw: str, label_ids: list[str]) -> dict:
+        """Alias for _insert_received (used by unit tests that patch this method)."""
+        return self._insert_received(raw, label_ids)
 
     def seed_p1(self, sender: str, run_tag: str) -> dict:
         """P1: simple received message."""
@@ -562,7 +598,7 @@ class GmailSeeder:
             references=[p5["message_id_header"]],
             date=datetime.now(UTC) - timedelta(minutes=5),
         )
-        result = self._import_message(raw, ["SENT"])
+        result = self._insert_sent(raw, ["SENT"])
         self.created["P6"] = {
             "id": result["id"],
             "thread_id": p5["thread_id"],  # same thread as P5
@@ -604,7 +640,7 @@ class GmailSeeder:
             body_text=f"P8 self-email fixture.\nRun tag: {run_tag}\n",
             message_id=mid, date=datetime.now(UTC) - timedelta(minutes=3),
         )
-        result = self._import_message(raw, ["INBOX", "SENT", "UNREAD"])
+        result = self._insert_sent(raw, ["INBOX", "SENT", "UNREAD"])
         self.created["P8"] = {
             "id": result["id"], "thread_id": result.get("threadId", result["id"]),
             "message_id_header": mid, "subject": subject,
@@ -808,7 +844,21 @@ class GmailSeeder:
         return data.get("gmail", {}).get(label)
 
     def seed_all(self, sender: str, run_tag: str) -> None:
-        """Seed P1–P8 in order."""
+        """Seed P1–P8 in order.
+
+        IMPORTANT: `sender` must NOT be the same as the test account email.
+        Gmail applies the SENT label to any message where From: matches the
+        authenticated account, regardless of the requested labelIds.  Using
+        a fake external address (e.g. bbc@olo-seed.example.com) ensures P1-P5
+        and P7 arrive with INBOX+UNREAD and produce email.received signals.
+        """
+        if sender.strip().lower() == self._email.strip().lower():
+            raise SeederAccountError(
+                f"sender ({sender!r}) must differ from the test account email "
+                f"({self._email!r}).  Gmail applies SENT label when From==account. "
+                "Set OLO_SEEDER_SENDER_EMAIL to a fake external address, e.g.: "
+                "bbc@olo-seed.example.com"
+            )
         print(f"  Seeding P1 (from={sender!r})…", end=" ")
         self.seed_p1(sender, run_tag)
         print(f"id={self.created['P1']['id']}")
