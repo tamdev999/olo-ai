@@ -399,14 +399,34 @@ def _cmd_google_connect(args: argparse.Namespace) -> None:
         return
 
     # ── Standard initial connect path ─────────────────────────────────────────
-    from olo.google.credentials import REQUIRED_SCOPES, credential_lock, save_credentials
+    # P1-C: new accounts connect with M2b scopes (REQUIRED_SCOPES_V2) by default.
+    # Warn if the account already has credentials — connecting again will update scopes.
+    from olo.google.credentials import REQUIRED_SCOPES_V2, credential_lock, save_credentials
     from olo.google.oauth import (
         connect_loopback, await_loopback_code,
         build_auth_url, parse_manual_redirect,
         exchange_code,
     )
 
-    scopes = REQUIRED_SCOPES
+    scopes = REQUIRED_SCOPES_V2
+
+    # Warn if account already connected (connecting again replaces existing creds)
+    try:
+        from olo.google.credentials import load_credentials
+        existing = load_credentials(alias)
+        if existing.is_legacy_profile():
+            print(
+                f"\nNote: account {alias!r} already has legacy (M2) credentials. "
+                "Connecting again will upgrade to M2b scopes. "
+                "Use --upgrade to preserve checkpoints.",
+            )
+        else:
+            print(
+                f"\nNote: account {alias!r} is already connected. Connecting again "
+                "will replace the existing credentials.",
+            )
+    except FileNotFoundError:
+        pass  # new account — no warning needed
 
     if manual:
         import socket
@@ -659,6 +679,160 @@ def _cmd_checkpoint_reset(args: argparse.Namespace) -> None:
     print(f"Checkpoint reset for source {source!r}. Next run will re-sync from scratch.")
 
 
+# ── Backfill (P1-A) ───────────────────────────────────────────────────────────
+
+def _cmd_backfill(args: argparse.Namespace) -> None:
+    """Trigger Gmail full-content backfill (P1-A).
+
+    Injects a backfill cursor so the next Gmail cron run scans all messages
+    via messages.list and stores email.content blobs.  The existing historyId
+    checkpoint is preserved as resume_history_id so incremental sync resumes
+    normally after backfill completes.
+
+    Mode is auto-detected if not supplied:
+      - 'resume' if a numeric historyId checkpoint exists
+      - 'gap'    if signals exist but no historyId (history expired)
+      - 'bootstrap' otherwise (new account)
+    """
+    source: str = args.source
+    mode: str | None = getattr(args, "mode", None)
+
+    if not source.startswith("gmail_"):
+        print(
+            f"olo backfill: backfill is only supported for gmail_* sources, "
+            f"got {source!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from olo.paths import db_path
+    from olo.store import connect, migrate, _audit, utc_now, get_checkpoint
+    import json as _json
+
+    db = db_path()
+    conn = connect(db)
+    migrate(conn)
+
+    current_cursor = get_checkpoint(source, conn)
+
+    # Auto-detect mode
+    if mode is None:
+        if current_cursor is not None:
+            try:
+                parsed = _json.loads(current_cursor)
+                if isinstance(parsed, dict) and parsed.get("phase") == "backfill":
+                    print(
+                        f"olo backfill: source {source!r} already has a backfill cursor "
+                        f"(mode={parsed.get('mode')!r}). Nothing to do."
+                    )
+                    conn.close()
+                    return
+            except (ValueError, _json.JSONDecodeError):
+                pass  # plain historyId string — not a JSON cursor
+            # Numeric historyId → resume mode
+            if current_cursor is not None and current_cursor.lstrip("-").isdigit():
+                mode = "resume"
+            else:
+                mode = "bootstrap"
+        else:
+            mode = "bootstrap"
+
+    resume_history_id = current_cursor if (current_cursor and current_cursor.lstrip("-").isdigit()) else "0"
+
+    backfill_cursor = _json.dumps({
+        "phase": "backfill",
+        "mode": mode,
+        "after": 0,
+        "page_token": None,
+        "resume_history_id": resume_history_id,
+    })
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if current_cursor is None:
+            # Insert new checkpoint
+            # We need a run_id reference; create a synthetic one
+            import secrets as _sec
+            fake_run_id = _sec.token_hex(16)
+            conn.execute(
+                "INSERT OR IGNORE INTO ingest_runs(id,source,owner,started_at,status)"
+                " VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run_id, source),
+            )
+            conn.execute(
+                "INSERT INTO sync_checkpoints(source,cursor,updated_at,run_id)"
+                " VALUES (?,?,datetime('now'),?)",
+                (source, backfill_cursor, fake_run_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE sync_checkpoints SET cursor=?,updated_at=datetime('now') WHERE source=?",
+                (backfill_cursor, source),
+            )
+        _audit(conn, "cli:backfill", "backfill.started", {
+            "source": source,
+            "mode": mode,
+            "resume_history_id": resume_history_id,
+        }, now=utc_now())
+        conn.execute("COMMIT")
+    except Exception:
+        try: conn.execute("ROLLBACK")
+        except Exception: pass
+        raise
+
+    conn.close()
+    print(
+        f"Backfill cursor set for source {source!r} (mode={mode!r}). "
+        f"Run the Gmail cron job to start backfill."
+    )
+
+
+# ── Purge content (P1-A) ──────────────────────────────────────────────────────
+
+def _cmd_purge_content(args: argparse.Namespace) -> None:
+    """Remove all stored content blobs for a source (P1-A).
+
+    Deletes rows from content_blobs and clears content_refs from signal payloads.
+    Does NOT remove the signal rows themselves.
+    """
+    source: str = args.source
+    confirm: bool = getattr(args, "confirm", False)
+
+    if not confirm:
+        print(
+            "olo purge-content: requires --confirm flag. "
+            "This operation is irreversible.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from olo.paths import db_path
+    from olo.store import connect, migrate, _audit, utc_now
+
+    db = db_path()
+    conn = connect(db)
+    migrate(conn)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM content_blobs WHERE source=?", (source,)
+        ).fetchone()[0]
+        conn.execute("DELETE FROM content_blobs WHERE source=?", (source,))
+        _audit(conn, "cli:purge", "content.purged", {
+            "source": source,
+            "blobs_removed": n,
+        }, now=utc_now())
+        conn.execute("COMMIT")
+    except Exception:
+        try: conn.execute("ROLLBACK")
+        except Exception: pass
+        raise
+
+    conn.close()
+    print(f"Purged {n} content blob(s) for source {source!r}.")
+
+
 # ── Shim template ─────────────────────────────────────────────────────────────
 
 _DEFAULT_SHIM_TEMPLATE = """\
@@ -763,6 +937,42 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
     )
     cpreset_reset.set_defaults(func=_cmd_checkpoint_reset)
 
+    # backfill (P1-A)
+    backfill_p = subs.add_parser(
+        "backfill",
+        help="Trigger Gmail full-content backfill for an account",
+    )
+    backfill_p.add_argument(
+        "--source", required=True,
+        help="Gmail source name, e.g. gmail_acme",
+    )
+    backfill_p.add_argument(
+        "--mode",
+        choices=("bootstrap", "resume", "gap"),
+        default=None,
+        help=(
+            "Backfill mode (default: auto-detected from checkpoint). "
+            "bootstrap=scan all messages; resume=continue from existing checkpoint; "
+            "gap=acknowledge an unrecoverable history gap then scan forward."
+        ),
+    )
+    backfill_p.set_defaults(func=_cmd_backfill)
+
+    # purge-content (P1-A)
+    purge_p = subs.add_parser(
+        "purge-content",
+        help="Remove all stored content blobs for a source",
+    )
+    purge_p.add_argument(
+        "--source", required=True,
+        help="Source name, e.g. gmail_acme",
+    )
+    purge_p.add_argument(
+        "--confirm", action="store_true",
+        help="Confirm the purge (required; this operation is irreversible)",
+    )
+    purge_p.set_defaults(func=_cmd_purge_content)
+
 
 def handler(args: argparse.Namespace) -> None:
     """Dispatch to the chosen sub-command."""
@@ -783,6 +993,6 @@ def handler(args: argparse.Namespace) -> None:
         return
     func = getattr(args, "func", None)
     if func is None:
-        print("usage: hermes olo {status,setup,google,checkpoint}", file=sys.stderr)
+        print("usage: hermes olo {status,setup,google,checkpoint,backfill,purge-content}", file=sys.stderr)
         sys.exit(1)
     func(args)

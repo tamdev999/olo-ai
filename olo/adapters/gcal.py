@@ -10,6 +10,13 @@ B4-content (M2b): calendar.event.content signals with full event document blob
 
 Registered as "gcal"; per-account source = "gcal_<alias>".
 
+Opus audit fixes (M2b):
+  - P0-A: round-robin calendar scheduling via cursor-embedded next_cal index;
+    prevents secondary calendars from starving when multiple are registered.
+  - P0-B: deleted calendars filtered from full-scan registration.
+  - P1-D: deduplicate "primary"/email-id after v1 migration.
+  - P1-E: optional calendars= option to restrict which calendars are synced.
+
 No side effects at import time.
 """
 from __future__ import annotations
@@ -217,7 +224,12 @@ def _migrate_v1_cursor(cursor: str) -> dict:
     Maps:
       {"phase":"full",...}       → v2 with cals={"primary":{"phase":"full",...}}
       {"phase":"incr",...}       → v2 with cals={"primary":{"phase":"incr",...}}
-    list cursor is bootstrapped (None → calendarList full sync next tick).
+    list cursor is bootstrapped (None → calendarList full scan next tick).
+
+    The literal key "primary" is a temporary placeholder; it will be replaced
+    with the real email-based calendar ID when _fetch_calendar_list runs its
+    full scan.  _fetch_calendar_list deduplicates on that scan by detecting
+    this sentinel and removing it once the real ID is registered.
     """
     try:
         old = json.loads(cursor)
@@ -225,7 +237,7 @@ def _migrate_v1_cursor(cursor: str) -> dict:
         old = {}
     return {
         "v": _CURSOR_V2,
-        "list": None,          # calendarList bootstrap on next fetch
+        "list": None,          # calendarList full scan on next fetch
         "cals": {"primary": old},
     }
 
@@ -286,7 +298,16 @@ class GcalAdapter(MonitorAdapter):
                 f"gcal option lookback_days must be 0–365, got {lookback}"
             )
 
-        extra = set(options) - {"account", "lookback_days"}
+        # P1-E: optional calendars= filter — comma-separated calendar IDs
+        raw_cals = options.get("calendars", "").strip()
+        if raw_cals:
+            cal_filter: Optional[frozenset[str]] = frozenset(
+                c.strip() for c in raw_cals.split(",") if c.strip()
+            )
+        else:
+            cal_filter = None   # None = all calendars
+
+        extra = set(options) - {"account", "lookback_days", "calendars"}
         if extra:
             raise AdapterConfigError(
                 f"gcal adapter does not accept options: {sorted(extra)}"
@@ -294,6 +315,7 @@ class GcalAdapter(MonitorAdapter):
 
         self._alias = alias
         self._lookback_days = lookback
+        self._cal_filter = cal_filter  # frozenset of allowed IDs, or None for all
         self.source = f"gcal_{alias}"
         self._client: Optional["GoogleClient"] = client
 
@@ -360,7 +382,8 @@ class GcalAdapter(MonitorAdapter):
            or mid-pagination.
         2. If any calendar has pending work (page_token or phase=full): do that calendar.
         3. Steady-state: calendarList incremental (discovers changes), then update comp
-           and proceed to events for the first incr calendar in the SAME call.
+           and proceed to events for one calendar — selected by round-robin via the
+           cursor-embedded `next_cal` index (P0-A: prevents secondary calendar starvation).
         4. No calendars registered — return empty.
 
         Step 3 combines calendarList + events in one fetch() call so the cron runner
@@ -375,13 +398,10 @@ class GcalAdapter(MonitorAdapter):
         if list_state is None or (isinstance(list_state, dict) and list_state.get("page_token")):
             cal_list_result = self._fetch_calendar_list(client, comp, limit, fetch_time)
             if cal_list_result.signals:
-                # Calendar-list signals (added/removed) — return them
                 return cal_list_result
             if not cal_list_result.has_more:
-                # No signals and nothing more pending — return the empty batch
                 return cal_list_result
             # No signals but has_more=True (calendars registered, events pending).
-            # Immediately dispatch to events so the runner gets a non-empty result.
             new_comp = json.loads(cal_list_result.next_cursor)
             new_cals = new_comp.get("cals") or {}
             for cal_id, cal_cursor in new_cals.items():
@@ -395,7 +415,6 @@ class GcalAdapter(MonitorAdapter):
                     return self._fetch_calendar_events(
                         client, new_comp, cal_id, cal_cursor, limit, fetch_time
                     )
-            # No calendars left to sync — return empty
             return cal_list_result
 
         # 2. Any calendar with pending work (non-incr cursor, or has_more page_token)
@@ -410,34 +429,42 @@ class GcalAdapter(MonitorAdapter):
                         client, comp, cal_id, cal_cursor, limit, fetch_time
                     )
 
-        # 3. Steady-state: do calendarList incremental first to pick up calendar
-        #    changes, then do events for the first incr calendar.
+        # 3. Steady-state: calendarList incremental first, then pick the NEXT calendar
+        #    by round-robin to prevent starvation of secondary calendars (P0-A).
         if isinstance(list_state, dict) and list_state.get("sync_token"):
-            # Do calendarList incremental
             cal_list_result = self._fetch_calendar_list(client, comp, limit, fetch_time)
             new_comp = json.loads(cal_list_result.next_cursor)
 
             if cal_list_result.signals:
-                # There were calendar add/remove signals — return them first
                 return cal_list_result
 
-            # No calendarList signals — immediately do events for first incr cal
+            # Round-robin calendar selection: use next_cal index stored in cursor
             new_cals = new_comp.get("cals") or {}
-            # First handle any newly registered cals needing full sync
-            for cal_id, cal_cursor in new_cals.items():
-                if isinstance(cal_cursor, dict):
-                    if cal_cursor.get("page_token") or cal_cursor.get("phase") == "full":
-                        return self._fetch_calendar_events(
-                            client, new_comp, cal_id, cal_cursor, limit, fetch_time
-                        )
-            # Then steady-state incr for first calendar
-            for cal_id, cal_cursor in new_cals.items():
-                if isinstance(cal_cursor, dict) and cal_cursor.get("phase") == "incr":
-                    return self._fetch_calendar_events(
-                        client, new_comp, cal_id, cal_cursor, limit, fetch_time
-                    )
-            # CalendarList sync ran but no calendars left
-            return cal_list_result
+            incr_cal_ids = sorted(
+                cal_id for cal_id, c in new_cals.items()
+                if isinstance(c, dict) and c.get("phase") == "incr"
+            )
+
+            if not incr_cal_ids:
+                # First handle newly registered cals needing full sync
+                for cal_id, cal_cursor in new_cals.items():
+                    if isinstance(cal_cursor, dict):
+                        if cal_cursor.get("page_token") or cal_cursor.get("phase") == "full":
+                            return self._fetch_calendar_events(
+                                client, new_comp, cal_id, cal_cursor, limit, fetch_time
+                            )
+                return cal_list_result
+
+            # Advance the round-robin index
+            current_idx = comp.get("next_cal", 0)
+            next_idx = (current_idx + 1) % len(incr_cal_ids)
+            chosen_id = incr_cal_ids[current_idx % len(incr_cal_ids)]
+            chosen_cursor = new_cals[chosen_id]
+            new_comp["next_cal"] = next_idx
+
+            return self._fetch_calendar_events(
+                client, new_comp, chosen_id, chosen_cursor, limit, fetch_time
+            )
 
         # 4. No calendars registered
         return FetchBatch(signals=(), next_cursor=json.dumps(comp), has_more=False)
@@ -508,17 +535,43 @@ class GcalAdapter(MonitorAdapter):
         time_min = (fetch_time - timedelta(days=self._lookback_days)).isoformat()
 
         if sync_token is None:
-            # Full calendarList sync: register all returned calendars
+            # Full calendarList sync: register all returned non-deleted calendars.
+            # P0-B: skip items with deleted=True (deleted calendars in full scan).
+            # P1-D: if the cursor has a migrated "primary" sentinel AND this scan
+            #   returns the owner's real email-based ID, absorb the sentinel's incr
+            #   cursor under the real ID and remove the "primary" placeholder to
+            #   prevent duplicate tracking.
+            primary_sentinel = new_comp_cals.pop("primary", None)  # remove sentinel
             for item in items:
                 cal_id = item.get("id", "")
                 if not cal_id:
                     continue
+                # P0-B: skip deleted calendars on full scan
+                if item.get("deleted", False):
+                    continue
+                # P1-E: apply calendars= filter
+                if self._cal_filter is not None and cal_id not in self._cal_filter:
+                    continue
                 if cal_id not in new_comp_cals:
-                    new_comp_cals[cal_id] = {
-                        "phase": "full",
-                        "time_min": time_min,
-                        "page_token": None,
-                    }
+                    # P1-D: if the real ID matches primary (owner's calendar), absorb
+                    #   the migrated incremental cursor to avoid re-doing a full scan.
+                    if (primary_sentinel is not None
+                            and isinstance(primary_sentinel, dict)
+                            and primary_sentinel.get("phase") == "incr"):
+                        # Promote the migrated cursor under the real ID
+                        new_comp_cals[cal_id] = primary_sentinel
+                        primary_sentinel = None   # consumed — only use once
+                    else:
+                        new_comp_cals[cal_id] = {
+                            "phase": "full",
+                            "time_min": time_min,
+                            "page_token": None,
+                        }
+            # If primary_sentinel was not consumed (account has no matching real ID
+            # e.g. during a fake server test where "primary" IS a real ID), re-add it
+            # so it isn't lost — but only when "primary" is not already in new_comp_cals.
+            if primary_sentinel is not None and "primary" not in new_comp_cals:
+                new_comp_cals["primary"] = primary_sentinel
         else:
             # Incremental: add new calendars, remove deleted ones
             for item in items:
@@ -529,6 +582,9 @@ class GcalAdapter(MonitorAdapter):
                 if deleted:
                     new_comp_cals.pop(cal_id, None)
                 else:
+                    # P1-E: apply calendars= filter
+                    if self._cal_filter is not None and cal_id not in self._cal_filter:
+                        continue
                     if cal_id not in new_comp_cals:
                         new_comp_cals[cal_id] = {
                             "phase": "full",
@@ -716,12 +772,18 @@ class GcalAdapter(MonitorAdapter):
         next_page_token: Optional[str],
         current_cal_cursor: dict,
     ) -> dict:
-        """Return a new composite cursor with the updated state for cal_id."""
+        """Return a new composite cursor with the updated state for cal_id.
+
+        Preserves next_cal (round-robin index) from the input comp.
+        """
         new_comp = {
             "v": _CURSOR_V2,
             "list": comp.get("list"),
             "cals": dict(comp.get("cals") or {}),
         }
+        # P0-A: preserve round-robin index
+        if "next_cal" in comp:
+            new_comp["next_cal"] = comp["next_cal"]
         if next_sync_token:
             new_comp["cals"][cal_id] = {
                 "phase": "incr",

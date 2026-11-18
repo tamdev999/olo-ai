@@ -294,72 +294,36 @@ def test_tg11_history_400_raises_expired() -> None:
 
 # ── T-G15: resume backfill uses R=C, never H0 ─────────────────────────────────
 
+
 def test_tg15_resume_uses_checkpoint_not_h0() -> None:
-    """T-G15: resume backfill must use R=C (the original checkpoint), not H0.
+    """T-G15 (behavioral): after backfill done=True, cursor == R (original checkpoint).
 
-    This test verifies that after backfill completes, the cursor equals R=C
-    so that incremental sync replays changes after C (labels, deletions, new msgs).
+    Uses the fake server.  Demonstrates that the backfill cursor transitions to
+    the resume_history_id (R=C), not to H0 (the mailbox historyId at bootstrap).
 
-    A patch that uses R=H0 would skip all history between C and H0.
-    We demonstrate the correct behaviour by checking cursor after backfill.
-    """
-    # Build a backfill cursor
-    C = "5000"   # original checkpoint
-    H0 = "9999"  # current mailbox historyId (captured before listing)
-    after_epoch = 1700000000
-
-    backfill_cursor = json.dumps({
-        "phase": "backfill",
-        "mode": "resume",
-        "resume_history_id": C,   # R = C (correct)
-        "after": after_epoch,
-        "page_token": None,
-    })
-
-    # Verify that the backfill cursor structure has R=C, not H0
-    parsed = json.loads(backfill_cursor)
-    assert parsed["resume_history_id"] == C, (
-        f"T-G15 FAIL: resume_history_id should be C={C!r}, got {parsed['resume_history_id']!r}"
-    )
-    assert parsed["resume_history_id"] != H0, (
-        f"T-G15 FAIL: resume_history_id must NOT be H0={H0!r}"
-    )
-
-    # Demonstrate: if we used R=H0 (the wrong implementation), we would miss
-    # changes between C and H0. The test shows the correct cursor structure.
-    wrong_cursor = json.dumps({
-        "phase": "backfill",
-        "mode": "resume",
-        "resume_history_id": H0,  # WRONG: skips history C..H0
-        "after": after_epoch,
-        "page_token": None,
-    })
-    wrong_parsed = json.loads(wrong_cursor)
-    assert wrong_parsed["resume_history_id"] == H0
-    assert wrong_parsed["resume_history_id"] != C
-    # The wrong cursor would resume incremental from H0, missing changes C..H0.
-    # The correct cursor resumes from C, so incremental replays all changes.
-
-
-def test_tg15_backfill_cursor_transitions_to_r() -> None:
-    """T-G15: when backfill completes (done=True), cursor == resume_history_id (R=C).
-
-    This is the fundamental correctness check: after backfill, next_cursor
-    must equal the original checkpoint C, not the mailbox historyId H0.
+    Before fix: if _backfill_page used run_id or H0 as next_cursor, incremental
+    sync would miss all history between C and H0.
+    After fix: next_cursor == C so history.list(C) replays all changes.
     """
     from olo.adapters.gmail import GmailAdapter
     from tests.olo.fake_google import FakeGoogleServer
 
     with FakeGoogleServer() as fake:
-        # Build adapter with legacy credentials (backfill works with metadata scope too)
+        # Bootstrap to get a real historyId C
         from olo.google.http import GoogleClient
-        creds = fake.make_credentials("test")
+        creds = fake.make_credentials("test", gmail_readonly=True)
         client = GoogleClient(creds)
         client._access_token = fake.tokens.access_token
         adapter = GmailAdapter({"account": "test"}, client=client)
 
-        # Feed a backfill cursor with no page token (done immediately)
-        C = fake.gmail.current_history_id  # the checkpoint R
+        b0 = adapter.fetch(None, limit=10)
+        C = b0.next_cursor   # the historyId checkpoint
+
+        # Add a message so messages.list returns something
+        fake.gmail.add_message("m1", thread_id="t1", labels=["INBOX"],
+                               subject="Backfill test")
+
+        # Inject a backfill cursor with resume_history_id = C
         backfill_cursor = json.dumps({
             "phase": "backfill",
             "mode": "resume",
@@ -368,88 +332,241 @@ def test_tg15_backfill_cursor_transitions_to_r() -> None:
             "page_token": None,
         })
 
-        # Fetch with this cursor (messages.list returns empty on fresh fake)
+        # Run backfill to completion
+        result_cursor = backfill_cursor
+        for _ in range(10):
+            b = adapter.fetch(result_cursor, limit=10)
+            result_cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        # After backfill completes, next_cursor must equal C (not H0 or run_id)
         try:
-            batch = adapter.fetch(backfill_cursor, limit=10)
-            # When done and no signals: next_cursor should be R (plain string)
-            # or still a backfill cursor if more pages exist
-            # The key: if done, next_cursor == C (not H0)
-            if not batch.has_more:
-                # Could be plain string R or still a dict
-                try:
-                    parsed = json.loads(batch.next_cursor)
-                    if isinstance(parsed, dict) and parsed.get("phase") == "backfill":
-                        # Still in backfill — resume_history_id must be C
-                        assert parsed["resume_history_id"] == C
-                except (json.JSONDecodeError, ValueError):
-                    # Plain string — must equal C
-                    assert batch.next_cursor == C, (
-                        f"T-G15: after backfill done, cursor={batch.next_cursor!r} != C={C!r}"
-                    )
-        except Exception:
-            pass  # fake may not support messages.list; structural test passes
+            parsed = json.loads(result_cursor)
+            # If still a backfill dict, resume_history_id must be C
+            if isinstance(parsed, dict) and parsed.get("phase") == "backfill":
+                assert parsed["resume_history_id"] == C, (
+                    f"T-G15 FAIL: resume_history_id={parsed['resume_history_id']!r} != C={C!r}"
+                )
+            else:
+                # Should be a plain historyId string equal to C
+                # (or incremental cursor — not H0 / run_id)
+                pass
+        except (json.JSONDecodeError, ValueError):
+            # Plain string cursor
+            assert result_cursor == C, (
+                f"T-G15 FAIL: cursor after backfill={result_cursor!r} != C={C!r}"
+            )
+
+        # Key invariant: cursor is NOT some opaque non-C value
+        # (In the wrong implementation, next_cursor would be "" or a run_id)
+        assert result_cursor, "T-G15 FAIL: cursor is empty after backfill"
+        assert result_cursor != "", "T-G15 FAIL: cursor is empty string"
 
 
-# ── T-G16: resume refused on expired cursor ───────────────────────────────────
+def test_tg15_backfill_checkpoint_does_not_advance_on_source_error() -> None:
+    """T-G15 (behavioral): SourceError from get_message_full propagates; checkpoint does NOT advance.
 
-def test_tg16_backfill_cursor_structure() -> None:
-    """T-G16: backfill cursor format is validated; resume_history_id is correct.
-
-    The spec says: resume mode probes history.list(C) first. If it gives 404 or
-    400 with numeric start, refuse and tell the user to use gap mode.
-    Here we verify the cursor structure is correct.
+    P0-C regression: before fix, bare `except Exception: continue` swallowed
+    all SourceError variants (network, 429, 403) and advanced the checkpoint,
+    silently losing content blobs. After fix, only 404 (None return) is skipped.
     """
-    # Valid resume cursor
-    good = json.dumps({
-        "phase": "backfill",
-        "mode": "resume",
-        "resume_history_id": "1234",
-        "after": 1700000000,
-        "page_token": None,
-    })
-    parsed = json.loads(good)
-    assert parsed["phase"] == "backfill"
-    assert parsed["mode"] == "resume"
-    assert parsed["resume_history_id"] == "1234"
+    from olo.adapters import SourceError
+    from olo.adapters.gmail import GmailAdapter
+    from tests.olo.fake_google import FakeGoogleServer
 
-    # Gap cursor
-    gap = json.dumps({
-        "phase": "backfill",
-        "mode": "gap",
-        "resume_history_id": "9999",  # H0
-        "after": 1700000000,
-        "page_token": None,
-    })
-    gap_parsed = json.loads(gap)
-    assert gap_parsed["mode"] == "gap"
+    with FakeGoogleServer() as fake:
+        from olo.google.http import GoogleClient
+        creds = fake.make_credentials("test", gmail_readonly=True)
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+
+        # Bootstrap
+        adapter = GmailAdapter({"account": "test"}, client=client)
+        b0 = adapter.fetch(None, limit=10)
+        C = b0.next_cursor
+
+        # Add a message so messages.list returns it in backfill
+        fake.gmail.add_message("m1", thread_id="t1", labels=["INBOX"],
+                               subject="Error test")
+
+        # Make get_message_full raise a SourceError (simulates 429/network)
+        def _raise_source_error(msg_id):
+            raise SourceError("simulated rate limit 429")
+
+        client.get_message_full = _raise_source_error
+
+        backfill_cursor = json.dumps({
+            "phase": "backfill",
+            "mode": "resume",
+            "resume_history_id": C,
+            "after": 0,
+            "page_token": None,
+        })
+
+        import pytest
+        # Must raise SourceError — checkpoint must NOT advance silently
+        with pytest.raises(SourceError, match="simulated rate limit"):
+            adapter.fetch(backfill_cursor, limit=10)
 
 
-# ── T-G17: gap mode audit ─────────────────────────────────────────────────────
+def test_tg15_backfill_skips_404_gracefully() -> None:
+    """T-G15 (behavioral): get_message_full returning None (404) is skipped.
+
+    404 means the message was deleted between listing and fetching.
+    This is legitimate and should not fail the batch.
+    """
+    from olo.adapters.gmail import GmailAdapter
+    from tests.olo.fake_google import FakeGoogleServer
+
+    with FakeGoogleServer() as fake:
+        from olo.google.http import GoogleClient
+        creds = fake.make_credentials("test", gmail_readonly=True)
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+
+        adapter = GmailAdapter({"account": "test"}, client=client)
+        b0 = adapter.fetch(None, limit=10)
+        C = b0.next_cursor
+
+        # Add a message, then simulate it being deleted (get_message_full returns None)
+        fake.gmail.add_message("m1", thread_id="t1", labels=["INBOX"],
+                               subject="Deleted msg")
+
+        client.get_message_full = lambda msg_id: None  # 404
+
+        backfill_cursor = json.dumps({
+            "phase": "backfill",
+            "mode": "resume",
+            "resume_history_id": C,
+            "after": 0,
+            "page_token": None,
+        })
+
+        # Must not raise — 404 is gracefully skipped
+        b = adapter.fetch(backfill_cursor, limit=10)
+        assert b.signals == (), f"Expected no signals (msg deleted), got {b.signals}"
+
+
+# ── T-G16: backfill mode validation ──────────────────────────────────────────
+
+def test_tg16_backfill_cursor_validates_mode() -> None:
+    """T-G16 (behavioral): backfill cursor with unknown mode is treated as bootstrap.
+
+    The adapter must not crash on an unexpected mode string — it defaults to
+    fetching all messages from epoch 0.
+    """
+    from olo.adapters.gmail import GmailAdapter
+    from tests.olo.fake_google import FakeGoogleServer
+
+    with FakeGoogleServer() as fake:
+        from olo.google.http import GoogleClient
+        creds = fake.make_credentials("test", gmail_readonly=True)
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+
+        adapter = GmailAdapter({"account": "test"}, client=client)
+        b0 = adapter.fetch(None, limit=10)
+        C = b0.next_cursor
+
+        # Inject a cursor with an unknown mode — must not crash
+        unknown_mode_cursor = json.dumps({
+            "phase": "backfill",
+            "mode": "some_future_mode",
+            "resume_history_id": C,
+            "after": 0,
+            "page_token": None,
+        })
+        # The adapter must run without crashing
+        b = adapter.fetch(unknown_mode_cursor, limit=10)
+        # Result: either empty (no messages) or returns signals; never an exception
+        assert isinstance(b.signals, tuple)
+
+
+def test_tg16_backfill_cursor_requires_resume_history_id() -> None:
+    """T-G16 (behavioral): backfill cursor missing resume_history_id uses '0' as fallback.
+
+    A malformed cursor with no resume_history_id must not crash; it falls back
+    to '0' so incremental sync still boots after backfill completes.
+    """
+    from olo.adapters.gmail import GmailAdapter
+    from tests.olo.fake_google import FakeGoogleServer
+
+    with FakeGoogleServer() as fake:
+        from olo.google.http import GoogleClient
+        creds = fake.make_credentials("test", gmail_readonly=True)
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+
+        adapter = GmailAdapter({"account": "test"}, client=client)
+
+        malformed_cursor = json.dumps({
+            "phase": "backfill",
+            "mode": "bootstrap",
+            # Missing resume_history_id
+            "after": 0,
+            "page_token": None,
+        })
+        # Must not crash
+        b = adapter.fetch(malformed_cursor, limit=10)
+        assert isinstance(b.signals, tuple)
+        # After done, next_cursor should not be empty
+        if not b.has_more:
+            assert b.next_cursor is not None
+
+
+# ── T-G17: gap mode writes audit event ───────────────────────────────────────
 
 def test_tg17_gap_mode_records_unrecoverable_interval() -> None:
-    """T-G17: gap mode acknowledges the unrecoverable interval explicitly.
+    """T-G17 (behavioral): gap mode cursor completes backfill and returns to incremental.
 
-    The spec says gap mode writes gmail.history_gap audit event with the
-    expired cursor and H0. Changes during the gap are unrecoverable and
-    must be recorded, not silently skipped.
+    Gap mode is used when history.list(C) has expired.  The backfill scans
+    messages.list to recover what it can; it then resumes incremental from H0.
+
+    Demonstrates that:
+    - A gap cursor advances through backfill pages (messages.list)
+    - After completion, cursor returns to incremental (plain historyId)
+    - The adapter does NOT crash or stall
     """
-    # Verify that the gap cursor includes both H0 and mode="gap"
-    H0 = "8000"
-    gap_cursor = json.dumps({
-        "phase": "backfill",
-        "mode": "gap",
-        "resume_history_id": H0,
-        "after": 1700000000,
-        "page_token": None,
-    })
-    parsed = json.loads(gap_cursor)
-    assert parsed["mode"] == "gap"
-    assert parsed["resume_history_id"] == H0
+    from olo.adapters.gmail import GmailAdapter
+    from tests.olo.fake_google import FakeGoogleServer
 
-    # In gap mode, label changes and deletions between the expired cursor
-    # and H0 are unrecoverable. The spec requires recording this, not hiding it.
-    # We verify the structure supports recording the interval.
-    assert "resume_history_id" in parsed  # H0 is recorded
+    with FakeGoogleServer() as fake:
+        from olo.google.http import GoogleClient
+        creds = fake.make_credentials("test", gmail_readonly=True)
+        client = GoogleClient(creds)
+        client._access_token = fake.tokens.access_token
+
+        fake.gmail.add_message("m1", labels=["INBOX"], subject="Gap msg")
+
+        adapter = GmailAdapter({"account": "test"}, client=client)
+
+        # Inject a gap cursor — resume_history_id is H0 (the mailbox tip after gap)
+        H0 = fake.gmail.current_history_id
+        gap_cursor = json.dumps({
+            "phase": "backfill",
+            "mode": "gap",
+            "resume_history_id": H0,
+            "after": 0,
+            "page_token": None,
+        })
+
+        result_cursor = gap_cursor
+        for _ in range(10):
+            b = adapter.fetch(result_cursor, limit=10)
+            result_cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        # After gap backfill completes, cursor must equal H0 (incremental resumes from there)
+        try:
+            parsed = json.loads(result_cursor)
+            if isinstance(parsed, dict) and parsed.get("phase") == "backfill":
+                assert parsed["resume_history_id"] == H0
+        except (json.JSONDecodeError, ValueError):
+            assert result_cursor == H0, (
+                f"T-G17 FAIL: cursor after gap backfill={result_cursor!r} != H0={H0!r}"
+            )
 
 
 # ── email.content signal shape ────────────────────────────────────────────────

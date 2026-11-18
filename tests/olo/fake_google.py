@@ -359,6 +359,8 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
     granted_scopes: str = ""
     # F7: Event released by FakeGoogleServer.__exit__ to unblock timeout injection
     _teardown_event: threading.Event = None
+    # Per-calendar event states for multi-calendar tests (cal_id → FakeCalendarState)
+    _extra_calendar_states: dict = {}
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         body = json.dumps(data).encode()
@@ -738,15 +740,15 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
     def _handle_events(self, params: dict, cal_id: str = "primary") -> None:
         """I3: honour maxResults, emit nextPageToken/nextSyncToken correctly.
 
-        Rules (mirror real Google Calendar API):
-        - Full sync (no syncToken, no pageToken): serve all events paginated by
-          maxResults; non-final pages get nextPageToken only; final page gets
-          nextSyncToken only.
-        - Incremental (syncToken present): same pagination rules over the
-          incremental event set.
-        - pageToken: resume a pending page stored in cal._pages.
-        - 410 for EXPIRED_SYNC_TOKEN; 400 for INVALID_PAGE_TOKEN.
+        Routes to per-calendar state when _extra_calendar_states is populated
+        (multi-calendar test support).
         """
+        # Route to per-calendar state if available
+        extra_states = getattr(self.__class__, "_extra_calendar_states", {})
+        if cal_id in extra_states:
+            cal = extra_states[cal_id]
+        else:
+            cal = self.__class__.calendar
         sync_token = params.get("syncToken")
         page_token = params.get("pageToken")
         time_min = params.get("timeMin")
@@ -754,8 +756,6 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             max_results = int(params.get("maxResults", "2500"))
         except (ValueError, TypeError):
             max_results = 2500
-
-        cal = self.__class__.calendar
 
         # ── 410 / 400 error paths ─────────────────────────────────────────────
         if sync_token == "EXPIRED_SYNC_TOKEN":
@@ -860,6 +860,7 @@ class FakeGoogleServer:
         _FakeGoogleHandler.inject_malformed_on_next = False
         _FakeGoogleHandler.inject_redirect_to = None
         _FakeGoogleHandler._teardown_event = self._teardown_ev
+        _FakeGoogleHandler._extra_calendar_states = {}
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
         # On Linux, the socket only accepts connections once serve_forever()
@@ -970,6 +971,36 @@ class FakeGoogleServer:
     ) -> None:
         """B4: register a secondary calendar so it appears in calendarList."""
         self.calendar.add_secondary_calendar(cal_id, summary)
+
+    def add_secondary_calendar_with_events(
+        self,
+        cal_id: str,
+        summary: str = "Secondary Calendar",
+        event_ids: list[str] | None = None,
+    ) -> "FakeCalendarState":
+        """Register a secondary calendar AND give it its own independent event set.
+
+        Returns the FakeCalendarState for the secondary calendar so callers
+        can add/cancel events independently.
+
+        The fake handler uses _extra_calendar_states[cal_id] when serving
+        events for that calendar.
+        """
+        self.calendar.add_secondary_calendar(cal_id, summary)
+        from dataclasses import field as _field
+        sec_state = FakeCalendarState()
+        if event_ids:
+            for ev_id in event_ids:
+                sec_state.add_event(ev_id, summary=f"Event {ev_id}")
+            sec_state._incr_events.clear()
+        if not hasattr(self.calendar, "_extra_calendar_states"):
+            self.calendar._extra_calendar_states = {}
+        self.calendar._extra_calendar_states[cal_id] = sec_state
+        # Also wire the handler to use it
+        _FakeGoogleHandler._extra_calendar_states = getattr(
+            self.calendar, "_extra_calendar_states", {}
+        )
+        return sec_state
 
     def inject_expired_cal_list_token(self) -> None:
         """B4: cause next calendarList sync to return 410."""

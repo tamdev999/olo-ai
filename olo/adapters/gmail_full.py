@@ -385,27 +385,59 @@ def run_backfill_batch(
 
     signals: list[NormalizedSignal] = []
     batch_blob_bytes = 0
+    # P1-F: on a budget-triggered soft-stop, we return the CURRENT page_token
+    # so the caller re-enters the same messages.list page on the next batch.
+    # To avoid replaying already-processed messages, we store a skip_count in
+    # the page_token wrapper when soft-stopping mid-page. The caller passes
+    # skip_count back via page_token; we decode it here.
+    # Format: when page_token is "skip:N:REAL_TOKEN" we skip the first N stubs.
+    skip_count = 0
+    real_page_token = page_token
+    if page_token and page_token.startswith("skip:"):
+        parts = page_token.split(":", 2)
+        if len(parts) == 3 and parts[1].isdigit():
+            skip_count = int(parts[1])
+            real_page_token = parts[2] if parts[2] else None
 
+    # Re-fetch with the real (un-prefixed) page_token
+    if real_page_token != page_token:
+        params_real: list[tuple[str, str]] = [
+            ("includeSpamTrash", "false"),
+            ("maxResults", str(min(limit, 500))),
+        ]
+        if after_epoch and after_epoch > 0:
+            params_real.insert(0, ("q", f"after:{after_epoch}"))
+        if real_page_token:
+            params_real.append(("pageToken", real_page_token))
+        resp = client.list_messages(params_real)
+        messages = resp.get("messages") or []
+        next_pt = resp.get("nextPageToken")
+
+    processed_count = 0
     for msg_stub in messages:
         msg_id = msg_stub.get("id", "")
         if not msg_id:
             continue
-        try:
-            raw_msg = client.get_message_full(msg_id)
-        except Exception:
+        # P1-F: skip already-committed stubs from a previous soft-stop
+        if processed_count < skip_count:
+            processed_count += 1
             continue
-        if not raw_msg:
-            continue  # 404 — deleted since listing
+        processed_count += 1
 
-        try:
-            sig = build_email_content_signal(source, raw_msg, run_id)
-        except Exception:
-            continue
+        # P0-C: Only 404 (get_message_full returns None) is skippable.
+        raw_msg = client.get_message_full(msg_id)
+        if not raw_msg:
+            continue  # 404 — deleted since listing; skip gracefully
+
+        sig = build_email_content_signal(source, raw_msg, run_id)
 
         blob_bytes = sum(len(b.data) for b in (sig.blobs or ()))
         if batch_blob_bytes + blob_bytes > _BATCH_BLOB_BUDGET_BYTES and signals:
-            # Soft stop: return what we have; caller re-enters with same page_token
-            return signals, page_token, False
+            # P1-F: Soft stop — return what we have. Encode the number of stubs
+            # already processed on this page so the next call can skip them.
+            # Format: "skip:{committed_count}:{real_page_token_or_empty}"
+            encoded_pt = f"skip:{len(signals)+skip_count}:{real_page_token or ''}"
+            return signals, encoded_pt, False
 
         signals.append(sig)
         batch_blob_bytes += blob_bytes

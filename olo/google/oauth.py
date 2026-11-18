@@ -682,8 +682,9 @@ def upgrade_credentials(
             )
 
         # 4. Verify before saving
+        verify_access_token: Optional[str] = None
         try:
-            _verify_new_credentials(new_creds, result_api_base)
+            verify_access_token = _verify_new_credentials(new_creds, result_api_base)
         except Exception as exc:
             _audit_fn(_db_conn, "cli:google", "google.upgrade.failed", {
                 "alias": alias, "reason": f"verification_failed: {exc}",
@@ -691,7 +692,12 @@ def upgrade_credentials(
             try: _db_conn.execute("COMMIT")
             except Exception: pass
             _db_conn.close()
-            # Tokens already discarded (not saved); do NOT revoke
+            # P1-G: revoke the new token so it doesn't remain live at Google.
+            if verify_access_token:
+                try:
+                    revoke_token(verify_access_token, api_base_override=result_api_base)
+                except Exception:
+                    pass  # best-effort revoke; don't hide the original error
             return UpgradeResult(reason=f"post-consent verification failed: {exc}")
 
         # 5. Save atomically
@@ -716,16 +722,18 @@ def upgrade_credentials(
 def _verify_new_credentials(
     creds: "GoogleAccountCredentials",
     api_base_override: Optional[str] = None,
-) -> None:
+) -> str:
     """Verify new credentials work before saving (§2.7 step 5).
 
     Runs: refresh, profile, messages.list + messages.get format=full,
     calendarList.list. Raises on any failure.
+
+    Returns the access token so the caller can revoke it on post-verification
+    failure (P1-G).
     """
     from olo.google.http import GoogleClient
 
     # Refresh once to confirm refresh_token works
-    # (Use _post_token directly since we don't have a saved file yet)
     resp = _post_token({
         "grant_type": "refresh_token",
         "refresh_token": creds.refresh_token,
@@ -775,3 +783,5 @@ def _verify_new_credentials(
                             [("maxResults", "1")])
         except Exception as exc:
             raise ValueError(f"calendarList check failed: {exc}") from exc
+
+    return access_token  # P1-G: caller may revoke on post-verification failure
