@@ -504,11 +504,20 @@ def test_stage1_gcal_inprocess() -> None:
     kinds = _signals_by_kind("gcal_livetest", conn)
     conn.close()
 
-    assert n == 8, f"expected 8 calendar signals (4 changed + 4 content for E1-E4), got {n} (kinds={kinds})"
+    assert n == 4, f"expected 4 calendar signals (4 changed with blobs for E1-E4), got {n} (kinds={kinds})"
     changed = kinds.get("calendar.event.changed", 0)
     assert changed == 4, f"expected 4 calendar.event.changed, got {changed}"
-    content = kinds.get("calendar.event.content", 0)
-    assert content == 4, f"expected 4 calendar.event.content (one per event), got {content}"
+    # With new design, blobs are attached to changed signals — no separate content kind
+    assert kinds.get("calendar.event.content", 0) == 0, (
+        f"calendar.event.content is no longer a separate signal kind; got {kinds}"
+    )
+    # Verify blobs are attached to the changed signals
+    conn = _db_conn()
+    n_blobs = conn.execute(
+        "SELECT COUNT(*) FROM content_blobs WHERE source='gcal_livetest'"
+    ).fetchone()[0]
+    conn.close()
+    assert n_blobs >= 4, f"expected ≥4 event blobs in content_blobs, got {n_blobs}"
 
     # V3: sync token present in cursor
     conn = _db_conn()

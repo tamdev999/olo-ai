@@ -72,18 +72,22 @@ def _truncate(s: Optional[str], n: int) -> Optional[str]:
     return collapsed[:n] if collapsed else None
 
 
-def _event_to_signals(
+def _event_to_signal(
     event: dict, source: str, fetch_time: datetime, calendar_id: str
-) -> list[NormalizedSignal]:
-    """Map a Calendar event dict to a list of NormalizedSignals.
+) -> NormalizedSignal:
+    """Map a Calendar event dict to a NormalizedSignal with attached content blob.
 
-    Always emits calendar.event.changed or calendar.event.cancelled (metadata).
-    Also emits calendar.event.content (full document blob, including description).
+    §6.3 (M2b): produces one calendar.event.changed or calendar.event.cancelled
+    signal with:
+      - Metadata payload: event_id, calendar_id, status, summary, location,
+        start, end, attendees, recurrence  (description excluded per §6.3)
+      - signal.blobs = (ContentBlob,)  — full event document including description
+      - payload["content_refs"] = [{sha256, media_type, size, role="event_doc"}]
 
-    The description field is stored in the content blob only — never in the
-    metadata payload (§6.3 privacy invariant from M2).
+    One signal per event — no separate calendar.event.content signal is emitted.
+    This keeps limit=1 valid and places the blob on the signal it belongs to.
     """
-    from olo.adapters.gcal_full import build_event_content_signal
+    from olo.adapters.gcal_full import build_event_blob, event_content_ref
 
     event_id = event.get("id", "")
     status = event.get("status", "confirmed")
@@ -113,7 +117,18 @@ def _event_to_signals(
     if summary_raw:
         subject = _truncate(summary_raw, _SIGNAL_SUBJECT_MAX)
 
-    # payload (§6.3 — exclude forbidden fields; description lives in the blob)
+    # Content blob (includes description; must NOT appear in payload below)
+    try:
+        blob = build_event_blob(event, calendar_id)
+        blobs: tuple = (blob,)
+        content_refs_entry = [event_content_ref(blob)]
+    except Exception:
+        # If blob construction fails, emit metadata signal without blob
+        blob = None
+        blobs = ()
+        content_refs_entry = []
+
+    # Metadata payload (§6.3: description excluded; lives in the blob only)
     organizer = event.get("organizer", {})
     attendees_raw = event.get("attendees", [])[:_MAX_ATTENDEES]
     recurrence_raw = event.get("recurrence", [])[:_MAX_RECURRENCE]
@@ -123,7 +138,7 @@ def _event_to_signals(
     start_val = start.get("dateTime") or start.get("date") or ""
     end_val = end.get("dateTime") or end.get("date") or ""
 
-    metadata_payload: dict = {
+    payload: dict = {
         "event_id": event_id,
         "calendar_id": calendar_id,
         "status": status,
@@ -147,24 +162,18 @@ def _event_to_signals(
         "recurrence": recurrence_raw,
         "html_link": None,  # §6.3: excluded
     }
+    if content_refs_entry:
+        payload["content_refs"] = content_refs_entry
 
-    metadata_sig = NormalizedSignal(
+    return NormalizedSignal(
         source=source,
         external_id=external_id,
         kind=kind,
         occurred_at=occurred_at,
         subject=subject,
-        payload=metadata_payload,
+        payload=payload,
+        blobs=blobs,
     )
-
-    # Build the content signal with full event document (includes description)
-    try:
-        content_sig = build_event_content_signal(source, event, calendar_id)
-    except Exception:
-        # If blob construction fails (e.g. malformed event), emit metadata only
-        return [metadata_sig]
-
-    return [metadata_sig, content_sig]
 
 
 def _cal_list_external_id(cal_id: str, action: str) -> str:
@@ -604,17 +613,13 @@ class GcalAdapter(MonitorAdapter):
     ) -> FetchBatch:
         """One signal-bearing page of events for one calendar.
 
-        Each event produces 2 signals (calendar.event.changed/cancelled +
-        calendar.event.content). The minimum meaningful limit is therefore 2;
-        at limit=1 we could never return even one complete event pair.
+        Each event produces exactly 1 signal (calendar.event.changed or
+        calendar.event.cancelled) with the full document blob attached via
+        content_refs. limit=1 is therefore valid.
 
         On 410 (sync token expired), self-heals: restarts full sync for that
         calendar and continues (does not propagate the 410).
         """
-        if limit < 2:
-            raise AdapterConfigError(
-                f"gcal: limit must be ≥ 2 (each event produces 2 signals); got {limit}"
-            )
         from olo.google.http import CalendarSyncTokenExpired, CalendarPageTokenInvalid
 
         empty_page_count = 0
@@ -643,21 +648,16 @@ class GcalAdapter(MonitorAdapter):
             next_sync_token = resp.get("nextSyncToken")
 
             # C1 fix: reject over-sized pages
-            # Each event produces 2 signals; max_events = limit // 2
-            max_events = limit // 2
-            if len(events) > max_events:
+            if len(events) > limit:
                 raise SourceError(
-                    f"gcal page exceeds requested maxResults ({len(events)} > {max_events})"
+                    f"gcal page exceeds requested maxResults ({len(events)} > {limit})"
                 )
 
             if events:
-                # Each event produces a metadata signal + a content signal (blob)
-                all_event_sigs: list[NormalizedSignal] = []
-                for ev in events:
-                    all_event_sigs.extend(
-                        _event_to_signals(ev, self.source, fetch_time, cal_id)
-                    )
-                signals = tuple(all_event_sigs)
+                signals = tuple(
+                    _event_to_signal(ev, self.source, fetch_time, cal_id)
+                    for ev in events
+                )
                 new_comp = self._update_comp(
                     comp, cal_id, next_sync_token, next_page_token, current_cal_cursor
                 )
@@ -758,16 +758,13 @@ class GcalAdapter(MonitorAdapter):
     ) -> dict:
         """Build params and call events.list for the given calendar.
 
-        Each event produces 2 signals (calendar.event.changed + calendar.event.content).
-        maxResults = limit // 2 so the total returned signals never exceed limit.
-        limit is guaranteed ≥ 2 by the caller (_fetch_calendar_events guard).
+        One signal per event (metadata + blob attached via content_refs),
+        so maxResults = limit directly.
         """
-        # 2 signals per event — request at most limit // 2 events
-        events_per_page = min(limit // 2, 2500)
         params: list[tuple[str, str]] = [
             ("singleEvents", "false"),
             ("showDeleted", "true"),
-            ("maxResults", str(events_per_page)),
+            ("maxResults", str(min(limit, 2500))),
         ]
         if phase.get("phase") == "full":
             params.append(("timeMin", phase["time_min"]))

@@ -649,86 +649,93 @@ def test_crash_mid_full_sync_resumes_from_page_token() -> None:
 
 # ── limit=1 regression tests ─────────────────────────────────────────────────
 
-def test_limit_1_raises_adapter_config_error() -> None:
-    """Calendar adapter raises AdapterConfigError for limit=1.
+def _drive_to_steady_local(a, limit=10):
+    """Drive adapter to steady state (all has_more=False)."""
+    cursor = None
+    all_sigs = []
+    for _ in range(30):
+        b = a.fetch(cursor, limit=limit)
+        all_sigs.extend(b.signals)
+        cursor = b.next_cursor
+        if not b.has_more:
+            break
+    return cursor, all_sigs
 
-    Each event produces 2 signals (calendar.event.changed + calendar.event.content).
-    limit=1 cannot accommodate even one complete event pair so the adapter
-    refuses with a clear error rather than silently violating the runner contract.
+
+def test_limit_1_works_one_signal_per_event() -> None:
+    """With limit=1, one event produces exactly 1 signal (changed with blob attached).
+
+    The 2-signal-per-event design has been reverted: blobs are now attached
+    directly to calendar.event.changed/cancelled via content_refs + signal.blobs.
+    One event → one signal → limit=1 is valid.
     """
     with FakeGoogleServer() as fake:
-        fake.calendar.add_event("ev1", summary="Test")
+        a = _make_adapter(fake)
+        cursor, _ = _drive_to_steady_local(a)
+
+        fake.calendar.add_event("ev1", summary="Limit1 Test")
+
+        b = a.fetch(cursor, limit=1)
+        # Must produce exactly 1 signal (not raise, not return 2)
+        assert len(b.signals) <= 1
+        if b.signals:
+            sig = b.signals[0]
+            assert sig.kind in ("calendar.event.changed", "calendar.event.cancelled")
+            # Signal has blob attached
+            assert len(sig.blobs) == 1, "event signal must carry ContentBlob"
+            assert "content_refs" in sig.payload, "event signal must have content_refs"
+
+
+def test_limit_1_full_iteration_no_loss() -> None:
+    """With limit=1, iterating through multiple events loses no events."""
+    with FakeGoogleServer() as fake:
+        a = _make_adapter(fake)
+        cursor, _ = _drive_to_steady_local(a)
+
+        for i in range(1, 6):
+            fake.calendar.add_event(f"li{i}", summary=f"Limit1 Event {i}")
+
+        seen = []
+        for _ in range(40):
+            b = a.fetch(cursor, limit=1)
+            for sig in b.signals:
+                if sig.kind == "calendar.event.changed":
+                    seen.append(sig.payload["event_id"])
+            cursor = b.next_cursor
+            if not b.has_more:
+                break
+
+        assert sorted(seen) == [f"li{i}" for i in range(1, 6)], (
+            f"limit=1 lost events: {seen}"
+        )
+
+
+def test_event_signal_carries_blob_and_content_refs() -> None:
+    """calendar.event.changed carries blob + content_refs (design assertion).
+
+    The blob contains the full event document including description.
+    The payload does NOT contain description (§6.3 privacy).
+    """
+    import json as _json
+    with FakeGoogleServer() as fake:
+        fake.calendar.add_event("ev1", summary="Blob Test")
         fake.calendar._incr_events.clear()
 
         a = _make_adapter(fake)
-        # Bootstrap to steady state first (drive until has_more=False)
-        cursor = None
-        for _ in range(20):
-            b = a.fetch(cursor, limit=10)
-            cursor = b.next_cursor
-            if not b.has_more:
-                break
-
-        # Add a new event so there is something to fetch
-        fake.calendar.add_event("ev2", summary="New event")
-
-        with pytest.raises(AdapterConfigError, match="limit must be"):
-            a.fetch(cursor, limit=1)
-
-
-def test_limit_2_works_one_event_two_signals() -> None:
-    """With limit=2, a single new event returns exactly 2 signals (metadata + content)."""
-    with FakeGoogleServer() as fake:
-        a = _make_adapter(fake)
-        cursor = None
-        for _ in range(20):
-            b = a.fetch(cursor, limit=10)
-            cursor = b.next_cursor
-            if not b.has_more:
-                break
-
-        fake.calendar.add_event("ev2", summary="Limit2 Event")
-
-        all_sigs = []
-        for _ in range(10):
-            b = a.fetch(cursor, limit=2)
-            all_sigs.extend(b.signals)
-            cursor = b.next_cursor
-            if not b.has_more:
-                break
+        _, all_sigs = _drive_to_steady_local(a)
 
         changed = [s for s in all_sigs if s.kind == "calendar.event.changed"]
-        content = [s for s in all_sigs if s.kind == "calendar.event.content"]
-        assert len(changed) == 1, f"expected 1 changed, got {len(changed)}"
-        assert len(content) == 1, f"expected 1 content, got {len(content)}"
+        assert changed
 
-
-def test_limit_2_does_not_exceed_signal_budget() -> None:
-    """With limit=2 and multiple events, no FetchBatch exceeds 2 signals."""
-    with FakeGoogleServer() as fake:
-        a = _make_adapter(fake)
-        cursor = None
-        for _ in range(20):
-            b = a.fetch(cursor, limit=10)
-            cursor = b.next_cursor
-            if not b.has_more:
-                break
-
-        for i in range(1, 6):
-            fake.calendar.add_event(f"multi{i}", summary=f"Event {i}")
-
-        batches: list[int] = []
-        for _ in range(40):
-            b = a.fetch(cursor, limit=2)
-            batches.append(len(b.signals))
-            assert len(b.signals) <= 2, (
-                f"FetchBatch exceeded limit=2: got {len(b.signals)} signals"
-            )
-            cursor = b.next_cursor
-            if not b.has_more:
-                break
-
-        # All batches with signals must have exactly 2 (one complete event pair)
-        assert all(s in (0, 2) for s in batches), (
-            f"Broken signal pairs in batches: {batches}"
-        )
+        sig = changed[0]
+        # Has blob
+        assert len(sig.blobs) == 1
+        # Has content_refs in payload
+        refs = sig.payload.get("content_refs", [])
+        assert len(refs) == 1
+        assert refs[0]["sha256"] == sig.blobs[0].sha256
+        # Description NOT in payload
+        assert "description" not in sig.payload
+        # Blob is JSON decodable with calendar_id
+        doc = _json.loads(sig.blobs[0].data.decode())
+        assert "calendar_id" in doc
