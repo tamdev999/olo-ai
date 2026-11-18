@@ -28,11 +28,49 @@ from olo.paths import olo_home
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 GMAIL_METADATA_SCOPE = "https://www.googleapis.com/auth/gmail.metadata"
-CALENDAR_EVENTS_OWNED_RO = "https://www.googleapis.com/auth/calendar.events.owned.readonly"
-CALENDAR_EVENTS_RO = "https://www.googleapis.com/auth/calendar.events.readonly"
+# M2b v2 scopes (replace gmail.metadata for full content)
+GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
+CALENDAR_LIST_SCOPE = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
 
+CALENDAR_EVENTS_OWNED_RO = "https://www.googleapis.com/auth/calendar.events.owned.readonly"
+CALENDAR_EVENTS_RO = CALENDAR_READONLY_SCOPE
+
+# M2 legacy scopes (still supported by existing connected accounts)
 REQUIRED_SCOPES = frozenset({GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO})
-CALENDAR_SCOPES = frozenset({CALENDAR_EVENTS_OWNED_RO, CALENDAR_EVENTS_RO})
+# M2b v2 scopes (required for full content)
+REQUIRED_SCOPES_V2 = frozenset({
+    GMAIL_READONLY_SCOPE,
+    CALENDAR_READONLY_SCOPE,
+    CALENDAR_LIST_SCOPE,
+})
+# FORBIDDEN_SCOPES: gmail.metadata must not co-exist with gmail.readonly
+# (Google returns 403 for format=full with metadata scope),
+# and no write scopes may appear.
+FORBIDDEN_SCOPES = frozenset({
+    GMAIL_METADATA_SCOPE,  # incompatible with format=full
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.insert",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.settings.sharing",
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/contacts",
+    "https://www.googleapis.com/auth/drive",
+})
+
+CALENDAR_SCOPES = frozenset({
+    CALENDAR_EVENTS_OWNED_RO,
+    CALENDAR_EVENTS_RO,
+    CALENDAR_READONLY_SCOPE,
+    CALENDAR_LIST_SCOPE,
+})
+
+# scope_profile values
+SCOPE_PROFILE_LEGACY = "legacy_v1"  # M2 gmail.metadata scopes
+SCOPE_PROFILE_FULL_V1 = "full_v1"   # M2b full-content scopes
 
 ACCOUNT_RE = "^[a-z0-9]{1,16}$"
 _ACCOUNT_PATTERN = re.compile(ACCOUNT_RE)
@@ -140,6 +178,9 @@ class GoogleAccountCredentials:
     """Immutable credential record for one Google account.
 
     Access tokens are NEVER stored here — they live only in memory.
+
+    scope_profile: 'legacy_v1' (M2 gmail.metadata scopes) or
+                   'full_v1'   (M2b full-content scopes). None means legacy.
     """
 
     alias: str
@@ -151,6 +192,7 @@ class GoogleAccountCredentials:
     refresh_token_issued_at: datetime
     oauth_publishing_status: str
     api_base_override: Optional[str]
+    scope_profile: Optional[str] = None  # M2b: 'legacy_v1' | 'full_v1' | None
 
     def __post_init__(self) -> None:
         # I7: alias validation at construction time
@@ -159,10 +201,23 @@ class GoogleAccountCredentials:
         _validate_api_base_override(self.api_base_override)
 
     def has_gmail_scope(self) -> bool:
-        return GMAIL_METADATA_SCOPE in self.granted_scopes
+        """True if gmail.metadata OR gmail.readonly is granted."""
+        return bool(self.granted_scopes & {GMAIL_METADATA_SCOPE, GMAIL_READONLY_SCOPE})
+
+    def has_gmail_readonly_scope(self) -> bool:
+        """True only for the full-content gmail.readonly scope (M2b)."""
+        return GMAIL_READONLY_SCOPE in self.granted_scopes
 
     def has_calendar_scope(self) -> bool:
         return bool(self.granted_scopes & CALENDAR_SCOPES)
+
+    def is_full_content_profile(self) -> bool:
+        """True when this credential has the M2b full-content scope profile."""
+        return self.scope_profile == SCOPE_PROFILE_FULL_V1
+
+    def is_legacy_profile(self) -> bool:
+        """True when this credential has the M2 legacy scope profile (or no profile)."""
+        return self.scope_profile in (SCOPE_PROFILE_LEGACY, None)
 
     def __repr__(self) -> str:
         last4 = self.refresh_token[-4:] if len(self.refresh_token) >= 4 else "***"
@@ -366,6 +421,7 @@ def _to_dict(creds: GoogleAccountCredentials) -> dict:
         "refresh_token_issued_at": creds.refresh_token_issued_at.isoformat(),
         "oauth_publishing_status": creds.oauth_publishing_status,
         "api_base_override": creds.api_base_override,
+        "scope_profile": creds.scope_profile,  # M2b: 'legacy_v1' | 'full_v1' | None
     }
 
 
@@ -387,6 +443,7 @@ def _from_dict(d: dict) -> GoogleAccountCredentials:
         refresh_token_issued_at=issued,
         oauth_publishing_status=d.get("oauth_publishing_status", "testing"),
         api_base_override=d.get("api_base_override"),
+        scope_profile=d.get("scope_profile"),  # M2b; None = legacy on old files
     )
 
 

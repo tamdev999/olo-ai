@@ -165,9 +165,14 @@ def _cron_run_and_wait(
 
 
 def _save_creds(fake: FakeGoogleServer, alias: str, home: Path) -> None:
-    """Save fake credentials with api_base_override pointing at the fake server."""
+    """Save fake credentials with api_base_override pointing at the fake server.
+
+    Fix 8: defaults to V2 scopes (gmail.readonly + calendar.events.readonly +
+    calendar.calendarlist.readonly) since legacy credentials are now rejected
+    by the adapters (Fix 4).
+    """
     from olo.google.credentials import save_credentials, credential_lock
-    creds = fake.make_credentials(alias)
+    creds = fake.make_credentials(alias, gmail_readonly=True)  # Fix 8: V2 default
     old = os.environ.get("HERMES_HOME")
     os.environ["HERMES_HOME"] = str(home)
     try:
@@ -241,8 +246,15 @@ def test_gmail_bootstrap_then_messages(e2e_home: Path) -> None:
         os.environ["HERMES_HOME"] = str(home)
         try:
             conn = connect(db)
-            n = count_signals("gmail_acme", conn)
-            assert n == 3, f"expected 3 signals, got {n}"
+            # V2 credentials emit both email.received and email.content per
+            # message; assert the exact received count rather than total.
+            n_received = conn.execute(
+                "SELECT COUNT(*) FROM signals "
+                "WHERE source='gmail_acme' AND kind='email.received'"
+            ).fetchone()[0]
+            assert n_received == 3, (
+                f"expected 3 email.received signals, got {n_received}"
+            )
             conn.close()
         finally:
             if old is None:
@@ -250,13 +262,20 @@ def test_gmail_bootstrap_then_messages(e2e_home: Path) -> None:
             else:
                 os.environ["HERMES_HOME"] = old
 
-        # Third fire: idempotence — still 3 signals
+        # Third fire: idempotence — still 3 email.received signals
         _cron_run_and_wait(home, job_id, expect_status="completed")
 
         os.environ["HERMES_HOME"] = str(home)
         try:
             conn = connect(db)
-            assert count_signals("gmail_acme", conn) == 3
+            n_received_idem = conn.execute(
+                "SELECT COUNT(*) FROM signals "
+                "WHERE source='gmail_acme' AND kind='email.received'"
+            ).fetchone()[0]
+            assert n_received_idem == 3, (
+                f"idempotence: expected 3 email.received signals, "
+                f"got {n_received_idem}"
+            )
             conn.close()
         finally:
             if old is None:
@@ -369,23 +388,37 @@ def test_history_404_then_reset_then_rebootstrap(e2e_home: Path) -> None:
         # Bootstrap first
         _cron_run_and_wait(home, job_id, expect_status="completed")
 
-        # Force 404 on next history.list
+        # Force 404 on next history.list — gap auto-detection kicks in
         fake.set_min_history_id("9999999")
 
-        exec_fail = _cron_run_and_wait(home, job_id, expect_status="failed")
+        # With gap auto-detection: run succeeds (gap cursor written), NOT fails
+        exec_gap = _cron_run_and_wait(home, job_id, expect_status="completed")
 
-        # F1: checkpoint unchanged after the 404 fail
+        # F1: checkpoint must now be a gap-mode backfill cursor (not an error state)
         old_env = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = str(home)
         try:
+            import json as _json
             from olo.store import connect, get_checkpoint, migrate
             from olo.paths import db_path
             conn = connect(db_path())
             migrate(conn)
-            chk_after_fail = get_checkpoint("gmail_acme", conn)
-            assert chk_after_fail is not None, (
-                "checkpoint must still be set (bootstrap cursor) after 404 fail"
+            chk_after_gap = get_checkpoint("gmail_acme", conn)
+            assert chk_after_gap is not None, (
+                "checkpoint must be set (gap backfill cursor) after 404 gap detection"
             )
+            try:
+                cd = _json.loads(chk_after_gap)
+                assert cd.get("phase") == "backfill", (
+                    f"checkpoint must be backfill cursor, got {chk_after_gap!r}"
+                )
+                assert cd.get("mode") == "gap", (
+                    f"checkpoint mode must be 'gap', got {cd.get('mode')!r}"
+                )
+            except (_json.JSONDecodeError, ValueError):
+                pytest.fail(
+                    f"checkpoint is not a gap JSON cursor: {chk_after_gap!r}"
+                )
             conn.close()
         finally:
             if old_env is None:
@@ -499,16 +532,25 @@ def test_label_and_deletion_change_events(e2e_home: Path) -> None:
         _cron_run_and_wait(home, job_id, expect_status="completed")
 
         conn = _db_connect(home)
-        assert count_signals("gmail_acme", conn) == 1
+        # V2 creds emit email.received + email.content per message; check
+        # the received count and confirm the received row exists.
+        n_received_f2 = conn.execute(
+            "SELECT COUNT(*) FROM signals "
+            "WHERE source='gmail_acme' AND kind='email.received'"
+        ).fetchone()[0]
+        assert n_received_f2 == 1, (
+            f"expected 1 email.received after fire 2, got {n_received_f2}"
+        )
         row = conn.execute(
-            "SELECT external_id, kind FROM signals WHERE source='gmail_acme'"
+            "SELECT external_id, kind FROM signals "
+            "WHERE source='gmail_acme' AND kind='email.received'"
         ).fetchone()
         assert row is not None
         assert row["kind"] == "email.received"
         assert row["external_id"] == "msg1"
         conn.close()
 
-        # Fire 3: label change + deletion → 2 new signals
+        # Fire 3: label change + deletion → 2 new non-received signals
         fake.gmail.remove_labels("msg1", ["UNREAD"])
         R1 = fake.gmail.current_history_id
 
@@ -518,16 +560,24 @@ def test_label_and_deletion_change_events(e2e_home: Path) -> None:
         _cron_run_and_wait(home, job_id, expect_status="completed")
 
         conn = _db_connect(home)
-        total = count_signals("gmail_acme", conn)
-        assert total == 3, f"expected 3 total signals after fire 3, got {total}"
+        # Exact counts per kind: 1 received + 1 content (from fire 2) +
+        # 1 labels_removed + 1 deleted (from fire 3).
+        n_received_f3 = conn.execute(
+            "SELECT COUNT(*) FROM signals "
+            "WHERE source='gmail_acme' AND kind='email.received'"
+        ).fetchone()[0]
+        assert n_received_f3 == 1, (
+            f"expected 1 email.received after fire 3, got {n_received_f3}"
+        )
 
         new_rows = conn.execute(
             "SELECT external_id, kind, payload FROM signals "
-            "WHERE source='gmail_acme' AND external_id != 'msg1'"
+            "WHERE source='gmail_acme' "
+            "  AND kind IN ('email.labels_removed', 'email.deleted')"
         ).fetchall()
         assert len(new_rows) == 2, (
-            f"expected 2 new signals, got {len(new_rows)}: "
-            f"{[r['external_id'] for r in new_rows]}"
+            f"expected 2 label/delete signals, got {len(new_rows)}: "
+            f"{[(r['kind'], r['external_id']) for r in new_rows]}"
         )
 
         import json as _json
@@ -545,10 +595,17 @@ def test_label_and_deletion_change_events(e2e_home: Path) -> None:
         assert final_chk == fake.gmail.current_history_id
         conn.close()
 
-        # Fire 4: no new signals
+        # Fire 4: no new label/delete signals (idempotent)
         _cron_run_and_wait(home, job_id, expect_status="completed")
         conn = _db_connect(home)
-        assert count_signals("gmail_acme", conn) == 3
+        n_label_del_f4 = conn.execute(
+            "SELECT COUNT(*) FROM signals "
+            "WHERE source='gmail_acme' "
+            "  AND kind IN ('email.labels_removed', 'email.deleted')"
+        ).fetchone()[0]
+        assert n_label_del_f4 == 2, (
+            f"idempotence: expected 2 label/delete signals, got {n_label_del_f4}"
+        )
         conn.close()
 
 
@@ -649,7 +706,15 @@ def test_cron_run_job_never_constructs_agent(
         assert not constructed
 
         conn = connect(db_path())
-        assert count_signals("gmail_acme", conn) == 1
+        # V2 creds produce email.received + email.content per message; check
+        # that exactly 1 email.received signal was stored (not total count).
+        n_received = conn.execute(
+            "SELECT COUNT(*) FROM signals "
+            "WHERE source='gmail_acme' AND kind='email.received'"
+        ).fetchone()[0]
+        assert n_received == 1, (
+            f"F3: expected 1 email.received signal, got {n_received}"
+        )
         conn.close()
 
         audit_path = home / "cron" / "usage_audit.jsonl"
@@ -718,4 +783,190 @@ def test_wait_helper_rejects_stale_execution(e2e_home: Path) -> None:
                 expect_status="completed",
                 trigger=lambda: None,
                 timeout=2.0,   # short timeout — no run fired
+            )
+
+
+# ── Fix 8: Gmail full-content (email.content) E2E test ───────────────────────
+
+def test_gmail_full_content_ingestion_e2e(e2e_home: Path) -> None:
+    """Fix 8: Gmail full-content (email.content + blob) ingestion end-to-end.
+
+    Uses V2 credentials (gmail.readonly) so the adapter produces email.content
+    signals with ContentBlob entries alongside email.received signals.
+
+    Before Fix 8: all E2E tests used legacy (gmail.metadata) credentials.
+    After Fix 8: _save_creds defaults to gmail_readonly=True (V2 scopes).
+    """
+    from olo.store import connect, migrate
+    from olo.content import load_json_doc
+    import json as _j
+
+    home = e2e_home
+
+    with FakeGoogleServer(email="fullcontent@example.com") as fake:
+        # Seed messages BEFORE bootstrap so they appear in backfill via messages.list
+        fake.gmail.add_message(
+            "fc1", thread_id="tc1", labels=["INBOX"],
+            subject="Full content test A",
+        )
+        fake.gmail.add_message(
+            "fc2", thread_id="tc2", labels=["INBOX"],
+            subject="Full content test B",
+        )
+
+        _save_creds(fake, "acme", home)  # V2 scopes by default after Fix 8
+
+        r = _run(["plugins", "enable", "olo"], home)
+        assert r.returncode == 0, f"plugin enable: {r.stderr}"
+
+        # Setup Gmail source
+        r = _run(["olo", "setup", "--source", "gmail", "--option", "account=acme"], home)
+        assert r.returncode == 0, f"setup: {r.stderr}"
+
+        job_id = None
+        for line in r.stdout.splitlines():
+            if "hermes cron create" in line:
+                break
+        r2 = _run([
+            "cron", "create", "every 5m",
+            "--name", "olo-gmail-acme",
+            "--script", "olo_monitor_gmail_acme.py",
+            "--no-agent", "--deliver", "local",
+        ], home)
+        assert r2.returncode == 0, f"cron create: {r2.stderr}"
+        job_id = _parse_job_id(r2.stdout)
+        assert job_id, f"could not parse job id: {r2.stdout}"
+
+        # Bootstrap tick (cursor=None → historyId set, 0 signals initially)
+        exec1 = _cron_run_and_wait(home, job_id, expect_status="completed")
+
+        db_path = home / "olo" / "olo.db"
+        assert db_path.exists(), "DB not created"
+        conn = connect(db_path)
+        migrate(conn)
+
+        from olo.store import get_checkpoint, count_signals
+        cursor = get_checkpoint("gmail_acme", conn)
+        n_before = count_signals("gmail_acme", conn)
+        conn.close()
+
+        assert cursor is not None, "Bootstrap must set a cursor"
+        assert n_before == 0, f"Bootstrap must ingest 0 signals, got {n_before}"
+
+        # Inject backfill cursor with the historyId captured at bootstrap
+        # (uses cli backfill command)
+        # Instead, manually inject since we need to test the full pipeline
+        import json as _j
+        import sqlite3
+        conn2 = connect(db_path)
+        migrate(conn2)
+        backfill_cursor = _j.dumps({
+            "phase": "backfill",
+            "mode": "bootstrap",
+            "after": 0,
+            "page_token": None,
+            "resume_history_id": cursor,
+        })
+        conn2.execute("BEGIN IMMEDIATE")
+        conn2.execute(
+            "UPDATE sync_checkpoints SET cursor=?,updated_at=datetime('now') WHERE source=?",
+            (backfill_cursor, "gmail_acme"),
+        )
+        conn2.execute("COMMIT")
+        conn2.close()
+
+        # Run cron — backfill should produce email.content signals
+        exec2 = _cron_run_and_wait(home, job_id, expect_status="completed")
+
+        conn3 = connect(db_path)
+        migrate(conn3)
+        total = count_signals("gmail_acme", conn3)
+        kinds_rows = conn3.execute(
+            "SELECT kind, COUNT(*) n FROM signals WHERE source='gmail_acme' GROUP BY kind"
+        ).fetchall()
+        blob_n = conn3.execute(
+            "SELECT COUNT(*) FROM content_blobs WHERE source='gmail_acme'"
+        ).fetchone()[0]
+        kinds = {r["kind"]: r["n"] for r in kinds_rows}
+        conn3.close()
+
+        # Verify email.content signals and blobs were produced
+        assert kinds.get("email.content", 0) >= 1, (
+            f"Fix 8 FAIL: no email.content signals. kinds={kinds}, blobs={blob_n}"
+        )
+        assert blob_n >= 1, (
+            f"Fix 8 FAIL: no content_blobs stored. kinds={kinds}"
+        )
+
+
+# ── Fix 8: Three-calendar synchronization E2E test ───────────────────────────
+
+def test_three_calendar_sync_e2e(e2e_home: Path) -> None:
+    """Fix 8: Three independent calendars are all synced by a single cron job.
+
+    Uses V2 credentials (calendar.events.readonly + calendarlist.readonly).
+    After bootstrap and steady-state ticks, events from all 3 calendars must
+    appear — demonstrating that calendarList discovery works and round-robin
+    prevents starvation (Fix 7 / P0-A).
+    """
+    home = e2e_home
+
+    CAL_A = "cal-a@example.com"
+    CAL_B = "cal-b@example.com"
+    CAL_C = "cal-c@example.com"
+
+    with FakeGoogleServer(email="threecal@example.com") as fake:
+        # Register three secondary calendars with independent events
+        for cal_id in [CAL_A, CAL_B, CAL_C]:
+            sec = fake.add_secondary_calendar_with_events(
+                cal_id, f"Calendar {cal_id}",
+                event_ids=[f"ev-{cal_id.split('@')[0]}"],
+            )
+            # Keep events in incr buffer so full sync sees them
+            # (don't clear so bootstrap picks them up)
+
+        _save_creds(fake, "acme", home)
+
+        r = _run(["plugins", "enable", "olo"], home)
+        assert r.returncode == 0
+
+        r = _run([
+            "olo", "setup", "--source", "gcal",
+            "--option", "account=acme",
+            "--option", "lookback_days=7",
+        ], home)
+        assert r.returncode == 0, f"setup: {r.stderr}"
+
+        r2 = _run([
+            "cron", "create", "every 15m",
+            "--name", "olo-gcal-acme",
+            "--script", "olo_monitor_gcal_acme.py",
+            "--no-agent", "--deliver", "local",
+        ], home)
+        assert r2.returncode == 0, f"cron create: {r2.stderr}"
+        job_id = _parse_job_id(r2.stdout)
+        assert job_id
+
+        # Run multiple ticks — enough for calendarList discovery + all 3 calendars
+        for _ in range(10):
+            exec_row = _cron_run_and_wait(home, job_id, expect_status="completed")
+
+        from olo.store import connect, migrate
+        db_path = home / "olo" / "olo.db"
+        conn = connect(db_path)
+        migrate(conn)
+
+        rows = conn.execute(
+            "SELECT payload FROM signals WHERE source='gcal_acme' AND kind='calendar.event.changed'"
+        ).fetchall()
+        conn.close()
+
+        import json as _j
+        seen_cals = {_j.loads(r["payload"]).get("calendar_id") for r in rows}
+
+        # All three secondary calendars must have been synced
+        for cal_id in [CAL_A, CAL_B, CAL_C]:
+            assert cal_id in seen_cals, (
+                f"Fix 8 / P0-A FAIL: calendar {cal_id!r} was never synced. "
+                f"seen_cals={seen_cals}"
             )

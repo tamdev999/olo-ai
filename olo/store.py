@@ -1,6 +1,7 @@
 """Olo AI — SQLite store: schema, leases, ingest_batch, reads.
 
 §5.5–5.7: schema v1, per-source ownership (lease), atomic ingest.
+§2.1 (M2b): content_blobs table, schema v2, blob handling in ingest_batch.
 
 Rules:
 - isolation_level=None (explicit transactions only).
@@ -23,11 +24,17 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
+import zlib
+
 from olo.paths import db_path
-from olo.signals import NormalizedSignal, canonical_json, format_utc
+from olo.signals import (
+    NormalizedSignal, ContentBlob,
+    MAX_BATCH_BLOB_BYTES,
+    canonical_json, format_utc,
+)
 
 # ── Schema version ────────────────────────────────────────────────────────────
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_LEASE_TTL = 900  # seconds
@@ -168,13 +175,27 @@ _DDL_STATEMENTS = [
     # Triggers — kept as full multi-statement strings; conn.execute handles them
     "CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END",
     "CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END",
+    # M2b §2.1: content blobs (schema v2)
+    """CREATE TABLE IF NOT EXISTS content_blobs (
+    source      TEXT NOT NULL,
+    sha256      TEXT NOT NULL,
+    media_type  TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    encoding    TEXT NOT NULL CHECK (encoding IN ('identity','zlib')),
+    data        BLOB NOT NULL,
+    created_at  TEXT NOT NULL,
+    run_id      TEXT NOT NULL REFERENCES ingest_runs(id),
+    PRIMARY KEY (source, sha256)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_blobs_run ON content_blobs(run_id)",
 ]
 
 
 def migrate(conn: Optional[sqlite3.Connection] = None,
             path: Optional[Path] = None) -> None:
-    """Create or verify schema v1; idempotent.
+    """Create or upgrade schema; idempotent.
 
+    v1 → v2: adds content_blobs table (M2b §2.1).
     Runs in one transaction. Opens a new connection if *conn* is None.
     """
     close_after = conn is None
@@ -184,11 +205,17 @@ def migrate(conn: Optional[sqlite3.Connection] = None,
         conn.execute("BEGIN IMMEDIATE")
         for stmt in _DDL_STATEMENTS:
             conn.execute(stmt)
-        # Ensure exactly one schema_version row
+        # Ensure exactly one schema_version row; upgrade v1 → v2 in-place
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
             conn.execute(
                 "INSERT INTO schema_version(version) VALUES (?)",
+                (_SCHEMA_VERSION,),
+            )
+        elif row["version"] < _SCHEMA_VERSION:
+            # In-place upgrade: DDL above is already idempotent (CREATE IF NOT EXISTS)
+            conn.execute(
+                "UPDATE schema_version SET version = ?",
                 (_SCHEMA_VERSION,),
             )
         conn.execute("COMMIT")
@@ -404,6 +431,45 @@ def finish_run(
         raise
 
 
+# ── Blob helpers (§2.1) ───────────────────────────────────────────────────────
+
+_ZLIB_MIN_SAVING = 0.10  # compress only when it saves ≥ 10 %
+
+
+def _compress_blob(data: bytes) -> tuple[bytes, str]:
+    """Return (stored_bytes, encoding).  Uses zlib when it saves ≥ 10 %."""
+    compressed = zlib.compress(data, level=6)
+    if len(compressed) < len(data) * (1 - _ZLIB_MIN_SAVING):
+        return compressed, "zlib"
+    return data, "identity"
+
+
+def _insert_blob(
+    conn: sqlite3.Connection,
+    source: str,
+    blob: ContentBlob,
+    run_id: str,
+    now_str: str,
+) -> None:
+    """INSERT OR IGNORE one blob row keyed (source, sha256)."""
+    stored_data, encoding = _compress_blob(blob.data)
+    conn.execute(
+        "INSERT OR IGNORE INTO content_blobs"
+        "(source, sha256, media_type, size, encoding, data, created_at, run_id)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (
+            source,
+            blob.sha256,
+            blob.media_type,
+            len(blob.data),          # always store uncompressed size
+            encoding,
+            stored_data,
+            now_str,
+            run_id,
+        ),
+    )
+
+
 # ── Atomic ingest ──────────────────────────────────────────────────────────────
 
 def ingest_batch(
@@ -415,11 +481,20 @@ def ingest_batch(
     conn: sqlite3.Connection,
     clock: Callable[[], datetime] = utc_now,
     _fault: Optional[Callable[[str], None]] = None,
+    pending_audit_events: tuple[dict, ...] = (),
 ) -> tuple[int, int, int]:
-    """Atomically commit one batch: signals + checkpoint + counter update.
+    """Atomically commit one batch: blobs + signals + checkpoint + counter update.
+
+    pending_audit_events: adapter-generated audit events (e.g. backfill.completed,
+    gmail.history_gap) to be written atomically with the checkpoint.  Each dict
+    must have 'actor', 'action', and 'detail' keys; optional 'subject_type' and
+    'subject_id' keys are forwarded to _audit.  Written inside the same
+    BEGIN IMMEDIATE … COMMIT block as signals and the checkpoint so they are
+    committed exactly once — rolled back on any failure, written on retry.
 
     Returns (inserted, duplicates, conflicts).
-    Raises LeaseLost, CheckpointMoved, or any exception from _fault injection.
+    Raises LeaseLost, CheckpointMoved, AdapterContractError, or any exception
+    from _fault injection.
 
     _fault is called at named checkpoints for failure injection tests only.
     Production callers never pass _fault.
@@ -427,6 +502,16 @@ def ingest_batch(
     now = clock()
     now_str = format_utc(now)
     inserted = duplicates = conflicts = 0
+
+    # Pre-flight: batch blob byte cap (§2.2)
+    total_blob_bytes = sum(
+        len(b.data) for sig in batch_signals for b in (sig.blobs or ())
+    )
+    if total_blob_bytes > MAX_BATCH_BLOB_BYTES:
+        raise AdapterContractError(
+            f"batch blob bytes {total_blob_bytes} exceed MAX_BATCH_BLOB_BYTES "
+            f"({MAX_BATCH_BLOB_BYTES})"
+        )
 
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -462,13 +547,47 @@ def ingest_batch(
                 f"{committed_cursor!r} for source {source!r}"
             )
 
-        # 2. Insert signals
+        # 1b. Insert blobs (before signals, same transaction; INSERT OR IGNORE)
+        #     Also validate that every content_ref sha256 is satisfiable.
         for signal in batch_signals:
             if signal.source != source:
                 conn.execute("ROLLBACK")
                 raise AdapterContractError(
                     f"signal source {signal.source!r} != run source {source!r}"
                 )
+            # Insert each blob
+            for blob in (signal.blobs or ()):
+                _insert_blob(conn, source, blob, run_id, now_str)
+
+            # Validate refs: every content_ref sha256 must exist in this batch
+            # or already be stored for this source.
+            refs = signal.payload.get("content_refs")
+            if refs:
+                batch_sha256s = {b.sha256 for b in (signal.blobs or ())}
+                for ref in refs:
+                    ref_sha256 = ref.get("sha256") if isinstance(ref, dict) else None
+                    if not ref_sha256:
+                        continue
+                    if ref_sha256 in batch_sha256s:
+                        continue
+                    # Check whether it's already stored for this source
+                    stored = conn.execute(
+                        "SELECT 1 FROM content_blobs WHERE source=? AND sha256=?",
+                        (source, ref_sha256),
+                    ).fetchone()
+                    if stored is None:
+                        conn.execute("ROLLBACK")
+                        raise AdapterContractError(
+                            f"content_ref sha256 {ref_sha256!r} in signal "
+                            f"{signal.external_id!r} is not in this batch and "
+                            f"not stored for source {source!r}"
+                        )
+
+        if _fault:
+            _fault("after_blobs")
+
+        # 2. Insert signals
+        for signal in batch_signals:
             sha = signal.content_sha256()
             result = conn.execute(
                 "INSERT INTO signals"
@@ -540,6 +659,22 @@ def ingest_batch(
             (len(batch_signals), inserted, duplicates, conflicts, run_id),
         )
 
+        # 4b. Commit adapter-generated audit events atomically with the batch.
+        # These are events like backfill.completed or gmail.history_gap that the
+        # adapter set in FetchBatch.pending_audit_events.  Writing them here
+        # (inside BEGIN IMMEDIATE … COMMIT) guarantees atomicity: they are
+        # committed exactly once with the checkpoint, and rolled back on failure.
+        for evt in pending_audit_events:
+            _audit(
+                conn,
+                evt.get("actor", f"adapter:{source}"),
+                evt.get("action", "adapter.event"),
+                evt.get("detail", {}),
+                subject_type=evt.get("subject_type"),
+                subject_id=evt.get("subject_id"),
+                now=now,
+            )
+
         # 5. Audit batch commit
         _audit(conn, f"runner:{source}", "batch.committed", {
             "run_id": run_id,
@@ -598,3 +733,48 @@ def get_lease(source: str, conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM source_leases WHERE source = ?", (source,)
     ).fetchone()
+
+
+# ── Content blob reads (§2.2) ─────────────────────────────────────────────────
+
+def get_blob_raw(source: str, sha256: str, conn: sqlite3.Connection) -> Optional[bytes]:
+    """Return the uncompressed bytes of a stored blob, or None.
+
+    *source* is required; there is no cross-source read.
+    """
+    row = conn.execute(
+        "SELECT encoding, data FROM content_blobs WHERE source=? AND sha256=?",
+        (source, sha256),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["encoding"] == "zlib":
+        return zlib.decompress(row["data"])
+    return bytes(row["data"])
+
+
+def purge_content(source: str, conn: sqlite3.Connection,
+                  clock: Callable[[], datetime] = utc_now) -> int:
+    """Delete all content blobs for *source*; return the number deleted.
+
+    Writes an audit event inside a transaction.
+    Signals and checkpoints are NOT touched.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) n FROM content_blobs WHERE source=?", (source,)
+        ).fetchone()["n"]
+        conn.execute("DELETE FROM content_blobs WHERE source=?", (source,))
+        _audit(conn, "cli:content", "content.purged", {
+            "source": source,
+            "deleted_count": n,
+        }, subject_type="source", subject_id=source, now=clock())
+        conn.execute("COMMIT")
+        return n
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise

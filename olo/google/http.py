@@ -53,7 +53,10 @@ _ALLOWED_PATHS: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/gmail/v1/users/me/profile"),
     ("GET", "/gmail/v1/users/me/history"),
     ("GET", "/gmail/v1/users/me/messages/"),
+    ("GET", "/gmail/v1/users/me/messages"),   # messages.list (M2b)
     ("GET", "/calendar/v3/calendars/primary/events"),
+    ("GET", "/calendar/v3/users/me/calendarList"),  # calendarList.list (M2b)
+    ("GET", "/calendar/v3/calendars/"),             # other calendars (M2b)
 })
 
 
@@ -252,6 +255,11 @@ class GoogleClient:
         if status == 404 and "/users/me/history" in path:
             raise GmailHistoryExpired("gmail history expired")
 
+        # 400 on history with a numeric startHistoryId → also treat as expired
+        # (B3 §2.3: Google returns 400 for some invalid history IDs, not just 404)
+        if status == 400 and "/users/me/history" in path:
+            raise GmailHistoryExpired(f"gmail history expired (400): {err_message[:100]}")
+
         # 404 on messages → caller handles as deleted (return None via get_message_or_none)
         if status == 404 and re.search(r"/users/me/messages/", path):
             return {}   # sentinel — caller checks for absent "id"
@@ -259,6 +267,10 @@ class GoogleClient:
         # 410 on events
         if status == 410 and "/calendars/" in path:
             raise CalendarSyncTokenExpired("calendar sync token expired")
+
+        # 410 on calendarList (B4: sync token expired)
+        if status == 410 and "/users/me/calendarList" in path:
+            raise CalendarSyncTokenExpired("calendarList sync token expired")
 
         # 400 on events with pageToken
         if status == 400 and "/calendars/" in path:
@@ -289,3 +301,22 @@ class GoogleClient:
         if not result.get("id"):
             return None
         return result
+
+    def get_message_full(self, message_id: str) -> Optional[Mapping]:
+        """Fetch a message in full format (M2b); returns None on 404.
+
+        Requires gmail.readonly scope. Raises _GoogleScopeMissing (SourceError)
+        on 403 if the credential only has gmail.metadata.
+        """
+        result = self.get_json(
+            "gmail",
+            f"/users/me/messages/{message_id}",
+            [("format", "full")],
+        )
+        if not result.get("id"):
+            return None
+        return result
+
+    def list_messages(self, params: list[tuple[str, str]]) -> Mapping:
+        """Call messages.list with the given params (M2b backfill)."""
+        return self.get_json("gmail", "/users/me/messages", params)

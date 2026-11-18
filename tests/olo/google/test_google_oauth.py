@@ -138,6 +138,12 @@ def test_exchange_code_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def test_extra_scope_refused_and_revoked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """T-G14 / T-O4: extra scope → ValueError; NO revoke sent (B2: preserve project grant).
+
+    The old M2 behaviour was to revoke and then raise. B2 changes this:
+    discard the new tokens without revoking, so the old grant is preserved.
+    The error message contains 'scope_union'.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     extra_scope = "https://www.googleapis.com/auth/gmail.send"
     with FakeGoogleServer(
@@ -147,7 +153,8 @@ def test_extra_scope_refused_and_revoked(
                                     api_base_override=fake.base_url)
         pending2 = PendingOAuth(pending.state, pending.code_verifier,
                                 "http://127.0.0.1:1/", _SCOPES)
-        with pytest.raises(ValueError, match="extra scopes"):
+        # B2: raises ValueError (scope_union), credentials NOT saved, NO revoke
+        with pytest.raises(ValueError, match="scope_union|extra scopes"):
             exchange_code("test_auth_code_123", pending2, "cid", "csecret", "alias",
                           api_base_override=fake.base_url)
         try:

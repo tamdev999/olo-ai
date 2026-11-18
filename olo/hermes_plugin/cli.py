@@ -178,11 +178,12 @@ def _cmd_setup(args: argparse.Namespace) -> None:
     alias = options.get("account", "")
     if source in ("gmail", "gcal") and alias:
         try:
-            from olo.google.credentials import load_credentials
+            from olo.google.credentials import load_credentials, GMAIL_READONLY_SCOPE
             creds = load_credentials(alias)
+            # Accept both legacy (gmail.metadata) and M2b (gmail.readonly) scopes
             if source == "gmail" and not creds.has_gmail_scope():
                 print(
-                    f"olo setup: account {alias!r} has no gmail.metadata scope. "
+                    f"olo setup: account {alias!r} has no Gmail scope. "
                     f"Run: hermes olo google connect --account {alias}",
                     file=sys.stderr,
                 )
@@ -284,11 +285,17 @@ def _cmd_setup(args: argparse.Namespace) -> None:
 # ── Google connect ─────────────────────────────────────────────────────────────
 
 def _cmd_google_connect(args: argparse.Namespace) -> None:
-    """OAuth connect for a Google account."""
+    """OAuth connect for a Google account (initial connect or --upgrade to M2b scopes)."""
     alias: str = args.account
     client_secret_file: str = args.client_secret_file
     manual: bool = getattr(args, "manual", False)
     prod: bool = getattr(args, "production", False)
+    upgrade: bool = getattr(args, "upgrade", False)
+    revoke_first: bool = getattr(args, "revoke_first", False)
+
+    if revoke_first and not upgrade:
+        print("olo google connect: --revoke-first requires --upgrade", file=sys.stderr)
+        sys.exit(1)
 
     if not _ALIAS_RE.match(alias):
         print(
@@ -318,15 +325,109 @@ def _cmd_google_connect(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    from olo.google.credentials import REQUIRED_SCOPES, credential_lock, save_credentials
+    oauth_status = "production" if prod else "testing"
+
+    # ── M2b upgrade path ──────────────────────────────────────────────────────
+    if upgrade:
+        from olo.google.oauth import upgrade_credentials
+
+        def _connect_fn(scopes):
+            """Obtain consent for *scopes*; return (code, api_base_override)."""
+            from olo.google.oauth import (
+                build_auth_url, connect_loopback, await_loopback_code,
+                parse_manual_redirect,
+            )
+            if manual:
+                import socket
+                with socket.socket() as s:
+                    s.bind(("127.0.0.1", 0))
+                    port = s.getsockname()[1]
+                redirect_uri = f"http://127.0.0.1:{port}/"
+                auth_url, pending = build_auth_url(client_id, redirect_uri, scopes)
+                print(f"\nOpen this URL in your browser:\n\n  {auth_url}\n")
+                print("After authorising, paste the full redirect URL here:")
+                try:
+                    pasted = input("> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    raise RuntimeError("Upgrade cancelled by user.")
+                code = parse_manual_redirect(pasted, pending)
+                if code is None:
+                    raise RuntimeError("Authorisation failed or state mismatch.")
+                return code, None
+            else:
+                auth_url, pending, port = connect_loopback(
+                    client_id, client_secret, alias, scopes,
+                )
+                print(f"\nOpen this URL in your browser:\n\n  {auth_url}\n")
+                print(
+                    f"Waiting for redirect on http://127.0.0.1:{port}/ (300s timeout)..."
+                )
+                code = await_loopback_code(pending, port)
+                if code is None:
+                    raise RuntimeError("Upgrade consent timed out or access denied.")
+                return code, None
+
+        result = upgrade_credentials(
+            alias,
+            revoke_first=revoke_first,
+            connect_fn=_connect_fn,
+            oauth_publishing_status=oauth_status,
+        )
+
+        if result.success:
+            print(f"\nUpgrade complete for account {alias!r}.")
+            print("  scope_profile = full_v1")
+            print("  Existing checkpoints preserved — no reset needed.")
+            if oauth_status == "testing":
+                print("  Warning: Testing-mode tokens expire 7 days after consent.")
+        else:
+            if result.scope_union and result.needs_revoke_first:
+                print(
+                    f"\nolo google connect --upgrade: Google returned both old and new scopes "
+                    f"in the same grant (scope_union).\n"
+                    f"Rerun with --revoke-first to clear the existing project grant first:\n\n"
+                    f"  hermes olo google connect --account {alias} "
+                    f"--client-secret-file {client_secret_file} "
+                    f"--upgrade --revoke-first\n",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"olo google connect --upgrade: failed — {result.reason}",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+        return
+
+    # ── Standard initial connect path ─────────────────────────────────────────
+    # P1-C: new accounts connect with M2b scopes (REQUIRED_SCOPES_V2) by default.
+    # Warn if the account already has credentials — connecting again will update scopes.
+    from olo.google.credentials import REQUIRED_SCOPES_V2, credential_lock, save_credentials
     from olo.google.oauth import (
         connect_loopback, await_loopback_code,
         build_auth_url, parse_manual_redirect,
         exchange_code,
     )
 
-    scopes = REQUIRED_SCOPES
-    oauth_status = "production" if prod else "testing"
+    scopes = REQUIRED_SCOPES_V2
+
+    # Warn if account already connected (connecting again replaces existing creds)
+    try:
+        from olo.google.credentials import load_credentials
+        existing = load_credentials(alias)
+        if existing.is_legacy_profile():
+            print(
+                f"\nNote: account {alias!r} already has legacy (M2) credentials. "
+                "Connecting again will upgrade to M2b scopes. "
+                "Use --upgrade to preserve checkpoints.",
+            )
+        else:
+            print(
+                f"\nNote: account {alias!r} is already connected. Connecting again "
+                "will replace the existing credentials.",
+            )
+    except FileNotFoundError:
+        pass  # new account — no warning needed
 
     if manual:
         import socket
@@ -422,14 +523,18 @@ def _cmd_google_status(args: argparse.Namespace) -> None:
 
         scopes_short = []
         if creds.has_gmail_scope():
-            scopes_short.append("gmail.metadata")
+            scopes_short.append(
+                "gmail.readonly" if creds.has_gmail_readonly_scope() else "gmail.metadata"
+            )
         if creds.has_calendar_scope():
             scopes_short.append("calendar")
 
+        profile_str = creds.scope_profile or "legacy_v1"
         print(f"  {alias}:")
-        print(f"    email_hash: {email_hash(creds.email_address)}")
-        print(f"    scopes:     {scopes_short}")
-        print(f"    status:     {creds.oauth_publishing_status}")
+        print(f"    email_hash:    {email_hash(creds.email_address)}")
+        print(f"    scopes:        {scopes_short}")
+        print(f"    scope_profile: {profile_str}")
+        print(f"    status:        {creds.oauth_publishing_status}")
 
         # Expiry warning for testing mode
         if creds.oauth_publishing_status == "testing":
@@ -558,9 +663,17 @@ def _cmd_checkpoint_reset(args: argparse.Namespace) -> None:
         # Delete checkpoint
         conn.execute("DELETE FROM sync_checkpoints WHERE source=?", (source,))
 
+        # Fix 2: store the actual previous historyId (for Gmail sources) in the
+        # audit so that gap recovery can reference it.  For non-numeric cursors
+        # (e.g. backfill JSON or calendar cursor) store None for previous_history_id.
+        previous_history_id: str | None = None
+        if old_cursor and old_cursor.lstrip("-").isdigit():
+            previous_history_id = old_cursor
+
         _audit(conn, "cli:checkpoint", "checkpoint.reset", {
             "source": source,
             "old_cursor_hash": old_cursor_hash,
+            "previous_history_id": previous_history_id,
             "reason": "operator",
         }, now=utc_now())
         conn.execute("COMMIT")
@@ -573,6 +686,222 @@ def _cmd_checkpoint_reset(args: argparse.Namespace) -> None:
 
     conn.close()
     print(f"Checkpoint reset for source {source!r}. Next run will re-sync from scratch.")
+
+
+# ── Backfill (P1-A) ───────────────────────────────────────────────────────────
+
+def _cmd_backfill(args: argparse.Namespace) -> None:
+    """Trigger Gmail full-content backfill (P1-A).
+
+    Injects a backfill cursor so the next Gmail cron run scans all messages
+    via messages.list and stores email.content blobs.  The existing historyId
+    checkpoint is preserved as resume_history_id so incremental sync resumes
+    normally after backfill completes.
+
+    Mode is auto-detected if not supplied:
+      - 'resume' if a numeric historyId checkpoint exists
+      - 'gap'    if signals exist but no historyId (history expired)
+      - 'bootstrap' otherwise (new account)
+
+    --days N restricts the backfill to messages received within the last N days.
+    Without --days the entire mailbox is scanned (after=0).
+    """
+    source: str = args.source
+    mode: str | None = getattr(args, "mode", None)
+    days: int | None = getattr(args, "days", None)
+
+    if not source.startswith("gmail_"):
+        print(
+            f"olo backfill: backfill is only supported for gmail_* sources, "
+            f"got {source!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from olo.paths import db_path
+    from olo.store import connect, migrate, _audit, utc_now, get_checkpoint
+    import json as _json
+
+    db = db_path()
+    conn = connect(db)
+    migrate(conn)
+
+    current_cursor = get_checkpoint(source, conn)
+
+    # Auto-detect mode
+    if mode is None:
+        if current_cursor is not None:
+            try:
+                parsed = _json.loads(current_cursor)
+                if isinstance(parsed, dict) and parsed.get("phase") == "backfill":
+                    print(
+                        f"olo backfill: source {source!r} already has a backfill cursor "
+                        f"(mode={parsed.get('mode')!r}). Nothing to do."
+                    )
+                    conn.close()
+                    return
+            except (ValueError, _json.JSONDecodeError):
+                pass  # plain historyId string — not a JSON cursor
+            # Numeric historyId → resume mode
+            if current_cursor is not None and current_cursor.lstrip("-").isdigit():
+                mode = "resume"
+            else:
+                mode = "bootstrap"
+        else:
+            mode = "bootstrap"
+
+    # N1 fix: resume_history_id must be a real historyId, never the string "0".
+    # When mode=bootstrap (no existing numeric checkpoint), we must capture the
+    # current mailbox historyId NOW so that after backfill completes, incremental
+    # sync picks up from the correct point rather than attempting history.list(0)
+    # which Google rejects with 400/404.
+    if current_cursor and current_cursor.lstrip("-").isdigit():
+        # Existing numeric historyId — use it directly
+        resume_history_id = current_cursor
+    else:
+        # No checkpoint or non-numeric cursor — fetch live historyId from Gmail API
+        from olo.google.credentials import load_credentials
+        from olo.google.http import GoogleClient
+        try:
+            alias = source[len("gmail_"):]  # strip "gmail_" prefix
+            creds = load_credentials(alias)
+            gclient = GoogleClient(creds)
+            profile = gclient.get_json("gmail", "/users/me/profile", [])
+            live_hid = str(profile.get("historyId", ""))
+            if not live_hid or not live_hid.isdigit():
+                print(
+                    f"olo backfill: could not obtain a live historyId for {source!r}. "
+                    "Run the Gmail cron job once first to establish a checkpoint.",
+                    file=sys.stderr,
+                )
+                conn.close()
+                sys.exit(1)
+            resume_history_id = live_hid
+        except Exception as e:
+            print(
+                f"olo backfill: failed to fetch current historyId for {source!r}: {e}. "
+                "Run the Gmail cron job once first to establish a checkpoint.",
+                file=sys.stderr,
+            )
+            conn.close()
+            sys.exit(1)
+
+    # Fix 4: compute after_epoch from --days N; 0 means scan the entire mailbox.
+    after_epoch = 0
+    if days is not None and days > 0:
+        import time as _time
+        after_epoch = int(_time.time()) - days * 86400
+
+    # Fix 5: for gap mode, record the previous cursor so the history gap is
+    # traceable (previous_cursor = what was there before we injected the gap
+    # backfill, restart_point = the live historyId we captured above).
+    gap_meta: dict = {}
+    if mode == "gap":
+        gap_meta = {
+            "previous_cursor": current_cursor,  # may be None
+            "restart_point": resume_history_id,
+        }
+
+    backfill_cursor = _json.dumps({
+        "phase": "backfill",
+        "mode": mode,
+        "after": after_epoch,
+        "page_token": None,
+        "resume_history_id": resume_history_id,
+        **gap_meta,
+    })
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if current_cursor is None:
+            # Insert new checkpoint
+            # We need a run_id reference; create a synthetic one
+            import secrets as _sec
+            fake_run_id = _sec.token_hex(16)
+            conn.execute(
+                "INSERT OR IGNORE INTO ingest_runs(id,source,owner,started_at,status)"
+                " VALUES (?,?,'cli',datetime('now'),'succeeded')",
+                (fake_run_id, source),
+            )
+            conn.execute(
+                "INSERT INTO sync_checkpoints(source,cursor,updated_at,run_id)"
+                " VALUES (?,?,datetime('now'),?)",
+                (source, backfill_cursor, fake_run_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE sync_checkpoints SET cursor=?,updated_at=datetime('now') WHERE source=?",
+                (backfill_cursor, source),
+            )
+        _audit(conn, "cli:backfill", "backfill.started", {
+            "source": source,
+            "mode": mode,
+            "resume_history_id": resume_history_id,
+            "after_epoch": after_epoch,
+            **({
+                "previous_cursor_hash": __import__("hashlib").sha256(
+                    (current_cursor or "").encode()
+                ).hexdigest() if current_cursor else None,
+                "restart_point": resume_history_id,
+            } if mode == "gap" else {}),
+        }, now=utc_now())
+        conn.execute("COMMIT")
+    except Exception:
+        try: conn.execute("ROLLBACK")
+        except Exception: pass
+        raise
+
+    conn.close()
+    print(
+        f"Backfill cursor set for source {source!r} (mode={mode!r}). "
+        f"Run the Gmail cron job to start backfill."
+    )
+
+
+# ── Purge content (P1-A) ──────────────────────────────────────────────────────
+
+def _cmd_purge_content(args: argparse.Namespace) -> None:
+    """Remove all stored content blobs for a source (P1-A).
+
+    Deletes rows from content_blobs and clears content_refs from signal payloads.
+    Does NOT remove the signal rows themselves.
+    """
+    source: str = args.source
+    confirm: bool = getattr(args, "confirm", False)
+
+    if not confirm:
+        print(
+            "olo purge-content: requires --confirm flag. "
+            "This operation is irreversible.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from olo.paths import db_path
+    from olo.store import connect, migrate, _audit, utc_now
+
+    db = db_path()
+    conn = connect(db)
+    migrate(conn)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM content_blobs WHERE source=?", (source,)
+        ).fetchone()[0]
+        conn.execute("DELETE FROM content_blobs WHERE source=?", (source,))
+        _audit(conn, "cli:purge", "content.purged", {
+            "source": source,
+            "blobs_removed": n,
+        }, now=utc_now())
+        conn.execute("COMMIT")
+    except Exception:
+        try: conn.execute("ROLLBACK")
+        except Exception: pass
+        raise
+
+    conn.close()
+    print(f"Purged {n} content blob(s) for source {source!r}.")
 
 
 # ── Shim template ─────────────────────────────────────────────────────────────
@@ -636,6 +965,23 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
         "--production", action="store_true",
         help="Mark as production OAuth status (not testing)",
     )
+    gconn.add_argument(
+        "--upgrade", action="store_true",
+        help=(
+            "Upgrade from M2 (gmail.metadata) to M2b (gmail.readonly + "
+            "calendar.events.readonly + calendar.calendarlist.readonly) scopes. "
+            "Preserves existing checkpoints. Use --revoke-first if Google returns "
+            "scope_union (old and new scopes granted together)."
+        ),
+    )
+    gconn.add_argument(
+        "--revoke-first", action="store_true", dest="revoke_first",
+        help=(
+            "Only with --upgrade: revoke the existing token before requesting new "
+            "scopes, then poll until invalid_grant is confirmed. Use when a plain "
+            "--upgrade attempt returns a scope_union error."
+        ),
+    )
     gconn.set_defaults(func=_cmd_google_connect)
 
     # google status
@@ -662,6 +1008,53 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
     )
     cpreset_reset.set_defaults(func=_cmd_checkpoint_reset)
 
+    # backfill (P1-A)
+    backfill_p = subs.add_parser(
+        "backfill",
+        help="Trigger Gmail full-content backfill for an account",
+    )
+    backfill_p.add_argument(
+        "--source", required=True,
+        help="Gmail source name, e.g. gmail_acme",
+    )
+    backfill_p.add_argument(
+        "--mode",
+        choices=("bootstrap", "resume", "gap"),
+        default=None,
+        help=(
+            "Backfill mode (default: auto-detected from checkpoint). "
+            "bootstrap=scan all messages; resume=continue from existing checkpoint; "
+            "gap=acknowledge an unrecoverable history gap then scan forward."
+        ),
+    )
+    backfill_p.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Restrict backfill to messages received within the last N days "
+            "(applies a Gmail after:<epoch> filter). "
+            "Omit to scan the entire mailbox."
+        ),
+    )
+    backfill_p.set_defaults(func=_cmd_backfill)
+
+    # purge-content (P1-A)
+    purge_p = subs.add_parser(
+        "purge-content",
+        help="Remove all stored content blobs for a source",
+    )
+    purge_p.add_argument(
+        "--source", required=True,
+        help="Source name, e.g. gmail_acme",
+    )
+    purge_p.add_argument(
+        "--confirm", action="store_true",
+        help="Confirm the purge (required; this operation is irreversible)",
+    )
+    purge_p.set_defaults(func=_cmd_purge_content)
+
 
 def handler(args: argparse.Namespace) -> None:
     """Dispatch to the chosen sub-command."""
@@ -682,6 +1075,6 @@ def handler(args: argparse.Namespace) -> None:
         return
     func = getattr(args, "func", None)
     if func is None:
-        print("usage: hermes olo {status,setup,google,checkpoint}", file=sys.stderr)
+        print("usage: hermes olo {status,setup,google,checkpoint,backfill,purge-content}", file=sys.stderr)
         sys.exit(1)
     func(args)

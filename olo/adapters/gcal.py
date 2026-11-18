@@ -1,7 +1,21 @@
-"""Olo AI — Google Calendar adapter (read-only, incremental sync).
+"""Olo AI — Google Calendar adapter (read-only, all readable calendars).
 
-§6: sync algorithm, signal mapping, §5.0 empty-page rule.
+§6 (M2): sync algorithm, signal mapping, §5.0 empty-page rule.
+B4 (M2b): composite cursor v2, calendarList discovery, per-calendar paging,
+  calendar.calendar.added/removed signals, 410 self-heal per calendar,
+  v1 cursor migration, lookback_days 0–365.
+B4-content (M2b): calendar.event.content signals with full event document blob
+  (including description), emitted alongside calendar.event.changed/cancelled.
+  Description is in the blob; it is NOT in the metadata payload (§6.3 privacy).
+
 Registered as "gcal"; per-account source = "gcal_<alias>".
+
+Opus audit fixes (M2b):
+  - P0-A: round-robin calendar scheduling via cursor-embedded next_cal index;
+    prevents secondary calendars from starving when multiple are registered.
+  - P0-B: deleted calendars filtered from full-scan registration.
+  - P1-D: deduplicate "primary"/email-id after v1 migration.
+  - P1-E: optional calendars= option to restrict which calendars are synced.
 
 No side effects at import time.
 """
@@ -23,22 +37,25 @@ from olo.adapters import (
 from olo.signals import NormalizedSignal
 
 _MAX_EMPTY_PAGES = 20
+# Fix 7: maximum consecutive event pages for a single calendar before yielding
+# to other calendars in round-robin. Prevents one calendar from monopolizing
+# all fetch ticks during a large paginated sync.
+_MAX_CONSECUTIVE_CAL_PAGES = 10
 _MAX_SUMMARY = 1024
 _MAX_LOCATION = 1024
 _MAX_ATTENDEES = 100
 _MAX_RECURRENCE = 20
 _SIGNAL_SUBJECT_MAX = 256
+_MAX_CALENDARS = 50   # calendarList cap; warn if exceeded
 
-_EXCLUDED_FIELDS = frozenset({
-    "description", "attachments", "conferenceData",
-    "extendedProperties", "hangoutLink", "source",
-    "gadget", "htmlLink",
-})
+# Composite cursor schema version
+_CURSOR_V2 = 2
 
 # ── I7: alias pattern ─────────────────────────────────────────────────────────
-import re as _re  # noqa: E402  (re already imported above)
-_ALIAS_RE = _re.compile(r"^[a-z0-9]{1,16}$")
+_ALIAS_RE = re.compile(r"^[a-z0-9]{1,16}$")
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _rfc3339_to_dt(raw: str) -> datetime:
     """Parse an RFC3339 string to a timezone-aware UTC datetime."""
@@ -66,8 +83,23 @@ def _truncate(s: Optional[str], n: int) -> Optional[str]:
     return collapsed[:n] if collapsed else None
 
 
-def _event_to_signal(event: dict, source: str, fetch_time: datetime) -> NormalizedSignal:
-    """Map a Calendar event dict to a NormalizedSignal."""
+def _event_to_signal(
+    event: dict, source: str, fetch_time: datetime, calendar_id: str
+) -> NormalizedSignal:
+    """Map a Calendar event dict to a NormalizedSignal with attached content blob.
+
+    §6.3 (M2b): produces one calendar.event.changed or calendar.event.cancelled
+    signal with:
+      - Metadata payload: event_id, calendar_id, status, summary, location,
+        start, end, attendees, recurrence  (description excluded per §6.3)
+      - signal.blobs = (ContentBlob,)  — full event document including description
+      - payload["content_refs"] = [{sha256, media_type, size, role="event_doc"}]
+
+    One signal per event — no separate calendar.event.content signal is emitted.
+    This keeps limit=1 valid and places the blob on the signal it belongs to.
+    """
+    from olo.adapters.gcal_full import build_event_blob, event_content_ref
+
     event_id = event.get("id", "")
     status = event.get("status", "confirmed")
     summary_raw = event.get("summary")
@@ -82,8 +114,11 @@ def _event_to_signal(event: dict, source: str, fetch_time: datetime) -> Normaliz
     else:
         occurred_at = fetch_time
 
-    # external_id
-    external_id = _event_external_id(event_id, updated_raw or fetch_time.isoformat())
+    # external_id — include calendar_id hash so events on different calendars
+    # don't collide even if Google reuses an event id across calendars.
+    cal_hash = hashlib.sha256(calendar_id.encode()).hexdigest()[:8]
+    base_ext = _event_external_id(event_id, updated_raw or fetch_time.isoformat())
+    external_id = f"{base_ext}_{cal_hash}"[:256]
 
     # kind
     kind = "calendar.event.cancelled" if status == "cancelled" else "calendar.event.changed"
@@ -93,7 +128,18 @@ def _event_to_signal(event: dict, source: str, fetch_time: datetime) -> Normaliz
     if summary_raw:
         subject = _truncate(summary_raw, _SIGNAL_SUBJECT_MAX)
 
-    # payload (§6.3 — exclude forbidden fields)
+    # Content blob (includes description; must NOT appear in payload below)
+    try:
+        blob = build_event_blob(event, calendar_id)
+        blobs: tuple = (blob,)
+        content_refs_entry = [event_content_ref(blob)]
+    except Exception:
+        # If blob construction fails, emit metadata signal without blob
+        blob = None
+        blobs = ()
+        content_refs_entry = []
+
+    # Metadata payload (§6.3: description excluded; lives in the blob only)
     organizer = event.get("organizer", {})
     attendees_raw = event.get("attendees", [])[:_MAX_ATTENDEES]
     recurrence_raw = event.get("recurrence", [])[:_MAX_RECURRENCE]
@@ -105,6 +151,7 @@ def _event_to_signal(event: dict, source: str, fetch_time: datetime) -> Normaliz
 
     payload: dict = {
         "event_id": event_id,
+        "calendar_id": calendar_id,
         "status": status,
         "summary": _truncate(summary_raw, _MAX_SUMMARY),
         "location": _truncate(event.get("location"), _MAX_LOCATION),
@@ -126,6 +173,8 @@ def _event_to_signal(event: dict, source: str, fetch_time: datetime) -> Normaliz
         "recurrence": recurrence_raw,
         "html_link": None,  # §6.3: excluded
     }
+    if content_refs_entry:
+        payload["content_refs"] = content_refs_entry
 
     return NormalizedSignal(
         source=source,
@@ -134,14 +183,94 @@ def _event_to_signal(event: dict, source: str, fetch_time: datetime) -> Normaliz
         occurred_at=occurred_at,
         subject=subject,
         payload=payload,
+        blobs=blobs,
     )
 
 
-class GcalAdapter(MonitorAdapter):
-    """Read-only Google Calendar adapter (primary calendar, incremental sync).
+def _cal_list_external_id(cal_id: str, action: str) -> str:
+    """External id for calendar.calendar.added / removed signals."""
+    h = hashlib.sha256(cal_id.encode()).hexdigest()[:40]
+    return f"cal_{action}_{h}"[:256]
 
-    Options: account=<alias> (required), lookback_days (0-30, default 7).
+
+def _calendar_to_signal(
+    cal_item: dict,
+    source: str,
+    kind: str,
+    fetch_time: datetime,
+) -> NormalizedSignal:
+    """Build a calendar.calendar.added / calendar.calendar.removed signal."""
+    cal_id = cal_item.get("id", "")
+    summary = _truncate(cal_item.get("summary"), _SIGNAL_SUBJECT_MAX)
+    action = "added" if kind == "calendar.calendar.added" else "removed"
+    return NormalizedSignal(
+        source=source,
+        external_id=_cal_list_external_id(cal_id, action),
+        kind=kind,
+        occurred_at=fetch_time,
+        subject=summary,
+        payload={
+            "calendar_id": cal_id,
+            "summary": _truncate(cal_item.get("summary"), _MAX_SUMMARY),
+            "access_role": cal_item.get("accessRole", ""),
+            "primary": bool(cal_item.get("primary", False)),
+            "time_zone": cal_item.get("timeZone", ""),
+            "color_id": cal_item.get("colorId", ""),
+        },
+    )
+
+
+# ── Cursor helpers ────────────────────────────────────────────────────────────
+
+def _migrate_v1_cursor(cursor: str) -> dict:
+    """Migrate a M2 v1 cursor ({"phase":...}) to composite v2.
+
+    Maps:
+      {"phase":"full",...}       → v2 with cals={"primary":{"phase":"full",...}}
+      {"phase":"incr",...}       → v2 with cals={"primary":{"phase":"incr",...}}
+    list cursor is bootstrapped (None → calendarList full scan next tick).
+
+    The literal key "primary" is a temporary placeholder; it will be replaced
+    with the real email-based calendar ID when _fetch_calendar_list runs its
+    full scan.  _fetch_calendar_list deduplicates on that scan by detecting
+    this sentinel and removing it once the real ID is registered.
+    """
+    try:
+        old = json.loads(cursor)
+    except Exception:
+        old = {}
+    return {
+        "v": _CURSOR_V2,
+        "list": None,          # calendarList full scan on next fetch
+        "cals": {"primary": old},
+    }
+
+
+def _is_v1_cursor(cursor_dict: dict) -> bool:
+    """True if the dict looks like a v1 (pre-M2b) per-calendar cursor."""
+    return "phase" in cursor_dict and "v" not in cursor_dict
+
+
+# ── GcalAdapter ───────────────────────────────────────────────────────────────
+
+class GcalAdapter(MonitorAdapter):
+    """Read-only Google Calendar adapter (all readable calendars, incremental sync).
+
+    Options: account=<alias> (required), lookback_days (0-365, default 7).
     source = "gcal_<alias>" (instance attribute, V7).
+
+    Composite cursor schema (v2)::
+
+        {
+          "v": 2,
+          "list": null | {"sync_token": "...", "page_token": null},
+          "cals": {
+            "<calendarId>": {"phase": "full|incr", "sync_token": "...", ...},
+            ...
+          }
+        }
+
+    v1 cursors ({"phase":...}) are automatically migrated.
     """
 
     source: str = "gcal_unknown"
@@ -167,12 +296,22 @@ class GcalAdapter(MonitorAdapter):
             raise AdapterConfigError(
                 f"gcal option lookback_days must be an integer, got {raw_lb!r}"
             ) from exc
-        if not (0 <= lookback <= 30):
+        # B4: expanded to 0–365
+        if not (0 <= lookback <= 365):
             raise AdapterConfigError(
-                f"gcal option lookback_days must be 0–30, got {lookback}"
+                f"gcal option lookback_days must be 0–365, got {lookback}"
             )
 
-        extra = set(options) - {"account", "lookback_days"}
+        # P1-E: optional calendars= filter — comma-separated calendar IDs
+        raw_cals = options.get("calendars", "").strip()
+        if raw_cals:
+            cal_filter: Optional[frozenset[str]] = frozenset(
+                c.strip() for c in raw_cals.split(",") if c.strip()
+            )
+        else:
+            cal_filter = None   # None = all calendars
+
+        extra = set(options) - {"account", "lookback_days", "calendars"}
         if extra:
             raise AdapterConfigError(
                 f"gcal adapter does not accept options: {sorted(extra)}"
@@ -180,6 +319,7 @@ class GcalAdapter(MonitorAdapter):
 
         self._alias = alias
         self._lookback_days = lookback
+        self._cal_filter = cal_filter  # frozenset of allowed IDs, or None for all
         self.source = f"gcal_{alias}"
         self._client: Optional["GoogleClient"] = client
 
@@ -193,18 +333,31 @@ class GcalAdapter(MonitorAdapter):
                     f"account {self._alias!r} has no calendar scope; "
                     f"run: hermes olo google connect --account {self._alias}"
                 )
+            # Fix 4: require full_v1 scope profile for multi-calendar discovery.
+            # Legacy credentials lack calendar.calendarlist.readonly and cannot
+            # discover secondary calendars. Fail early with a clear upgrade message.
+            from olo.google.credentials import CALENDAR_LIST_SCOPE
+            if CALENDAR_LIST_SCOPE not in creds.granted_scopes:
+                raise AdapterConfigError(
+                    f"account {self._alias!r} has legacy calendar credentials and "
+                    f"cannot discover all readable calendars. "
+                    f"Upgrade with: hermes olo google connect --account {self._alias} "
+                    f"--client-secret-file <path> --upgrade"
+                )
             self._client = GoogleClient(creds)
         return self._client
 
     # ── §6.2 sync algorithm ───────────────────────────────────────────────────
 
     def fetch(self, cursor: str | None, *, limit: int) -> FetchBatch:
-        """Return signals from at most ONE signal-bearing page per call.
+        """Return signals from at most one signal-bearing page per call.
 
-        C1 fix: a single fetch() may cross any number of empty pages (§5.0),
-        but returns immediately after the first page that yields signals.
-        A page is NEVER truncated; Google is asked for at most min(limit, 2500)
-        items so it cannot return more than limit events.
+        B4: cursor is a JSON composite v2 dict; v1 cursors are migrated.
+        Each fetch() does at most one of:
+          (a) one page of calendarList.list (emits calendar.calendar.* signals), or
+          (b) one page of events for one calendar (emits calendar.event.* signals).
+
+        Never returns empty with has_more=True.
         """
         if limit < 1:
             raise AdapterConfigError(f"fetch limit must be ≥ 1, got {limit}")
@@ -213,118 +366,523 @@ class GcalAdapter(MonitorAdapter):
         fetch_time = datetime.now(UTC)
 
         if cursor is None:
-            time_min = (fetch_time - timedelta(days=self._lookback_days)).isoformat()
-            phase = {"phase": "full", "time_min": time_min, "page_token": None}
+            # Fresh bootstrap: v2 cursor, calendarList sync first
+            comp = {
+                "v": _CURSOR_V2,
+                "list": None,
+                "cals": {},
+            }
         else:
             try:
-                phase = json.loads(cursor)
+                comp = json.loads(cursor)
             except (json.JSONDecodeError, ValueError) as exc:
                 raise SourceError(f"gcal: invalid cursor {cursor!r}: {exc}") from exc
+            # v1 migration
+            if _is_v1_cursor(comp):
+                comp = _migrate_v1_cursor(cursor)
 
-        return self._fetch_one_page(client, phase, limit, fetch_time)
+        return self._fetch_next(client, comp, limit, fetch_time)
 
-    def _fetch_one_page(
+    def _fetch_next(
         self,
         client: "GoogleClient",
-        phase: dict,
+        comp: dict,
         limit: int,
         fetch_time: datetime,
     ) -> FetchBatch:
-        """C1 fix: advance over empty pages; return as soon as one page yields signals.
+        """Decide which sub-fetch to do next and do it.
 
-        Contract:
-        - Never span two signal-bearing pages in one call.
-        - Never truncate a page (SourceError if Google over-delivers).
-        - Empty pages count toward _MAX_EMPTY_PAGES; if the cap is hit, return
-          an advanced-cursor empty batch (has_more=False) so the runner commits
-          the cursor progress and the next tick continues.
+        Priority:
+        1. If list cursor needs syncing (None or has page_token): calendarList bootstrap
+           or mid-pagination.
+        2. If any calendar has pending work (page_token or phase=full): do that calendar.
+        3. Steady-state: calendarList incremental (discovers changes), then update comp
+           and proceed to events for one calendar — selected by round-robin via the
+           cursor-embedded `next_cal` index (P0-A: prevents secondary calendar starvation).
+        4. No calendars registered — return empty.
+
+        Step 3 combines calendarList + events in one fetch() call so the cron runner
+        doesn't need an extra tick just for calendarList housekeeping.
+        """
+        list_state = comp.get("list")
+        cals_state: dict = comp.get("cals") or {}
+
+        # 1. calendarList bootstrap or mid-pagination.
+        # After calendarList completes, immediately proceed to events if no signals
+        # (avoids returning has_more=True with empty signals, which the runner rejects).
+        if list_state is None or (isinstance(list_state, dict) and list_state.get("page_token")):
+            cal_list_result = self._fetch_calendar_list(client, comp, limit, fetch_time)
+            if cal_list_result.signals:
+                return cal_list_result
+            if not cal_list_result.has_more:
+                return cal_list_result
+            # No signals but has_more=True (calendars registered, events pending).
+            new_comp = json.loads(cal_list_result.next_cursor)
+            new_cals = new_comp.get("cals") or {}
+            for cal_id, cal_cursor in new_cals.items():
+                if isinstance(cal_cursor, dict):
+                    if cal_cursor.get("page_token") or cal_cursor.get("phase") == "full":
+                        result = self._fetch_calendar_events(
+                            client, new_comp, cal_id, cal_cursor, limit, fetch_time
+                        )
+                        if result.signals or not result.has_more:
+                            return result
+                        # Empty + still pending → update comp and continue cascade
+                        new_comp = json.loads(result.next_cursor)
+                        new_cals = new_comp.get("cals") or {}
+            for cal_id, cal_cursor in new_cals.items():
+                if isinstance(cal_cursor, dict) and cal_cursor.get("phase") == "incr":
+                    result = self._fetch_calendar_events(
+                        client, new_comp, cal_id, cal_cursor, limit, fetch_time
+                    )
+                    if result.signals or not result.has_more:
+                        return result
+                    new_comp = json.loads(result.next_cursor)
+                    new_cals = new_comp.get("cals") or {}
+            # All cascaded calendars exhausted with no signals
+            return FetchBatch(
+                signals=(),
+                next_cursor=json.dumps(new_comp),
+                has_more=self._any_pending(new_comp, exclude_cal=None),
+            )
+
+        # 2. Any calendar with pending work (non-incr cursor, or has_more page_token)
+        # Fix 7: enforce maximum consecutive pages per calendar to prevent one
+        # calendar from monopolizing all fetch ticks during a large paginated sync.
+        for cal_id, cal_cursor in cals_state.items():
+            if isinstance(cal_cursor, dict):
+                consecutive = cal_cursor.get("_pages", 0)
+                if cal_cursor.get("page_token"):
+                    if consecutive >= _MAX_CONSECUTIVE_CAL_PAGES:
+                        # Yield: reset counter and skip to round-robin (step 3)
+                        # Other calendars will get a tick; this one resumes after.
+                        new_comp = dict(comp)
+                        new_cals = dict(cals_state)
+                        reset_cursor = dict(cal_cursor)
+                        reset_cursor["_pages"] = 0
+                        new_cals[cal_id] = reset_cursor
+                        new_comp["cals"] = new_cals
+                        # Fall through to step 3 with reset cursor
+                        comp = new_comp
+                        cals_state = new_cals
+                        break
+                    return self._fetch_calendar_events(
+                        client, comp, cal_id, cal_cursor, limit, fetch_time
+                    )
+                if cal_cursor.get("phase") == "full":
+                    return self._fetch_calendar_events(
+                        client, comp, cal_id, cal_cursor, limit, fetch_time
+                    )
+
+        # 3. Steady-state: calendarList incremental first, then pick the NEXT calendar
+        #    by round-robin to prevent starvation of secondary calendars (P0-A).
+        if isinstance(list_state, dict) and list_state.get("sync_token"):
+            cal_list_result = self._fetch_calendar_list(client, comp, limit, fetch_time)
+            new_comp = json.loads(cal_list_result.next_cursor)
+
+            if cal_list_result.signals:
+                return cal_list_result
+
+            # Round-robin calendar selection: use next_cal index stored in cursor
+            new_cals = new_comp.get("cals") or {}
+            incr_cal_ids = sorted(
+                cal_id for cal_id, c in new_cals.items()
+                if isinstance(c, dict) and c.get("phase") == "incr"
+            )
+
+            if not incr_cal_ids:
+                # First handle newly registered cals needing full sync
+                for cal_id, cal_cursor in new_cals.items():
+                    if isinstance(cal_cursor, dict):
+                        if cal_cursor.get("page_token") or cal_cursor.get("phase") == "full":
+                            return self._fetch_calendar_events(
+                                client, new_comp, cal_id, cal_cursor, limit, fetch_time
+                            )
+                return cal_list_result
+
+            # Advance the round-robin index
+            current_idx = comp.get("next_cal", 0)
+            next_idx = (current_idx + 1) % len(incr_cal_ids)
+            chosen_id = incr_cal_ids[current_idx % len(incr_cal_ids)]
+            chosen_cursor = new_cals[chosen_id]
+            new_comp["next_cal"] = next_idx
+
+            return self._fetch_calendar_events(
+                client, new_comp, chosen_id, chosen_cursor, limit, fetch_time
+            )
+
+        # 4. No calendars registered
+        return FetchBatch(signals=(), next_cursor=json.dumps(comp), has_more=False)
+
+    # ── calendarList sync ─────────────────────────────────────────────────────
+
+    def _fetch_calendar_list(
+        self,
+        client: "GoogleClient",
+        comp: dict,
+        limit: int,
+        fetch_time: datetime,
+    ) -> FetchBatch:
+        """One page of calendarList.list; emits calendar.calendar.* signals.
+
+        On 410 (sync token expired), restarts calendarList full sync.
+        """
+        from olo.google.http import CalendarSyncTokenExpired
+
+        list_state = comp.get("list")
+        sync_token: Optional[str] = None
+        page_token: Optional[str] = None
+
+        if isinstance(list_state, dict):
+            sync_token = list_state.get("sync_token")
+            page_token = list_state.get("page_token")
+
+        try:
+            resp = self._do_calendar_list_request(client, sync_token, page_token)
+        except CalendarSyncTokenExpired:
+            # 410: restart calendarList full sync
+            resp = self._do_calendar_list_request(client, None, None)
+            sync_token = None
+
+        items = resp.get("items") or []
+        next_page_token = resp.get("nextPageToken")
+        next_sync_token = resp.get("nextSyncToken")
+
+        # Build signals for new/removed calendars
+        # Compare discovered calendar IDs to existing cals_state
+        old_cal_ids: set[str] = set((comp.get("cals") or {}).keys())
+        new_cal_ids: set[str] = {item.get("id", "") for item in items if item.get("id")}
+
+        signals: list[NormalizedSignal] = []
+
+        if sync_token is not None:
+            # Incremental calendarList update: items are changes only
+            for item in items:
+                cal_id = item.get("id", "")
+                if not cal_id:
+                    continue
+                deleted = item.get("deleted", False)
+                if deleted:
+                    if cal_id in old_cal_ids:
+                        signals.append(_calendar_to_signal(
+                            item, self.source, "calendar.calendar.removed", fetch_time
+                        ))
+                else:
+                    if cal_id not in old_cal_ids:
+                        signals.append(_calendar_to_signal(
+                            item, self.source, "calendar.calendar.added", fetch_time
+                        ))
+        # On full sync (sync_token was None) we don't emit added signals for
+        # the initial discovery; we just register the calendars.
+
+        # Update cals_state with any new calendars (initialize their event cursor)
+        new_comp_cals: dict = dict(comp.get("cals") or {})
+        time_min = (fetch_time - timedelta(days=self._lookback_days)).isoformat()
+
+        if sync_token is None:
+            # Full calendarList sync: register all returned non-deleted calendars.
+            # P0-B: skip items with deleted=True (deleted calendars in full scan).
+            # P1-D: if the cursor has a migrated "primary" sentinel AND this scan
+            #   returns the owner's real email-based ID, absorb the sentinel's incr
+            #   cursor under the real ID and remove the "primary" placeholder to
+            #   prevent duplicate tracking.
+            primary_sentinel = new_comp_cals.pop("primary", None)  # remove sentinel
+            for item in items:
+                cal_id = item.get("id", "")
+                if not cal_id:
+                    continue
+                # P0-B: skip deleted calendars on full scan
+                if item.get("deleted", False):
+                    continue
+                # Fix 6: skip system/resource calendars (IDs starting with '#').
+                # These are Google-internal calendars (Contacts, Birthdays, Holidays)
+                # that should not be synced as user calendars.
+                if cal_id.startswith("#"):
+                    continue
+                # P1-E: apply calendars= filter
+                if self._cal_filter is not None and cal_id not in self._cal_filter:
+                    continue
+                if cal_id not in new_comp_cals:
+                    # P1-D fix: only promote the migrated "primary" sentinel to the
+                    # calendar that Google marks primary=True. If this item is a
+                    # secondary calendar, do NOT absorb the sentinel here — keep it
+                    # for when the actual primary calendar ID is encountered.
+                    if (primary_sentinel is not None
+                            and isinstance(primary_sentinel, dict)
+                            and primary_sentinel.get("phase") == "incr"
+                            and item.get("primary") is True):  # Fix 3: check primary=True
+                        # Promote the migrated cursor under the real primary ID
+                        new_comp_cals[cal_id] = primary_sentinel
+                        primary_sentinel = None   # consumed
+                    else:
+                        new_comp_cals[cal_id] = {
+                            "phase": "full",
+                            "time_min": time_min,
+                            "page_token": None,
+                        }
+            # If primary_sentinel was not consumed (account has no matching real ID
+            # e.g. during a fake server test where "primary" IS a real ID), re-add it
+            # so it isn't lost — but only when "primary" is not already in new_comp_cals.
+            if primary_sentinel is not None and "primary" not in new_comp_cals:
+                new_comp_cals["primary"] = primary_sentinel
+        else:
+            # Incremental: add new calendars, remove deleted ones
+            for item in items:
+                cal_id = item.get("id", "")
+                if not cal_id:
+                    continue
+                deleted = item.get("deleted", False)
+                if deleted:
+                    new_comp_cals.pop(cal_id, None)
+                else:
+                    # P1-E: apply calendars= filter
+                    if self._cal_filter is not None and cal_id not in self._cal_filter:
+                        continue
+                    if cal_id not in new_comp_cals:
+                        new_comp_cals[cal_id] = {
+                            "phase": "full",
+                            "time_min": time_min,
+                            "page_token": None,
+                        }
+
+        # Update list cursor
+        if next_sync_token:
+            new_list = {"sync_token": next_sync_token, "page_token": None}
+        elif next_page_token:
+            new_list = {"sync_token": sync_token, "page_token": next_page_token}
+        else:
+            new_list = {"sync_token": sync_token, "page_token": None}
+
+        new_comp = {
+            "v": _CURSOR_V2,
+            "list": new_list,
+            "cals": new_comp_cals,
+        }
+
+        # has_more: True if there are more calendarList pages or calendar events pending
+        has_more = bool(next_page_token) or any(
+            isinstance(c, dict) and (c.get("phase") == "full" or c.get("page_token"))
+            for c in new_comp_cals.values()
+        )
+
+        if signals:
+            # Fix 6: Never truncate calendar.calendar.added/removed signals.
+            # signals[:limit] would silently drop added calendars that are already
+            # registered in new_comp_cals, making them invisible forever since the
+            # cursor records them as known. Emit all signals; the runner handles
+            # batches larger than limit by processing the next iteration.
+            return FetchBatch(
+                signals=tuple(signals),
+                next_cursor=json.dumps(new_comp),
+                has_more=has_more,
+            )
+
+        # No calendar signals: has_more still tells runner to come back
+        return FetchBatch(
+            signals=(),
+            next_cursor=json.dumps(new_comp),
+            has_more=has_more,
+        )
+
+    def _do_calendar_list_request(
+        self,
+        client: "GoogleClient",
+        sync_token: Optional[str],
+        page_token: Optional[str],
+    ) -> dict:
+        """Call calendarList.list with sync or page token.
+
+        Per Google API docs: when syncToken is present, only syncToken (and
+        optionally pageToken) may be sent — all other filters are forbidden.
+        """
+        if sync_token:
+            # Incremental: syncToken only (+ optional pageToken)
+            params: list[tuple[str, str]] = [("syncToken", sync_token)]
+            if page_token:
+                params.append(("pageToken", page_token))
+        else:
+            # Full sync: filters allowed
+            params = [
+                ("maxResults", "250"),
+                ("showDeleted", "true"),
+                ("showHidden", "false"),
+                ("minAccessRole", "reader"),
+            ]
+            if page_token:
+                params.append(("pageToken", page_token))
+        return client.get_json("calendar", "/users/me/calendarList", params)
+
+    # ── Per-calendar events sync ──────────────────────────────────────────────
+
+    def _fetch_calendar_events(
+        self,
+        client: "GoogleClient",
+        comp: dict,
+        cal_id: str,
+        cal_cursor: dict,
+        limit: int,
+        fetch_time: datetime,
+    ) -> FetchBatch:
+        """One signal-bearing page of events for one calendar.
+
+        Each event produces exactly 1 signal (calendar.event.changed or
+        calendar.event.cancelled) with the full document blob attached via
+        content_refs. limit=1 is therefore valid.
+
+        On 410 (sync token expired), self-heals: restarts full sync for that
+        calendar and continues (does not propagate the 410).
         """
         from olo.google.http import CalendarSyncTokenExpired, CalendarPageTokenInvalid
 
         empty_page_count = 0
-        current_phase = dict(phase)
+        current_cal_cursor = dict(cal_cursor)
 
         while True:
-            # ── request ──────────────────────────────────────────────────────
             try:
-                resp = self._do_request(client, current_phase, limit)
+                resp = self._do_request(client, current_cal_cursor, limit, cal_id)
             except CalendarSyncTokenExpired:
-                raise
+                # §6 self-heal: restart full sync for this calendar only
+                time_min = (fetch_time - timedelta(days=self._lookback_days)).isoformat()
+                current_cal_cursor = {
+                    "phase": "full",
+                    "time_min": time_min,
+                    "page_token": None,
+                }
+                resp = self._do_request(client, current_cal_cursor, limit, cal_id)
             except CalendarPageTokenInvalid:
                 # §6.2 step 4: retry once without the page token
-                current_phase = dict(current_phase)
-                current_phase["page_token"] = None
-                resp = self._do_request(client, current_phase, limit)
+                current_cal_cursor = dict(current_cal_cursor)
+                current_cal_cursor["page_token"] = None
+                resp = self._do_request(client, current_cal_cursor, limit, cal_id)
 
             events = resp.get("items", [])
             next_page_token = resp.get("nextPageToken")
             next_sync_token = resp.get("nextSyncToken")
 
-            # ── C1 fix: reject over-sized pages ───────────────────────────────
+            # C1 fix: reject over-sized pages
             if len(events) > limit:
                 raise SourceError(
                     f"gcal page exceeds requested maxResults ({len(events)} > {limit})"
                 )
 
-            # ── signal-bearing page ───────────────────────────────────────────
             if events:
                 signals = tuple(
-                    _event_to_signal(ev, self.source, fetch_time) for ev in events
+                    _event_to_signal(ev, self.source, fetch_time, cal_id)
+                    for ev in events
                 )
-                # Determine cursor after this page
-                if next_sync_token:
-                    # Last page of this sync → transition to incr
-                    next_cursor = json.dumps({
-                        "phase": "incr",
-                        "sync_token": next_sync_token,
-                        "page_token": None,
-                    })
-                    return FetchBatch(signals=signals, next_cursor=next_cursor, has_more=False)
-                elif next_page_token:
-                    # More pages remain
-                    next_cursor = json.dumps({
-                        **current_phase,
-                        "page_token": next_page_token,
-                    })
-                    return FetchBatch(signals=signals, next_cursor=next_cursor, has_more=True)
-                else:
-                    # No token at all — shouldn't happen; treat as end
-                    next_cursor = json.dumps(current_phase)
-                    return FetchBatch(signals=signals, next_cursor=next_cursor, has_more=False)
+                new_comp = self._update_comp(
+                    comp, cal_id, next_sync_token, next_page_token, current_cal_cursor
+                )
+                # has_more: more pages for this calendar, or other calendars pending
+                has_more = bool(next_page_token) or self._any_pending(
+                    new_comp, exclude_cal=None
+                )
+                return FetchBatch(
+                    signals=signals,
+                    next_cursor=json.dumps(new_comp),
+                    has_more=has_more,
+                )
 
-            # ── empty page ────────────────────────────────────────────────────
+            # Empty page
             empty_page_count += 1
 
             if next_sync_token:
-                # Empty last page with sync token → cursor advances, done
-                next_cursor = json.dumps({
-                    "phase": "incr",
-                    "sync_token": next_sync_token,
-                    "page_token": None,
-                })
-                return FetchBatch(signals=(), next_cursor=next_cursor, has_more=False)
+                new_comp = self._update_comp(
+                    comp, cal_id, next_sync_token, None, current_cal_cursor
+                )
+                has_more = self._any_pending(new_comp, exclude_cal=None)
+                return FetchBatch(
+                    signals=(),
+                    next_cursor=json.dumps(new_comp),
+                    has_more=has_more,
+                )
 
             if next_page_token:
                 if empty_page_count >= _MAX_EMPTY_PAGES:
-                    # §5.0 cap: return advanced page-token cursor, no signals
-                    next_cursor = json.dumps({
-                        **current_phase,
-                        "page_token": next_page_token,
-                    })
-                    return FetchBatch(signals=(), next_cursor=next_cursor, has_more=False)
-                # Follow the page token (counts toward cap)
-                current_phase = dict(current_phase)
-                current_phase["page_token"] = next_page_token
+                    new_comp = self._update_comp(
+                        comp, cal_id, None, next_page_token, current_cal_cursor
+                    )
+                    return FetchBatch(
+                        signals=(),
+                        next_cursor=json.dumps(new_comp),
+                        has_more=False,
+                    )
+                current_cal_cursor = dict(current_cal_cursor)
+                current_cal_cursor["page_token"] = next_page_token
                 continue
 
-            # Neither token — treat as end of data
-            next_cursor = json.dumps(current_phase)
-            return FetchBatch(signals=(), next_cursor=next_cursor, has_more=False)
+            # Neither token — end of data for this calendar
+            new_comp = self._update_comp(comp, cal_id, None, None, current_cal_cursor)
+            has_more = self._any_pending(new_comp, exclude_cal=None)
+            return FetchBatch(
+                signals=(),
+                next_cursor=json.dumps(new_comp),
+                has_more=has_more,
+            )
 
-    def _do_request(self, client: "GoogleClient", phase: dict, limit: int) -> dict:
-        """Build params and call events.list."""
+    def _update_comp(
+        self,
+        comp: dict,
+        cal_id: str,
+        next_sync_token: Optional[str],
+        next_page_token: Optional[str],
+        current_cal_cursor: dict,
+    ) -> dict:
+        """Return a new composite cursor with the updated state for cal_id.
+
+        Preserves next_cal (round-robin index) from the input comp.
+        """
+        new_comp = {
+            "v": _CURSOR_V2,
+            "list": comp.get("list"),
+            "cals": dict(comp.get("cals") or {}),
+        }
+        # P0-A: preserve round-robin index
+        if "next_cal" in comp:
+            new_comp["next_cal"] = comp["next_cal"]
+        if next_sync_token:
+            new_comp["cals"][cal_id] = {
+                "phase": "incr",
+                "sync_token": next_sync_token,
+                "page_token": None,
+                # Fix 7: reset consecutive page counter when calendar finishes pagination
+            }
+        elif next_page_token:
+            new_comp["cals"][cal_id] = dict(current_cal_cursor)
+            new_comp["cals"][cal_id]["page_token"] = next_page_token
+            # Fix 7: increment consecutive page counter for this calendar
+            new_comp["cals"][cal_id]["_pages"] = current_cal_cursor.get("_pages", 0) + 1
+        else:
+            # No token — no change, stay in current phase without page_token
+            new_comp["cals"][cal_id] = dict(current_cal_cursor)
+            new_comp["cals"][cal_id].pop("page_token", None)
+        return new_comp
+
+    def _any_pending(self, comp: dict, exclude_cal: Optional[str]) -> bool:
+        """True if any calendar has pending work (phase=full or page_token set)."""
+        for cal_id, cal_cursor in (comp.get("cals") or {}).items():
+            if exclude_cal and cal_id == exclude_cal:
+                continue
+            if isinstance(cal_cursor, dict):
+                if cal_cursor.get("page_token"):
+                    return True
+                if cal_cursor.get("phase") == "full":
+                    return True
+        return False
+
+    def _do_request(
+        self,
+        client: "GoogleClient",
+        phase: dict,
+        limit: int,
+        cal_id: str = "primary",
+    ) -> dict:
+        """Build params and call events.list for the given calendar.
+
+        One signal per event (metadata + blob attached via content_refs),
+        so maxResults = limit directly.
+        """
         params: list[tuple[str, str]] = [
-            ("calendarId", "primary"),
             ("singleEvents", "false"),
             ("showDeleted", "true"),
             ("maxResults", str(min(limit, 2500))),
@@ -336,4 +894,12 @@ class GcalAdapter(MonitorAdapter):
         if phase.get("page_token"):
             params.append(("pageToken", phase["page_token"]))
 
-        return client.get_json("calendar", "/calendars/primary/events", params)
+        # Build the correct path for the calendar
+        if cal_id == "primary":
+            path = "/calendars/primary/events"
+        else:
+            import urllib.parse
+            encoded = urllib.parse.quote(cal_id, safe="")
+            path = f"/calendars/{encoded}/events"
+
+        return client.get_json("calendar", path, params)

@@ -193,6 +193,10 @@ class FakeCalendarState:
     page_size: Optional[int] = None
     _pages: dict[str, list[FakeCalendarEvent]] = field(default_factory=dict)
     _next_page_counter: int = 0
+    # B4: secondary calendars for calendarList
+    _extra_calendars: dict[str, dict] = field(default_factory=dict)
+    # B4: incremental calendarList items (returned on next calendarList sync)
+    _incr_cal_items: list[dict] = field(default_factory=list)
 
     def add_event(
         self,
@@ -265,6 +269,30 @@ class FakeCalendarState:
     def pop_page(self, page_token: str) -> Optional[list[FakeCalendarEvent]]:
         return self._pages.pop(page_token, None)
 
+    # B4: secondary calendar helpers
+    def add_secondary_calendar(
+        self,
+        cal_id: str,
+        summary: str = "Secondary Calendar",
+        access_role: str = "owner",
+    ) -> None:
+        """Register a secondary calendar for calendarList discovery."""
+        self._extra_calendars[cal_id] = {
+            "id": cal_id,
+            "summary": summary,
+            "accessRole": access_role,
+            "primary": False,
+            "timeZone": "UTC",
+            "colorId": "2",
+        }
+        # Also queue as incremental calendarList item
+        self._incr_cal_items.append(self._extra_calendars[cal_id])
+
+    def remove_secondary_calendar(self, cal_id: str) -> None:
+        """Mark a secondary calendar as deleted (for calendarList incremental sync)."""
+        self._extra_calendars.pop(cal_id, None)
+        self._incr_cal_items.append({"id": cal_id, "deleted": True})
+
 
 # ── Fake token store ───────────────────────────────────────────────────────────
 
@@ -331,6 +359,8 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
     granted_scopes: str = ""
     # F7: Event released by FakeGoogleServer.__exit__ to unblock timeout injection
     _teardown_event: threading.Event = None
+    # Per-calendar event states for multi-calendar tests (cal_id → FakeCalendarState)
+    _extra_calendar_states: dict = {}
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         body = json.dumps(data).encode()
@@ -420,8 +450,17 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         elif re.search(r"/gmail/v1/users/me/messages/([^/]+)$", path):
             m = re.search(r"/messages/([^/]+)$", path)
             self._handle_message(m.group(1))
-        elif "/calendar/v3/calendars/primary/events" in path:
-            self._handle_events(params)
+        elif "/gmail/v1/users/me/messages" in path and "/messages/" not in path:
+            # messages.list (B3 backfill)
+            self._handle_messages_list(params)
+        elif "/calendar/v3/users/me/calendarList" in path:
+            # B4: calendarList.list
+            self._handle_calendar_list(params)
+        elif re.search(r"/calendar/v3/calendars/([^/]+)/events$", path):
+            # B4: events for any calendar (primary or secondary)
+            m = re.search(r"/calendars/([^/]+)/events$", path)
+            cal_id = urllib.parse.unquote(m.group(1))
+            self._handle_events(params, cal_id)
         else:
             self._send_json({"error": "unknown"}, 404)
 
@@ -566,6 +605,11 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
         self._send_json(resp)
 
     def _handle_message(self, msg_id: str) -> None:
+        # Parse query params from path
+        parsed_full = urllib.parse.urlparse(self.path)
+        qp = dict(urllib.parse.parse_qsl(parsed_full.query))
+        fmt = qp.get("format", "metadata")
+
         msg = self.__class__.gmail.messages.get(msg_id)
         if msg is None or msg_id in self.__class__.gmail.deleted_message_ids:
             self._send_json({"error": {"code": 404, "message": "not found"}}, 404)
@@ -577,27 +621,134 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             {"name": "Date", "value": "Mon, 1 Jan 2026 00:00:00 +0000"},
             {"name": "Message-ID", "value": msg.message_id_header},
         ]
-        self._send_json({
+        base = {
             "id": msg.id,
             "threadId": msg.thread_id,
             "labelIds": msg.label_ids,
             "internalDate": msg.internal_date,
             "sizeEstimate": msg.size_estimate,
-            "payload": {"headers": headers},
-        })
+        }
+        if fmt == "full":
+            # B3: return a full MIME payload with inline text/plain body
+            import base64 as _base64
+            body_text = f"Test body for message {msg.id}. Subject: {msg.subject}"
+            encoded = _base64.urlsafe_b64encode(body_text.encode()).decode()
+            base["payload"] = {
+                "mimeType": "text/plain",
+                "headers": headers,
+                "body": {
+                    "data": encoded,
+                    "size": len(body_text),
+                },
+                "parts": [],
+            }
+            base["historyId"] = self.__class__.gmail.current_history_id
+            base["snippet"] = body_text[:100]
+        else:
+            # metadata format
+            base["payload"] = {"headers": headers}
+        self._send_json(base)
 
-    def _handle_events(self, params: dict) -> None:
+    def _handle_messages_list(self, params: dict) -> None:
+        """B3: messages.list — return stub messages for backfill testing."""
+        # Support q=after:<epoch> filter
+        q = params.get("q", "")
+        after_epoch = 0
+        if q.startswith("after:"):
+            try:
+                after_epoch = int(q[len("after:"):].strip())
+            except (ValueError, AttributeError):
+                after_epoch = 0
+
+        max_results = int(params.get("maxResults", "500"))
+        page_token_in = params.get("pageToken")
+
+        all_msgs = [
+            {"id": msg_id, "threadId": msg.thread_id}
+            for msg_id, msg in self.__class__.gmail.messages.items()
+            if msg_id not in self.__class__.gmail.deleted_message_ids
+            and int(msg.internal_date) >= after_epoch * 1000
+        ]
+
+        # Apply page_token offset
+        offset = 0
+        if page_token_in:
+            try:
+                offset = int(page_token_in.replace("ml_", ""))
+            except (ValueError, AttributeError):
+                offset = 0
+
+        all_msgs = all_msgs[offset:]
+        page = all_msgs[:max_results]
+        next_page_token = None
+        if len(all_msgs) > max_results:
+            next_offset = offset + max_results
+            next_page_token = f"ml_{next_offset}"
+
+        resp: dict = {}
+        if page:
+            resp["messages"] = page
+        if next_page_token:
+            resp["nextPageToken"] = next_page_token
+        self._send_json(resp)
+
+    def _handle_calendar_list(self, params: dict) -> None:
+        """B4: calendarList.list — return all registered calendars with sync token."""
+        sync_token = params.get("syncToken")
+        page_token = params.get("pageToken")
+
+        cal = self.__class__.calendar
+
+        # 410 for expired sync token
+        if sync_token == "EXPIRED_CAL_LIST_TOKEN" or getattr(cal, "_expire_cal_list_token", False):
+            cal._expire_cal_list_token = False
+            self._send_json(
+                {"error": {"code": 410, "message": "sync token expired"}}, 410
+            )
+            return
+
+        # Incremental: return only recently changed calendars (or empty)
+        if sync_token and sync_token.startswith("callist_sync_"):
+            incr = getattr(cal, "_incr_cal_items", [])
+            items = list(incr)
+            cal._incr_cal_items = []
+        else:
+            # Full sync: return all registered secondary calendars + primary
+            items = []
+            # Always include primary
+            primary_item = {
+                "id": "primary",
+                "summary": "Primary Calendar",
+                "accessRole": "owner",
+                "primary": True,
+                "timeZone": "UTC",
+                "colorId": "1",
+            }
+            items.append(primary_item)
+            # Add any secondary calendars
+            for cal_id, cal_data in getattr(cal, "_extra_calendars", {}).items():
+                items.append(cal_data)
+
+        new_sync_token = f"callist_sync_{len(items)}"
+        resp: dict = {
+            "kind": "calendar#calendarList",
+            "items": items,
+            "nextSyncToken": new_sync_token,
+        }
+        self._send_json(resp)
+
+    def _handle_events(self, params: dict, cal_id: str = "primary") -> None:
         """I3: honour maxResults, emit nextPageToken/nextSyncToken correctly.
 
-        Rules (mirror real Google Calendar API):
-        - Full sync (no syncToken, no pageToken): serve all events paginated by
-          maxResults; non-final pages get nextPageToken only; final page gets
-          nextSyncToken only.
-        - Incremental (syncToken present): same pagination rules over the
-          incremental event set.
-        - pageToken: resume a pending page stored in cal._pages.
-        - 410 for EXPIRED_SYNC_TOKEN; 400 for INVALID_PAGE_TOKEN.
+        Routes to per-calendar state when _extra_calendar_states is populated
+        (multi-calendar test support).
         """
+        # Route to per-calendar state if available
+        extra_states = getattr(self.__class__, "_extra_calendar_states", {})
+        if cal_id in extra_states:
+            cal = extra_states[cal_id]
+        else:
+            cal = self.__class__.calendar
         sync_token = params.get("syncToken")
         page_token = params.get("pageToken")
         time_min = params.get("timeMin")
@@ -605,8 +756,6 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             max_results = int(params.get("maxResults", "2500"))
         except (ValueError, TypeError):
             max_results = 2500
-
-        cal = self.__class__.calendar
 
         # ── 410 / 400 error paths ─────────────────────────────────────────────
         if sync_token == "EXPIRED_SYNC_TOKEN":
@@ -711,6 +860,7 @@ class FakeGoogleServer:
         _FakeGoogleHandler.inject_malformed_on_next = False
         _FakeGoogleHandler.inject_redirect_to = None
         _FakeGoogleHandler._teardown_event = self._teardown_ev
+        _FakeGoogleHandler._extra_calendar_states = {}
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
         # On Linux, the socket only accepts connections once serve_forever()
@@ -747,20 +897,32 @@ class FakeGoogleServer:
         _FakeGoogleHandler.calendar = None
         _FakeGoogleHandler.tokens = None
 
-    def make_credentials(self, alias: str) -> GoogleAccountCredentials:
-        """Return in-memory credentials pointing at this fake server."""
+    def make_credentials(self, alias: str, *, gmail_readonly: bool = False) -> GoogleAccountCredentials:
+        """Return in-memory credentials pointing at this fake server.
+
+        gmail_readonly=True: grant gmail.readonly instead of gmail.metadata
+        (enables email.content signals in B3 tests).
+        """
         from olo.google.credentials import GoogleAccountCredentials
         from olo.google.oauth import GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO
+        from olo.google.credentials import GMAIL_READONLY_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_LIST_SCOPE, SCOPE_PROFILE_FULL_V1, SCOPE_PROFILE_LEGACY
+        if gmail_readonly:
+            scopes = frozenset({GMAIL_READONLY_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_LIST_SCOPE})
+            profile = SCOPE_PROFILE_FULL_V1
+        else:
+            scopes = frozenset({GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO})
+            profile = SCOPE_PROFILE_LEGACY
         return GoogleAccountCredentials(
             alias=alias,
             client_id="fake_client_id",
             client_secret="fake_client_secret",
             refresh_token=self.tokens.refresh_token,
-            granted_scopes=frozenset({GMAIL_METADATA_SCOPE, CALENDAR_EVENTS_OWNED_RO}),
+            granted_scopes=scopes,
             email_address=self.email,
             refresh_token_issued_at=datetime.now(UTC),
             oauth_publishing_status="testing",
             api_base_override=self.base_url,
+            scope_profile=profile,
         )
 
     def make_saved_credentials(
@@ -803,6 +965,48 @@ class FakeGoogleServer:
     def set_page_size(self, n: int) -> None:
         """I3: set cal.page_size so _handle_events pages at n events."""
         self.calendar.page_size = n
+
+    def add_secondary_calendar(
+        self, cal_id: str, summary: str = "Secondary Calendar"
+    ) -> None:
+        """B4: register a secondary calendar so it appears in calendarList."""
+        self.calendar.add_secondary_calendar(cal_id, summary)
+
+    def add_secondary_calendar_with_events(
+        self,
+        cal_id: str,
+        summary: str = "Secondary Calendar",
+        event_ids: list[str] | None = None,
+    ) -> "FakeCalendarState":
+        """Register a secondary calendar AND give it its own independent event set.
+
+        Returns the FakeCalendarState for the secondary calendar so callers
+        can add/cancel events independently.
+
+        The fake handler uses _extra_calendar_states[cal_id] when serving
+        events for that calendar.
+        """
+        self.calendar.add_secondary_calendar(cal_id, summary)
+        from dataclasses import field as _field
+        sec_state = FakeCalendarState()
+        if event_ids:
+            for ev_id in event_ids:
+                sec_state.add_event(ev_id, summary=f"Event {ev_id}")
+            sec_state._incr_events.clear()
+        if not hasattr(self.calendar, "_extra_calendar_states"):
+            self.calendar._extra_calendar_states = {}
+        self.calendar._extra_calendar_states[cal_id] = sec_state
+        # Also wire the handler to use it
+        _FakeGoogleHandler._extra_calendar_states = getattr(
+            self.calendar, "_extra_calendar_states", {}
+        )
+        return sec_state
+
+    def inject_expired_cal_list_token(self) -> None:
+        """B4: cause next calendarList sync to return 410."""
+        # The handler checks for the literal string "EXPIRED_CAL_LIST_TOKEN"
+        # so we set a flag on the state; the handler reads it.
+        self.calendar._expire_cal_list_token = True
 
     def reset_history_params(self) -> None:
         """Clear the recorded (startHistoryId, pageToken) log."""

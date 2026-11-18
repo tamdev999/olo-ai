@@ -147,6 +147,7 @@ def run_source(
             b_ins, b_dup, b_con = ingest_batch(
                 source, run_id, batch.signals, batch.next_cursor, cursor,
                 conn, clock, _fault=_fault,
+                pending_audit_events=getattr(batch, "pending_audit_events", ()),
             )
             batches += 1
             fetched += len(batch.signals)

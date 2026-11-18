@@ -1,9 +1,11 @@
-"""Olo AI — Gmail adapter (metadata-only, no message bodies).
+"""Olo AI — Gmail adapter (metadata-only or full-content depending on scope).
 
 §5: sync algorithm, signal mapping, §5.0 empty-page rule.
 I5: empty history[] with nextPageToken raises SourceError at cap.
 I7: alias pattern enforcement.
 P1: change-entry filter uses _CHANGE_SKIP_LABELS={DRAFT,CHAT} not _SKIP_LABELS.
+B3 (M2b): full-content email.content signals when gmail.readonly scope is present;
+  batch byte budget; backfill phases (bootstrap / resume / gap).
 Registered as "gmail"; per-account source = "gmail_<alias>".
 
 No side effects at import time.
@@ -13,6 +15,7 @@ from __future__ import annotations
 import email.header
 import email.utils
 import hashlib
+import json
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone, UTC
@@ -139,8 +142,19 @@ class GmailAdapter(MonitorAdapter):
             creds = load_credentials(self._alias)
             if not creds.has_gmail_scope():
                 raise AdapterConfigError(
-                    f"account {self._alias!r} has no gmail.metadata scope; "
+                    f"account {self._alias!r} has no gmail scope; "
                     f"run: hermes olo google connect --account {self._alias}"
+                )
+            # Fix 4: reject legacy credentials that lack gmail.readonly.
+            # Legacy accounts (gmail.metadata only) cannot produce email.content
+            # blobs. Fail early with a clear message rather than silently producing
+            # incomplete data or a 403 on format=full.
+            if not creds.has_gmail_readonly_scope():
+                raise AdapterConfigError(
+                    f"account {self._alias!r} has legacy (gmail.metadata) credentials "
+                    f"and cannot produce full email content. "
+                    f"Upgrade with: hermes olo google connect --account {self._alias} "
+                    f"--client-secret-file <path> --upgrade"
                 )
             self._client = GoogleClient(creds)
         return self._client
@@ -148,11 +162,45 @@ class GmailAdapter(MonitorAdapter):
     # ── §5.2 sync algorithm ───────────────────────────────────────────────────
 
     def fetch(self, cursor: str | None, *, limit: int) -> FetchBatch:
-        """Return up to *limit* signals; never returns empty with has_more=True."""
-        if limit < 1:
-            raise AdapterConfigError(f"fetch limit must be ≥ 1, got {limit}")
+        """Return up to *limit* signals; never returns empty with has_more=True.
+
+        B3: when cursor is a JSON dict with "phase":"backfill", delegates to
+        the backfill path. Otherwise (cursor=None or plain historyId string)
+        uses the incremental/bootstrap path.
+
+        Full-content contract: each INBOX message produces email.received +
+        email.content (2 signals).  limit=1 can never safely accommodate a
+        single full-content record — reject it immediately so callers get a
+        clear error rather than a silent AdapterContractError from the runner.
+        """
+        if limit < 2:
+            # Check if full-content mode is active (gmail.readonly scope).
+            # In full-content mode each INBOX message produces email.received +
+            # email.content (2 signals), so limit=1 can never safely accommodate
+            # a single record.  In metadata-only mode limit=1 is fine.
+            try:
+                _client = self._get_client()
+                is_full_content = _client._creds.has_gmail_readonly_scope()
+            except Exception:
+                is_full_content = False
+
+            if is_full_content:
+                raise AdapterConfigError(
+                    f"GmailAdapter (full-content) requires limit ≥ 2, got {limit}. "
+                    "Each message produces email.received + email.content (2 signals); "
+                    "a limit of 1 cannot accommodate a single full-content record."
+                )
 
         client = self._get_client()
+
+        # B3: check for backfill cursor
+        if cursor is not None:
+            try:
+                parsed = json.loads(cursor)
+                if isinstance(parsed, dict) and parsed.get("phase") == "backfill":
+                    return self._backfill_page(client, parsed, limit)
+            except (json.JSONDecodeError, ValueError):
+                pass  # treat as plain historyId string
 
         if cursor is None:
             return self._bootstrap(client)
@@ -166,6 +214,89 @@ class GmailAdapter(MonitorAdapter):
             raise SourceError("gmail profile returned no historyId")
         return FetchBatch(signals=(), next_cursor=history_id, has_more=False)
 
+    def _backfill_page(
+        self,
+        client: "GoogleClient",
+        cursor_dict: dict,
+        limit: int,
+    ) -> FetchBatch:
+        """B3: one page of backfill via messages.list.
+
+        Emits email.content only (no email.received/sent — avoids conflicts).
+        When done (no next page token), cursor transitions to the plain numeric
+        resume_history_id so incremental sync continues from there.
+
+        Fix 5: emits a backfill.completed audit event when done=True, recording
+        the mode, resume_history_id, and (for gap mode) the previous_cursor and
+        restart_point that were stored in the cursor dict.
+        """
+        from olo.adapters.gmail_full import run_backfill_batch
+
+        after_epoch = cursor_dict.get("after", 0)
+        page_token = cursor_dict.get("page_token")
+        resume_history_id = cursor_dict.get("resume_history_id", "")
+        mode = cursor_dict.get("mode", "bootstrap")
+
+        # Build a minimal connection for the batch (no run_id in this context)
+        signals, next_pt, done = run_backfill_batch(
+            source=self.source,
+            client=client,
+            conn=None,  # no DB context here; store handles blobs in ingest_batch
+            run_id="",
+            after_epoch=int(after_epoch),
+            page_token=page_token,
+            resume_history_id=resume_history_id,
+            mode=mode,
+            limit=limit,
+        )
+
+        if done:
+            # Backfill complete — transition to incremental from resume_history_id.
+            # Return has_more=False so the runner commits this cursor and exits
+            # cleanly.  The next scheduled run will start incremental sync from
+            # resume_history_id (H0).
+            next_cursor = resume_history_id
+            has_more = False
+
+            # Carry backfill.completed as a pending audit event so it is committed
+            # atomically with the checkpoint inside ingest_batch.  This guarantees:
+            # - Failed commit → no phantom audit event.
+            # - Successful retry → exactly one audit event (committed with batch).
+            audit_detail: dict = {
+                "source": self.source,
+                "mode": mode,
+                "resume_history_id": resume_history_id,
+            }
+            if mode == "gap":
+                for _k in ("previous_cursor", "restart_point"):
+                    if _k in cursor_dict:
+                        audit_detail[_k] = cursor_dict[_k]
+            pending_audit: tuple[dict, ...] = ({
+                "actor": "adapter:gmail",
+                "action": "backfill.completed",
+                "detail": audit_detail,
+            },)
+        else:
+            # More backfill pages
+            next_cursor_dict = dict(cursor_dict)
+            next_cursor_dict["page_token"] = next_pt
+            next_cursor = json.dumps(next_cursor_dict)
+            has_more = True
+            pending_audit = ()
+
+        if not signals:
+            return FetchBatch(
+                signals=(), next_cursor=next_cursor, has_more=False,
+                pending_audit_events=pending_audit,
+            )
+
+        return FetchBatch(
+            signals=tuple(signals),
+            next_cursor=next_cursor,
+            has_more=has_more,
+            pending_audit_events=pending_audit,
+        )
+
     def _incremental(
         self,
         client: "GoogleClient",
@@ -178,6 +309,13 @@ class GmailAdapter(MonitorAdapter):
         A pageToken is only ever sent with the exact startHistoryId that
         produced it; advancing the startHistoryId mid-pagination would invalidate
         the token and cause records to be skipped or a 400 on strict servers.
+
+        Gap auto-detection (Fix 2): when history.list raises GmailHistoryExpired
+        (404/400 — history pruned by Google), _incremental detects the gap,
+        captures the current mailbox historyId (H0) from the profile endpoint,
+        emits a gmail.history_gap audit event with the previous cursor, H0, and
+        recovery window, then returns a backfill cursor in gap mode so the next
+        fetch performs a full messages.list scan.
 
         Contract:
         - start_history_id is set once from cursor and never changes.
@@ -195,6 +333,8 @@ class GmailAdapter(MonitorAdapter):
           Only this case may advance to the mailbox historyId.
         - Cap reached while tokens keep arriving: raise SourceError.
         """
+        from olo.google.http import GmailHistoryExpired
+
         # H1: start_history_id is constant for all requests in this fetch()
         start_history_id = cursor
         empty_page_count = 0
@@ -219,7 +359,12 @@ class GmailAdapter(MonitorAdapter):
             if page_token is not None:
                 params.append(("pageToken", page_token))
 
-            resp = client.get_json("gmail", "/users/me/history", params)
+            try:
+                resp = client.get_json("gmail", "/users/me/history", params)
+            except GmailHistoryExpired:
+                # Fix 2: history pruned — transition to gap backfill mode.
+                # Capture current mailbox historyId (H0) for the recovery window.
+                return self._handle_history_gap(client, cursor)
 
             mailbox_history_id = str(resp.get("historyId", start_history_id))
             records = resp.get("history", [])
@@ -284,10 +429,92 @@ class GmailAdapter(MonitorAdapter):
                 has_more=False,
             )
 
+        # Enforce the limit contract: never return more than limit signals.
+        # _process_records defers whole records at boundaries so this should
+        # never truncate in practice, but guard explicitly to satisfy the
+        # runner's AdapterContractError check and provide a clear failure mode.
+        if len(all_signals) > limit:
+            raise SourceError(
+                f"gmail incremental produced {len(all_signals)} signals "
+                f"but limit={limit}; this is a bug — please report with "
+                f"cursor={final_cursor!r}"
+            )
+
         return FetchBatch(
             signals=tuple(all_signals),
             next_cursor=final_cursor,
             has_more=final_has_more,
+        )
+
+    # Fix 2: 48 MiB incremental byte budget (mirrors run_backfill_batch).
+    # Prevents the 64 MiB ingest_batch hard-stop when many large messages
+    # arrive in a single incremental fetch.
+    _INCREMENTAL_BLOB_BUDGET_BYTES: int = 48 * 1024 * 1024
+
+    def _handle_history_gap(
+        self,
+        client: "GoogleClient",
+        previous_cursor: str,
+    ) -> FetchBatch:
+        """Handle an expired history (GmailHistoryExpired from history.list).
+
+        1. Fetches current mailbox historyId H0 from the profile endpoint.
+        2. Carries a gmail.history_gap audit event as pending_audit_events so
+           it is committed atomically with the gap cursor inside ingest_batch.
+           Atomicity guarantee:
+           - Failed ingest_batch commit → no phantom audit event.
+           - Successful retry → exactly one gmail.history_gap audit.
+        3. Returns a gap-mode backfill cursor (has_more=False, signals=()) so
+           the runner commits the cursor and exits cleanly.
+
+        The checkpoint is NOT advanced past the gap until backfill completes
+        (backfill done=True transitions the cursor to H0 for incremental sync).
+        """
+        # 1. Capture current mailbox historyId
+        try:
+            profile = client.get_json("gmail", "/users/me/profile", [])
+            H0 = str(profile.get("historyId", ""))
+        except Exception:
+            H0 = ""
+
+        if not H0 or not H0.isdigit():
+            # Cannot determine H0 — raise so the runner records a failure
+            # rather than setting a corrupt gap cursor.
+            raise SourceError(
+                f"gmail history expired at cursor {previous_cursor!r} and "
+                "profile fetch failed — cannot determine restart position; "
+                "run 'hermes olo checkpoint reset' then re-bootstrap"
+            )
+
+        # 2. Build gap audit event as pending — committed atomically with cursor.
+        gap_audit_event: dict = {
+            "actor": "adapter:gmail",
+            "action": "gmail.history_gap",
+            "detail": {
+                "source": self.source,
+                "previous_cursor": previous_cursor,
+                "restart_point": H0,
+                "recovery_window": {"from": previous_cursor, "to": H0},
+            },
+        }
+
+        # 3. Return gap-mode backfill cursor (empty signals; has_more=False so the
+        # runner commits this cursor and exits cleanly).  The next run will see
+        # the backfill cursor and perform the full messages.list scan.
+        gap_cursor = json.dumps({
+            "phase": "backfill",
+            "mode": "gap",
+            "after": 0,
+            "page_token": None,
+            "resume_history_id": H0,
+            "previous_cursor": previous_cursor,
+            "restart_point": H0,
+        })
+        return FetchBatch(
+            signals=(),
+            next_cursor=gap_cursor,
+            has_more=False,
+            pending_audit_events=(gap_audit_event,),
         )
 
     def _process_records(
@@ -300,11 +527,26 @@ class GmailAdapter(MonitorAdapter):
         """Process history records into signals.
 
         Returns (signals, last_included_record_id, records_remain).
-        A record is included whole or not at all.
+
+        Signal-budget rules (Fix 1 + Fix 2):
+        - Signal count budget: *remaining* reflects the caller's limit budget.
+          If a record would exceed remaining AND prior signals already exist,
+          defer it to the next fetch (cursor = last committed id).
+          If the FIRST record alone exceeds *remaining* (e.g. a batch import
+          with many messagesAdded), raise SourceError with a clear message so
+          the operator knows to increase --limit.  This preserves the checkpoint
+          (the cursor does not advance past the unprocessable record).
+        - Byte budget: cumulative blob bytes across all signals in this call
+          are capped at _INCREMENTAL_BLOB_BUDGET_BYTES (48 MiB).  When the
+          budget is exceeded AND at least one record has already been committed,
+          the current record is deferred (records_remain=True).  When the FIRST
+          record alone exceeds the budget, it is included anyway (a single
+          record must always make forward progress on the byte dimension).
         """
         signals: list[NormalizedSignal] = []
         last_id = base_cursor
         seen_message_ids: set[str] = set()
+        batch_blob_bytes = 0
 
         for record in records:
             record_id = str(record.get("id", ""))
@@ -315,16 +557,41 @@ class GmailAdapter(MonitorAdapter):
                 client, record, seen_message_ids
             )
 
+            # Measure blob bytes this record would add
+            record_blob_bytes = sum(
+                len(b.data)
+                for s in record_signals
+                for b in (s.blobs or ())
+            )
+
+            # Fix 2: byte-budget gate (only defer if we already have signals)
+            over_byte_budget = (
+                signals and
+                batch_blob_bytes + record_blob_bytes > self._INCREMENTAL_BLOB_BUDGET_BYTES
+            )
+            if over_byte_budget:
+                return signals, last_id, True
+
+            # Signal-count gate
             if signals and len(signals) + len(record_signals) > remaining:
+                # Prior signals already committed — defer this record
                 return signals, last_id, True
 
             if not signals and len(record_signals) > remaining:
+                # First record alone exceeds the limit budget.  This can happen
+                # when a batch-import history entry has many messagesAdded.
+                # Raise SourceError so the checkpoint is NOT advanced; the
+                # operator must increase --limit to process this record.
                 raise SourceError(
-                    "gmail history record exceeds batch limit; raise --limit"
+                    f"gmail history record {record_id!r} produces "
+                    f"{len(record_signals)} signals but limit budget is "
+                    f"{remaining}; increase --limit to at least "
+                    f"{len(record_signals) + 1} to process this record"
                 )
 
             if record_signals:
                 signals.extend(record_signals)
+                batch_blob_bytes += record_blob_bytes
             last_id = record_id
 
         return signals, last_id, False
@@ -335,10 +602,22 @@ class GmailAdapter(MonitorAdapter):
         record: dict,
         seen_ids: set[str],
     ) -> list[NormalizedSignal]:
-        """Convert one history record to signals (new messages + change events)."""
+        """Convert one history record to signals (new messages + change events).
+
+        B3: when gmail.readonly scope is present, also fetches format=full
+        and emits email.content alongside email.received/email.sent.
+        """
         record_id = str(record.get("id", ""))
         now_utc = datetime.now(UTC)
         signals: list[NormalizedSignal] = []
+
+        # B3: determine if full content is available
+        full_content = False
+        try:
+            if client._creds.has_gmail_readonly_scope():
+                full_content = True
+        except Exception:
+            pass
 
         for entry in record.get("messagesAdded", []):
             msg_stub = entry.get("message", {})
@@ -355,6 +634,19 @@ class GmailAdapter(MonitorAdapter):
             if sig is not None:
                 signals.append(sig)
                 seen_ids.add(msg_id)
+                # B3: emit email.content when gmail.readonly scope is available.
+                # Only skip on None return (404 — message deleted since history
+                # entry was created).  Any SourceError (network failure, 403,
+                # 429) propagates to fail the batch so the checkpoint does not
+                # advance without the content blob — no silent data loss.
+                if full_content:
+                    raw_full = client.get_message_full(msg_id)
+                    if raw_full:  # None means 404 (deleted) — skip gracefully
+                        from olo.adapters.gmail_full import build_email_content_signal
+                        content_sig = build_email_content_signal(
+                            self.source, raw_full, record_id
+                        )
+                        signals.append(content_sig)
 
         for entry in record.get("messagesDeleted", []):
             msg_stub = entry.get("message", {})
