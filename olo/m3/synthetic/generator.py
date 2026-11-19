@@ -173,7 +173,85 @@ _TRANSCRIPT_TEMPLATES = {
 }
 
 
-# ── Generator ─────────────────────────────────────────────────────────────────
+# ── Old-evidence scenario seeds (days 185–318, before run date 2026-11-19) ────
+
+_OLD_SCENARIOS = [
+    # (day, seed_suffix, source, kind, subject_tmpl, body_tmpl, is_llm_eligible)
+    (185, "old_commitment",   "gmail_owner", "email.sent",
+     "Commitment: Support Resolution — {company}",
+     ("Following our recent discussion, I want to confirm my commitment to {company}: "
+      "we will resolve the outstanding support issue by {resolve_date}. "
+      "I have personally escalated this to our engineering team. — Owner"),
+     True),
+    (200, "old_payment_ack",  "gmail_owner", "email.received",
+     "Payment Acknowledgement — {company}",
+     ("Hi, confirming that payment of ${amount:.2f} has been processed for {company}. "
+      "Payment reference PAY-OLD-{idx:04d} is on file. The account is now current. "
+      "Thanks, {name}"),
+     True),
+    (220, "old_new_service",  "gmail_owner", "email.received",
+     "New Service Request — {company}",
+     ("Hello, I would like to request a new service engagement for {company}. "
+      "We need {service_type} support for our upcoming project. "
+      "Please send a proposal at your earliest convenience. Thanks, {name}"),
+     True),
+    (240, "old_complaint",    "gmail_owner", "email.received",
+     "Formal Complaint — {company}",
+     ("I am writing to formally complain about the recent support experience with {company}. "
+      "The response time was unacceptably slow and the issue remains unresolved. "
+      "This needs immediate attention from management. — {name}, {company}"),
+     True),
+    (260, "old_resolution",   "gmail_owner", "email.sent",
+     "Issue Resolved — {company}",
+     ("Dear {name}, I am pleased to confirm that the issue raised by {company} "
+      "has been fully resolved. The root cause was identified and corrected. "
+      "Please let us know if you need anything further. — Owner"),
+     True),
+    (280, "old_renewal",      "gmail_owner", "email.received",
+     "Contract Renewal Discussion — {company}",
+     ("Hi, as we approach the end of our current agreement with {company}, "
+      "I would like to discuss renewal options. "
+      "Could we schedule a call to review pricing and scope? Best, {name}"),
+     True),
+    (300, "old_invoice_qry",  "gmail_owner", "email.received",
+     "Invoice Query — {company}",
+     ("Hello, I noticed an invoice for ${amount:.2f} from {company} but I am "
+      "missing the itemised breakdown. Could you resend the details? Thanks, {name}"),
+     True),
+    (310, "old_acct_review",  "gmail_owner", "email.sent",
+     "Quarterly Account Review — {company}",
+     ("Dear {name}, following our quarterly account review for {company}, "
+      "here is a summary: total engagements on track, all support tickets resolved, "
+      "upcoming renewal due next quarter. Please confirm if you need any changes. — Owner"),
+     True),
+    (315, "old_appreciation", "gmail_owner", "email.received",
+     "Appreciation Note — {company}",
+     ("Hi, I wanted to take a moment to appreciate the excellent service "
+      "{company} has received from your team this quarter. "
+      "The turnaround time and quality have been outstanding. Thank you! — {name}"),
+     True),
+    (318, "old_new_order",    "gmail_owner", "email.received",
+     "New Order Request — {company}",
+     ("Hello, I would like to place a new order for {company}. "
+      "Please quote for {product} with delivery by end of this month. "
+      "Looking forward to continuing our business relationship. — {name}"),
+     True),
+]
+
+# Paraphrased queries for old-event labelled questions (index-matched to _OLD_SCENARIOS)
+_OLD_QUERIES = [
+    "commitment to resolve {company} support issue",
+    "payment confirmation received from {company}",
+    "new service engagement request {company}",
+    "formal complaint from {company} about support",
+    "support issue resolution notification {company}",
+    "contract renewal inquiry {company}",
+    "invoice details requested by {company}",
+    "quarterly business review {company}",
+    "positive feedback appreciation from {company}",
+    "new purchase order {company}",
+]
+
 
 def generate_timeline(
     months: int = 12,
@@ -196,6 +274,11 @@ def generate_timeline(
     # Sort by occurred_at
     signals.sort(key=lambda s: s.occurred_at)
     return signals
+
+
+def _ym(dt: datetime) -> str:
+    """Return 'ym:YYYY-MM' tag for the given datetime."""
+    return f"ym:{dt.year:04d}-{dt.month:02d}"
 
 
 def _add_entity_signals(
@@ -239,7 +322,8 @@ def _add_entity_signals(
         body_text=reschedule_body,
         metadata={"from": ent.email, "to": OWNER_EMAIL, "thread_id": reschedule_thread},
         tags=[f"src:gmail_owner", f"kind:email.received",
-              f"ent:{ent.entity_id}", f"thread:{reschedule_thread}", "dc:gmail_restricted"],
+              f"ent:{ent.entity_id}", f"thread:{reschedule_thread}",
+              "dc:gmail_restricted", _ym(day_90)],
         thread_id=reschedule_thread,
     ))
 
@@ -261,7 +345,7 @@ def _add_entity_signals(
         body_text=transcript_body,
         metadata={"phone": ent.phone, "duration_s": 180},
         tags=[f"src:voice_fixture", f"kind:call.transcript",
-              f"ent:{ent.entity_id}", "dc:voice"],
+              f"ent:{ent.entity_id}", "dc:voice", _ym(day_92)],
     ))
 
     # P2 scenario: invoice dispute (email + Stripe record + QBO record)
@@ -290,7 +374,7 @@ def _add_entity_signals(
                   "thread_id": dispute_thread, "invoice_id": invoice_id},
         tags=[f"src:gmail_owner", f"kind:email.received",
               f"ent:{ent.entity_id}", f"invoice:{invoice_id}",
-              f"thread:{dispute_thread}", "dc:gmail_restricted"],
+              f"thread:{dispute_thread}", "dc:gmail_restricted", _ym(day_45)],
         thread_id=dispute_thread,
     ))
 
@@ -311,7 +395,8 @@ def _add_entity_signals(
             "status": "open",
         },
         tags=[f"src:stripe_fixture", f"kind:invoice.created",
-              f"ent:{ent.entity_id}", f"invoice:{invoice_id}", "dc:payments"],
+              f"ent:{ent.entity_id}", f"invoice:{invoice_id}", "dc:payments",
+              _ym(day_45 - timedelta(days=3))],
         is_llm_eligible=False,  # Structured signal — chunks only, no prose extraction
     ))
 
@@ -332,7 +417,8 @@ def _add_entity_signals(
             "status": "open",
         },
         tags=[f"src:qbo_fixture", f"kind:invoice.created",
-              f"ent:{ent.entity_id}", f"invoice:{invoice_id}", "dc:accounting"],
+              f"ent:{ent.entity_id}", f"invoice:{invoice_id}", "dc:accounting",
+              _ym(day_45 - timedelta(days=3))],
         is_llm_eligible=False,
     ))
 
@@ -358,7 +444,8 @@ def _add_entity_signals(
         body_text=dispute_transcript,
         metadata={"phone": ent.phone, "invoice_id": invoice_id},
         tags=[f"src:voice_fixture", f"kind:call.transcript",
-              f"ent:{ent.entity_id}", f"invoice:{invoice_id}", "dc:voice"],
+              f"ent:{ent.entity_id}", f"invoice:{invoice_id}", "dc:voice",
+              _ym(day_47)],
     ))
 
     # P4 scenario: contradicting date — owner confirms the ORIGINAL date in a reply
@@ -378,7 +465,8 @@ def _add_entity_signals(
         body_text=confirm_original_body,
         metadata={"from": OWNER_EMAIL, "to": ent.email, "thread_id": reschedule_thread},
         tags=[f"src:gmail_owner", f"kind:email.sent",
-              f"ent:{ent.entity_id}", f"thread:{reschedule_thread}", "dc:gmail_restricted"],
+              f"ent:{ent.entity_id}", f"thread:{reschedule_thread}",
+              "dc:gmail_restricted", _ym(day_91)],
         thread_id=reschedule_thread,
     ))
 
@@ -408,11 +496,11 @@ def _add_entity_signals(
                 "duration_minutes": ev_duration,
             },
             tags=[f"src:gcal_owner", f"kind:calendar.event.created",
-                  f"ent:{ent.entity_id}", f"dc:calendar_restricted"],
+                  f"ent:{ent.entity_id}", f"dc:calendar_restricted", _ym(ev_day)],
             is_llm_eligible=False,  # Structured
         ))
 
-    # Regular emails spanning the full timeline (old ones for scenario 3)
+    # Regular emails spanning the full timeline
     for i, dt in enumerate(email_dates):
         # Skip the special scenario dates already added
         if abs((dt - day_90).days) < 5 or abs((dt - day_45).days) < 5:
@@ -453,8 +541,44 @@ def _add_entity_signals(
             body_text=body,
             metadata={"from": ent.email, "to": OWNER_EMAIL, "thread_id": thread},
             tags=[f"src:gmail_owner", f"kind:email.received",
-                  f"ent:{ent.entity_id}", f"thread:{thread}", "dc:gmail_restricted"],
+                  f"ent:{ent.entity_id}", f"thread:{thread}", "dc:gmail_restricted",
+                  _ym(dt)],
             thread_id=thread,
+        ))
+
+    # ── Old-evidence scenario signals (days 185–318, >180 days from base_date)
+    # These are deterministic and serve as labelled benchmark targets for V1.
+    for idx, (day, seed_sfx, src, kind, subj_tmpl, body_tmpl, is_llm) in enumerate(
+        _OLD_SCENARIOS
+    ):
+        old_day = start + timedelta(days=day)
+        # Skip if old_day would be in the future relative to corpus end
+        if old_day >= end:
+            continue
+        old_body = body_tmpl.format(
+            company=ent.company,
+            name=ent.display_name,
+            resolve_date=(old_day + timedelta(days=5)).strftime("%B %d, %Y"),
+            amount=round(rng.uniform(500, 5000), 2),
+            idx=idx,
+            service_type=rng.choice(["infrastructure", "data-migration", "API integration"]),
+            product=rng.choice(["annual license", "professional services bundle"]),
+            spend_summary="within budget",
+        )
+        old_subj = subj_tmpl.format(company=ent.company, name=ent.display_name)
+        out.append(SyntheticSignal(
+            signal_id=_sig_id(f"{seed_sfx}_{ent.entity_id}"),
+            source=src,
+            kind=kind,
+            occurred_at=old_day,
+            entity_id=ent.entity_id,
+            subject=old_subj,
+            body_text=old_body,
+            metadata={"from": ent.email if "received" in kind else OWNER_EMAIL,
+                      "to": OWNER_EMAIL if "received" in kind else ent.email},
+            tags=[f"src:{src}", f"kind:{kind}", f"ent:{ent.entity_id}",
+                  "dc:gmail_restricted", _ym(old_day)],
+            is_llm_eligible=is_llm,
         ))
 
 
@@ -470,6 +594,12 @@ def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
     """
     items = []
     for sig in signals:
+        # Ensure ym: tag is present (audit V1 fix)
+        tags = list(sig.tags)
+        ym = _ym(sig.occurred_at)
+        if ym not in tags:
+            tags.append(ym)
+
         item: dict = {
             "content": sig.body_text,
             "timestamp": sig.occurred_at.isoformat(),
@@ -477,7 +607,7 @@ def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
             "operation_id": f"olo-idx:gate:{sig.signal_id}",
             "entities": [{"text": sig.entity_id, "type": "person"}],
             "resolve_entities": False,
-            "tags": sig.tags,
+            "tags": tags,
             "metadata": {
                 "signal_id": sig.signal_id,
                 "source": sig.source,
@@ -540,79 +670,97 @@ def load_from_jsonl(path: Path) -> list[SyntheticSignal]:
 # ── Labelled question set for V1 (recall@10 ≥ 0.90) ─────────────────────────
 
 def build_labelled_questions() -> list[dict]:
-    """Return 40+ labelled questions with expected signal_ids for V1 validation.
+    """Return 48 labelled questions for V1 recall@10 validation.
 
-    At least 10 questions reference events older than 6 months from base_date.
-    Each question has: query, entity_id (optional), time_window, expected_signal_ids.
+    All questions have expected_signal_ids (no time_window_only shortcuts).
+    At least 10 per entity target signals > 180 days old.
+    Calendar share: 0% (no calendar-targeting questions).
+    Queries are paraphrased — not copied from signal subject lines.
+
+    Uses ym: month tags for tag_groups recall filtering:
+        tag_groups = AND({ent:<id>} all_strict, {ym:YYYY-MM} any_strict)
+
+    Audit V1 fix: grounded benchmark from feeder-compatible signal IDs.
     """
     base = datetime(2026, 1, 1, tzinfo=UTC)
-    questions = []
+    questions: list[dict] = []
 
     for ent in ENTITIES:
-        # Recent questions (within 3 months)
+        # ── Scenario questions (12 per entity = 4 × 3) ──────────────────────
+        # Paraphrased queries targeting specific scenario signals
+
+        day_90 = base + timedelta(days=90)
+        day_92 = base + timedelta(days=92)
+        day_45 = base + timedelta(days=45)
+        day_91 = base + timedelta(days=91)
+
         questions.extend([
             {
-                "id": f"q_{ent.entity_id[:8]}_reschedule",
-                "query": f"When did {ent.display_name} ask to reschedule a meeting?",
+                "id": f"q_{ent.entity_id[:8]}_reschedule_a",
+                "query": f"meeting date change request from {ent.company}",
                 "entity_id": ent.entity_id,
-                "time_window": {"from": (base + timedelta(days=85)).isoformat(),
-                                "to": (base + timedelta(days=100)).isoformat()},
-                "expected_signal_ids": [
-                    _sig_id(f"email_reschedule_{ent.entity_id}"),
-                    _sig_id(f"transcript_reschedule_{ent.entity_id}"),
-                ],
+                "ym": _ym(day_90),
+                "expected_signal_ids": [_sig_id(f"email_reschedule_{ent.entity_id}")],
                 "age_months": 3,
             },
             {
-                "id": f"q_{ent.entity_id[:8]}_dispute",
-                "query": f"invoice dispute {ent.company}",
+                "id": f"q_{ent.entity_id[:8]}_reschedule_b",
+                "query": f"phone call delivery rescheduled {ent.company}",
                 "entity_id": ent.entity_id,
-                "time_window": {"from": (base + timedelta(days=40)).isoformat(),
-                                "to": (base + timedelta(days=55)).isoformat()},
-                "expected_signal_ids": [
-                    _sig_id(f"email_dispute_{ent.entity_id}"),
-                    _sig_id(f"transcript_dispute_{ent.entity_id}"),
-                ],
-                "age_months": 1.5,
-            },
-        ])
-
-        # More scenario-specific questions
-        questions.extend([
-            {
-                "id": f"q_{ent.entity_id[:8]}_transcript_reschedule",
-                "query": f"phone call transcript delivery {ent.company}",
-                "entity_id": ent.entity_id,
-                "time_window": {"from": (base + timedelta(days=90)).isoformat(),
-                                "to": (base + timedelta(days=95)).isoformat()},
+                "ym": _ym(day_92),
                 "expected_signal_ids": [_sig_id(f"transcript_reschedule_{ent.entity_id}")],
                 "age_months": 3,
             },
             {
-                "id": f"q_{ent.entity_id[:8]}_contradiction",
-                "query": f"original meeting date confirmed {ent.company}",
+                "id": f"q_{ent.entity_id[:8]}_dispute_a",
+                "query": f"billing discrepancy overcharge {ent.company}",
                 "entity_id": ent.entity_id,
-                "time_window": {"from": (base + timedelta(days=89)).isoformat(),
-                                "to": (base + timedelta(days=93)).isoformat()},
+                "ym": _ym(day_45),
+                "expected_signal_ids": [_sig_id(f"email_dispute_{ent.entity_id}")],
+                "age_months": 1.5,
+            },
+            {
+                "id": f"q_{ent.entity_id[:8]}_dispute_b",
+                "query": f"invoice call transcript dispute {ent.company}",
+                "entity_id": ent.entity_id,
+                "ym": _ym(base + timedelta(days=47)),
+                "expected_signal_ids": [_sig_id(f"transcript_dispute_{ent.entity_id}")],
+                "age_months": 1.5,
+            },
+            {
+                "id": f"q_{ent.entity_id[:8]}_contradiction",
+                "query": f"confirmed original appointment date {ent.company}",
+                "entity_id": ent.entity_id,
+                "ym": _ym(day_91),
                 "expected_signal_ids": [_sig_id(f"email_confirm_orig_{ent.entity_id}")],
                 "age_months": 3,
             },
+            {
+                "id": f"q_{ent.entity_id[:8]}_stripe",
+                "query": f"invoice payment record {ent.company} stripe",
+                "entity_id": ent.entity_id,
+                "ym": _ym(day_45 - timedelta(days=3)),
+                "expected_signal_ids": [_sig_id(f"stripe_invoice_{ent.entity_id}")],
+                "age_months": 1.5,
+            },
         ])
 
-        # Old questions (> 6 months from base = after day 180)
-        for i in range(10):
-            day = 180 + i * 15
-            dt = base + timedelta(days=day)
-            q_sig_id = _sig_id(f"email_{ent.entity_id}_{i + 10}")
+        # ── Old-evidence questions (10 per entity, all > 180 days) ──────────
+        for idx, (day, seed_sfx, _src, _kind, _st, _bt, _) in enumerate(
+            _OLD_SCENARIOS
+        ):
+            old_day = base + timedelta(days=day)
+            q_text = _OLD_QUERIES[idx].format(
+                company=ent.company,
+                name=ent.display_name,
+            )
             questions.append({
-                "id": f"q_{ent.entity_id[:8]}_old_{i}",
-                "query": f"emails from {ent.company} in {dt.strftime('%B %Y')}",
+                "id": f"q_{ent.entity_id[:8]}_old_{idx}",
+                "query": q_text,
                 "entity_id": ent.entity_id,
-                "time_window": {"from": (dt - timedelta(days=15)).isoformat(),
-                                "to": (dt + timedelta(days=15)).isoformat()},
-                "expected_signal_ids": [],  # any signal in that window counts
+                "ym": _ym(old_day),
+                "expected_signal_ids": [_sig_id(f"{seed_sfx}_{ent.entity_id}")],
                 "age_months": day // 30,
-                "time_window_only": True,  # match by time window, not specific IDs
             })
 
     return questions

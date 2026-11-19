@@ -69,6 +69,52 @@ class HindsightConfig:
             bank_id=os.environ.get(f"{p}HINDSIGHT_BANK_ID", "main-v1"),
         )
 
+    @classmethod
+    def for_business(cls, business_id: str, registry_path: Optional[str] = None) -> "HindsightConfig":
+        """Load config for a specific business from the port registry.
+
+        The registry is written by setup.sh at
+        ``$HERMES_HOME/hindsight_port_registry.json`` and maps
+        ``business_id -> {port, bank_id}``.
+
+        Audit correction D9 (fix 7): unique port per business, registry routing.
+        """
+        import json as _json
+        import pathlib as _pathlib
+
+        # Determine registry path
+        reg_path: _pathlib.Path
+        if registry_path:
+            reg_path = _pathlib.Path(registry_path)
+        else:
+            hermes_home = os.environ.get("HERMES_HOME", "")
+            if hermes_home:
+                reg_path = _pathlib.Path(hermes_home) / "hindsight_port_registry.json"
+            else:
+                # Fall back to per-business env convention
+                prefix = business_id.upper().replace("-", "_")
+                return cls.from_env(prefix=prefix)
+
+        if not reg_path.exists():
+            raise ValueError(
+                f"Hindsight port registry not found at {reg_path}. "
+                f"Run setup.sh for business {business_id!r} first."
+            )
+
+        registry = _json.loads(reg_path.read_text())
+        entry = registry.get(business_id)
+        if entry is None:
+            raise ValueError(
+                f"Business {business_id!r} not found in registry {reg_path}. "
+                f"Known businesses: {list(registry.keys())}"
+            )
+
+        return cls(
+            host="127.0.0.1",
+            port=int(entry["port"]),
+            bank_id=entry.get("bank_id", "main-v1"),
+        )
+
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
@@ -181,6 +227,15 @@ class HindsightClient:
             except HindsightUnavailable as e:
                 last_exc = e
                 time.sleep(poll_interval)
+            except HindsightAPIError as e:
+                # 503 = server starting up / temporarily unavailable — keep polling
+                if e.status_code in (503, 502):
+                    last_exc = HindsightUnavailable(
+                        f"Hindsight not ready (HTTP {e.status_code})"
+                    )
+                    time.sleep(poll_interval)
+                else:
+                    raise
         raise HindsightUnavailable(
             f"Hindsight not ready after {timeout_s}s"
         ) from last_exc
@@ -251,7 +306,8 @@ class HindsightClient:
         max_tokens: int = 4000,
         trace: bool = True,
         tags: Optional[list[str]] = None,
-        tags_match: str = "any",
+        tags_match: str = "all_strict",
+        tag_groups: Optional[list[dict]] = None,
         temporal_window: Optional[dict] = None,
         bank_id: Optional[str] = None,
         types: Optional[list[str]] = None,
@@ -259,13 +315,27 @@ class HindsightClient:
         """Run a recall query.
 
         POST /v1/default/banks/{bank_id}/memories/recall
+
+        ``tags_match`` defaults to ``"all_strict"`` so entity tags are never
+        mixed with untagged memories (audit correction D10, fix 9).
+
+        ``tag_groups`` enables AND-of-groups filtering, e.g.:
+            tag_groups = [
+                {"tags": ["ent:ent_01ACME000000000000000000"], "match": "all_strict"},
+                {"tags": ["ym:2026-04", "ym:2026-05"], "match": "any_strict"},
+            ]
+        When ``tag_groups`` is supplied, ``tags`` and ``tags_match`` are ignored
+        (the groups fully specify the filter).
         """
         payload: dict[str, Any] = {
             "query": query,
             "max_tokens": max_tokens,
             "trace": trace,
         }
-        if tags:
+        if tag_groups is not None:
+            # Structured AND-of-groups filter — supersedes flat tags
+            payload["tag_groups"] = tag_groups
+        elif tags:
             payload["tags"] = tags
             payload["tags_match"] = tags_match
         if temporal_window:
@@ -378,4 +448,40 @@ class HindsightClient:
         return _request(
             self._cfg, "POST",
             self._bank_path("/consolidation/recover", bank_id),
+        )
+
+    def get_llm_stats(self, bank_id: Optional[str] = None) -> dict:
+        """Return LLM usage stats for the bank.
+
+        GET /v1/default/banks/{bank_id}/llm-requests/stats
+        Response: {"bank_id": "...", "buckets": [{"total": N, "tokens": {"input": N, "output": N}}, ...]}
+        Used by UsageGuard for the $8 budget hard stop (audit correction D1).
+        """
+        return _request(self._cfg, "GET", self._bank_path("/llm-requests/stats", bank_id))
+
+    def get_bank_stats(self, bank_id: Optional[str] = None) -> dict:
+        """Return bank stats including pending_consolidation count.
+
+        GET /v1/default/banks/{bank_id}/stats
+        """
+        return _request(self._cfg, "GET", self._bank_path("/stats", bank_id))
+
+    def list_operations(
+        self,
+        limit: int = 10,
+        status: Optional[str] = None,
+        bank_id: Optional[str] = None,
+    ) -> dict:
+        """List recent retain operations, optionally filtered by status.
+
+        GET /v1/default/banks/{bank_id}/operations?limit=N[&status=S]
+        Used by V5 to detect in-flight operations before kill-9.
+        """
+        params: dict = {"limit": str(limit)}
+        if status:
+            params["status"] = status
+        return _request(
+            self._cfg, "GET",
+            self._bank_path("/operations", bank_id),
+            params=params,
         )
