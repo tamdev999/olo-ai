@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# Olo M3: Hindsight v1.2.1 environment setup.
+# Olo M3: Hindsight v1.2.1 per-business environment setup.
 #
-# Creates a separate venv at $HERMES_HOME/olo/hindsight-venv,
-# installs hindsight-api-slim from the pinned fork SHA, and
-# writes a per-business .env configuration.
+# Each business gets its own named pg0 instance and isolated HOME directory,
+# so pg0 stores its data under <BUSINESS_HOME>/.pg0/olo-<BUSINESS_ID>/.
+# Two businesses on the same host cannot share memory (P0-1 isolation).
 #
 # Usage: bash setup.sh <BUSINESS_ID> [--provider none|deepseek]
 #
 # Environment variables consumed:
-#   HERMES_HOME        — the business environment root (required)
+#   HERMES_HOME               — the platform root (required)
 #   HINDSIGHT_API_LLM_API_KEY — DeepSeek key (required for provider=deepseek)
-#   HINDSIGHT_PORT     — override default port (default: 8765)
+#   HINDSIGHT_PORT            — override default port (default: 18800)
 #
-# Opus architecture: §B.2, §B.9; revised spec §4.
+# Isolation contract:
+#   Each business process runs with HOME=<BUSINESS_HOME>.
+#   pg0 stores data at <BUSINESS_HOME>/.pg0/olo-<BUSINESS_ID>/ (pg0 default).
+#   The database URL is pg0://olo-<BUSINESS_ID> (named instance).
+#   No DATABASE_DATA_DIR override: pg0 uses HOME, not an env var.
+#
+# Opus architecture: §B.2, §B.9; revised spec §4 + audit corrections.
 # Hindsight version: v1.2.1 commit 0eb02d8c418eac6b489bc63883c993b2257dfac4
 
 set -euo pipefail
@@ -32,90 +38,105 @@ if [[ -z "${HERMES_HOME:-}" ]]; then
     exit 1
 fi
 
-HINDSIGHT_HOME="${HERMES_HOME}/olo/hindsight"
+# Validate BUSINESS_ID: alphanumeric + hyphens only
+if [[ ! "$BUSINESS_ID" =~ ^[a-z0-9][a-z0-9\-]{0,62}[a-z0-9]$ ]]; then
+    echo "ERROR: BUSINESS_ID must be lowercase alphanumeric + hyphens: ${BUSINESS_ID}" >&2
+    exit 1
+fi
+
+# Per-business HOME — pg0 stores data under HOME/.pg0/olo-<BUSINESS_ID>/
+BUSINESS_HOME="${HERMES_HOME}/businesses/${BUSINESS_ID}"
 VENV="${HERMES_HOME}/olo/hindsight-venv"
-DATA_DIR="${HINDSIGHT_HOME}/data/${BUSINESS_ID}"
-PORT="${HINDSIGHT_PORT:-8765}"
+PORT="${HINDSIGHT_PORT:-18800}"
 
-# Pinned fork SHA — change only under architect approval (§B.2 DECISION)
-# Fork: tamdev999/olo-hindsight at v1.2.1
-# Fallback: upstream if fork not yet created
-FORK_URL="https://github.com/tamdev999/olo-hindsight.git"
-UPSTREAM_URL="https://github.com/vectorize-io/hindsight.git"
+# pg0 instance name: olo-<BUSINESS_ID> → stored at $HOME/.pg0/olo-<BUSINESS_ID>/
+PG0_INSTANCE="olo-${BUSINESS_ID}"
+# Database URL uses named pg0 instance for isolation (no DATABASE_DATA_DIR override)
+DATABASE_URL="pg0://${PG0_INSTANCE}"
+
+# ── Pinned fork ──────────────────────────────────────────────────────────────
+# Fork: tamdev999/olo-persistentmemory at v1.2.1
+# No upstream fallback — fork identity is part of the supply-chain guarantee.
+FORK_URL="https://github.com/tamdev999/olo-persistentmemory.git"
 PINNED_SHA="0eb02d8c418eac6b489bc63883c993b2257dfac4"
+FORK_INSTALL="hindsight-api-slim @ git+${FORK_URL}@${PINNED_SHA}#subdirectory=hindsight-api-slim"
 
-# ── Create venv ──────────────────────────────────────────────────────────────
+# ── Create per-business HOME ─────────────────────────────────────────────────
+mkdir -p "${BUSINESS_HOME}"
+chmod 700 "${BUSINESS_HOME}"
+
+# ── Create venv (shared across businesses; pinned) ───────────────────────────
 if [[ ! -d "$VENV" ]]; then
     echo "[setup] Creating Hindsight venv at $VENV"
     python3 -m venv "$VENV"
 fi
 
-# ── Install hindsight-api-slim from pinned SHA ──────────────────────────────
-# Try the fork first; fall back to upstream if not yet created.
-if "$VENV/bin/pip" show hindsight-api-slim &>/dev/null; then
-    INSTALLED=$("$VENV/bin/pip" show hindsight-api-slim | grep Version | awk '{print $2}')
+# ── Install hindsight-api-slim from pinned fork SHA ──────────────────────────
+if HOME="${BUSINESS_HOME}" "$VENV/bin/pip" show hindsight-api-slim &>/dev/null; then
+    INSTALLED=$(HOME="${BUSINESS_HOME}" "$VENV/bin/pip" show hindsight-api-slim | grep Version | awk '{print $2}')
     if [[ "$INSTALLED" == "1.2.1" ]]; then
-        echo "[setup] hindsight-api-slim 1.2.1 already installed"
+        echo "[setup] hindsight-api-slim 1.2.1 already installed from ${FORK_URL:0:40}…"
     else
         echo "[setup] Upgrading hindsight-api-slim from $INSTALLED to 1.2.1"
-        "$VENV/bin/pip" install \
-            "hindsight-api-slim @ git+${UPSTREAM_URL}@${PINNED_SHA}#subdirectory=hindsight-api-slim" \
-            --quiet
+        HOME="${BUSINESS_HOME}" "$VENV/bin/pip" install "${FORK_INSTALL}" --quiet
     fi
 else
-    echo "[setup] Installing hindsight-api-slim from pinned SHA ${PINNED_SHA:0:12}"
-    "$VENV/bin/pip" install \
-        "hindsight-api-slim @ git+${UPSTREAM_URL}@${PINNED_SHA}#subdirectory=hindsight-api-slim" \
-        --quiet
+    echo "[setup] Installing hindsight-api-slim from ${FORK_URL:0:40}… SHA ${PINNED_SHA:0:12}"
+    HOME="${BUSINESS_HOME}" "$VENV/bin/pip" install "${FORK_INSTALL}" --quiet
 fi
 
-# ── Create data directories ──────────────────────────────────────────────────
-mkdir -p "${DATA_DIR}/pg0"
-chmod 700 "${DATA_DIR}/pg0"
-mkdir -p "${HINDSIGHT_HOME}/logs"
-
-# ── Write .env ───────────────────────────────────────────────────────────────
-# API key stored in Hermes secret scope, NOT written here.
-ENV_FILE="${DATA_DIR}/.env"
-cat > "$ENV_FILE" <<EOF
+# ── Write per-business .env ───────────────────────────────────────────────────
+# Stored in business HOME, chmod 600.
+# API key is NOT written here — injected via Hermes secret scope at runtime.
+# Only variables that exist in Hindsight v1.2.1 config.py are written.
+ENV_FILE="${BUSINESS_HOME}/.env"
+cat > "$ENV_FILE" <<DOTENV
 # Hindsight configuration for business: ${BUSINESS_ID}
-# Generated by olo/m3/hindsight/setup.sh — DO NOT COMMIT
-# Opus architecture §B.2: one environment per business.
+# Generated by olo/m3/hindsight/setup.sh
+# DO NOT COMMIT — runtime-only. API key set via Hermes secret scope.
+# Opus audit correction: only valid v1.2.1 env vars written.
 
-HINDSIGHT_API_DATABASE_URL=pg0
-HINDSIGHT_API_DATABASE_DATA_DIR=${DATA_DIR}/pg0
+# ── Database (per-business named pg0 instance, §B.9 isolation) ───────────────
+# pg0://olo-<business_id> creates ~/.pg0/olo-<business_id>/ under this process's HOME.
+# HOME is set to ${BUSINESS_HOME} at startup for isolation.
+HINDSIGHT_API_DATABASE_URL=${DATABASE_URL}
 
-# Network: loopback only, per-business port
+# ── Network (loopback only) ───────────────────────────────────────────────────
 HINDSIGHT_API_HOST=127.0.0.1
 HINDSIGHT_API_PORT=${PORT}
 
-# LLM provider — none for M3.0 GATE structural tests; deepseek for Option B
+# ── LLM provider (none = M3.0 structural; deepseek = Option B) ───────────────
 HINDSIGHT_API_LLM_PROVIDER=${PROVIDER}
-# HINDSIGHT_API_LLM_API_KEY=  <-- set in Hermes secret scope, not here
+# HINDSIGHT_API_LLM_API_KEY=  <-- set in Hermes secret scope, NOT here
 
-# Decision model — none; Olo calls Jev directly (§B.2)
+# ── Decision model (Olo calls Jev directly, §B.2) ────────────────────────────
 HINDSIGHT_API_DECISION_MODEL_PROVIDER=none
 
-# Telemetry, MCP, cloud — off (§B.9 isolation)
-HINDSIGHT_API_TELEMETRY_ENABLED=false
+# ── MCP disabled (valid v1.2.1 var: HINDSIGHT_API_MCP_ENABLED) ───────────────
 HINDSIGHT_API_MCP_ENABLED=false
-HINDSIGHT_API_CLOUD_ENABLED=false
-HINDSIGHT_API_WEBHOOKS_ENABLED=false
 
-# Bank for this business
-HINDSIGHT_API_DEFAULT_BANK_ID=main-v1
+# ── Embeddings: ONNX local CPU, pinned model, no network egress ──────────────
+# HINDSIGHT_API_EMBED_PROVIDER is NOT a valid v1.2.1 var.
+# Correct variable: HINDSIGHT_API_EMBEDDINGS_PROVIDER
+HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx
+HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID=intfloat/multilingual-e5-small
 
-# Document text retention (§B.9: needed for rebuild)
+# ── Reranker: RRF (pure algorithmic, no model needed) ────────────────────────
+HINDSIGHT_API_RERANKER_PROVIDER=rrf
+
+# ── Document text retention (needed for rebuild) ─────────────────────────────
 HINDSIGHT_API_STORE_DOCUMENT_TEXT=true
 
-# Embedding: local CPU, pinned model (no runtime network egress, §B.9)
-HINDSIGHT_API_EMBED_PROVIDER=local
-
-# LLM trace off (no model calls in none mode)
+# ── LLM trace disabled ───────────────────────────────────────────────────────
 HINDSIGHT_API_LLM_TRACE_ENABLED=false
-EOF
+
+# ── Telemetry: controlled by standard OTEL env vars, not Hindsight-specific ──
+# HINDSIGHT_API_TELEMETRY_ENABLED does NOT exist in v1.2.1 (silently ignored).
+# Disable OTEL by not configuring any exporter endpoint.
+OTEL_SDK_DISABLED=true
+DOTENV
 chmod 600 "$ENV_FILE"
 
-echo "[setup] Hindsight configured at ${DATA_DIR}/.env"
-echo "[setup] Start server: DOTENV_PATH=${ENV_FILE} $VENV/bin/hindsight-api"
-echo "[setup] Or via olo-hindsight-start: hermes cron create '...' --script olo_hindsight_${BUSINESS_ID}.py"
+echo "[setup] Business ${BUSINESS_ID}: env at ${ENV_FILE}"
+echo "[setup] pg0 instance: ${PG0_INSTANCE} (data: ${BUSINESS_HOME}/.pg0/${PG0_INSTANCE}/)"
+echo "[setup] Start: HOME=${BUSINESS_HOME} ${VENV}/bin/hindsight-api (env loaded from ${ENV_FILE})"

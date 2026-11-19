@@ -6,6 +6,10 @@ Configured per business environment (host, port, API key from Hermes secret scop
 All methods are synchronous wrappers around the HTTP API.
 The Hindsight server runs in its own venv; this client lives in the Olo venv.
 
+Security: all HTTP goes through open_credentialed_url (C2 fix, §4.1).
+HindsightConfig enforces that the host is 127.0.0.1 or localhost so that
+the C2 redirect-stripping guarantee covers any accidental redirect.
+
 Opus architecture: §B.2 (API surface used).
 """
 from __future__ import annotations
@@ -16,20 +20,38 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
 @dataclass
 class HindsightConfig:
-    """Per-business Hindsight connection config."""
+    """Per-business Hindsight connection config.
+
+    host must be 127.0.0.1 or localhost — Hindsight is a loopback IPC service.
+    Attempting to point it at an external host raises ValueError at construction
+    so that credential leakage through open_credentialed_url's redirect-stripping
+    path is impossible (C2, §4.1).
+    """
     host: str = "127.0.0.1"
     port: int = 8765
     api_key: str = ""   # loaded from Hermes secret scope; never hardcoded
     timeout_s: float = 30.0
     bank_id: str = "main-v1"
+
+    def __post_init__(self) -> None:
+        if self.host not in _LOOPBACK_HOSTS:
+            raise ValueError(
+                f"HindsightConfig.host must be a loopback address "
+                f"(127.0.0.1 / localhost), got {self.host!r}. "
+                "Hindsight is a per-business loopback IPC service; "
+                "pointing it at an external host is a misconfiguration."
+            )
 
     @property
     def base_url(self) -> str:
@@ -78,9 +100,14 @@ def _request(
 ) -> dict:
     """Make one HTTP request to Hindsight and return the parsed JSON response.
 
+    Uses open_credentialed_url (C2 fix, §4.1) so Authorization headers are
+    never forwarded on a cross-origin redirect.
+
     Raises HindsightUnavailable on network errors,
            HindsightAPIError on 4xx/5xx responses.
     """
+    from hermes_cli.urllib_security import open_credentialed_url
+
     url = cfg.base_url + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -93,7 +120,7 @@ def _request(
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
     try:
-        with urllib.request.urlopen(req, timeout=cfg.timeout_s) as resp:
+        with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -284,10 +311,29 @@ class HindsightClient:
         return _request(self._cfg, "GET", f"{self._API_PREFIX}/banks")
 
     def delete_bank(self, bank_id: str) -> dict:
+        """Delete a bank and all its data (irreversible).
+
+        Note: Hindsight v1.2.1 may return HTTP 405 if banks cannot be
+        deleted this way — catch gracefully in callers.
+        """
         return _request(
             self._cfg, "DELETE",
             f"{self._API_PREFIX}/banks/{urllib.parse.quote(bank_id, safe='')}",
         )
+
+    def get_observation_history(
+        self, memory_id: str, bank_id: Optional[str] = None
+    ) -> dict:
+        """Get the history of a single observation.
+
+        GET /v1/default/banks/{bank_id}/memories/{memory_id}/history
+        Returns the full history of changes with source facts.
+        """
+        path = self._bank_path(
+            f"/memories/{urllib.parse.quote(memory_id, safe='')}/history",
+            bank_id,
+        )
+        return _request(self._cfg, "GET", path)
 
     # ── Admin ─────────────────────────────────────────────────────────────────
 

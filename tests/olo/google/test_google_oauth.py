@@ -471,20 +471,8 @@ def test_no_urlopen_in_olo_source() -> None:
     import ast
 
     olo_root = Path(__file__).parent.parent.parent.parent / "olo"
-    # C2 exemption: olo/m3/hindsight/ calls 127.0.0.1 only (loopback IPC).
-    # It carries an Olo-issued Bearer token, not a Google credential, so the
-    # redirect-stripping risk C2 addresses (§4.1) does not apply.
-    # This exemption is architecture-approved; any external-facing client in
-    # olo/ (including future M3 connectors) must still use open_credentialed_url.
-    _m3_hindsight = olo_root / "m3" / "hindsight"
     violations = []
     for py_file in olo_root.rglob("*.py"):
-        # Skip M3 Hindsight loopback client (see exemption comment above)
-        try:
-            py_file.relative_to(_m3_hindsight)
-            continue  # inside olo/m3/hindsight/ — exempt
-        except ValueError:
-            pass
         source = py_file.read_text(encoding="utf-8", errors="replace")
         # Look for direct urlopen calls (not inside strings/comments)
         try:
