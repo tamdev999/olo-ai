@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Olo M3: Hindsight v1.2.1 per-business environment setup.
 #
-# Each business gets its own named pg0 instance and isolated HOME directory,
-# so pg0 stores its data under <BUSINESS_HOME>/.pg0/olo-<BUSINESS_ID>/.
+# Each business gets its own named pg0 instance and isolated HOME directory.
 # Two businesses on the same host cannot share memory (P0-1 isolation).
 #
-# pg0 uses initdb internally.  Run this script as a non-root user (e.g. olo_hs)
-# because initdb refuses to run as root.
+# pg0 uses initdb internally.  Run as a non-root user (e.g. olo_hs).
 #
 # Usage:
 #   bash setup.sh <BUSINESS_ID> [--provider none|deepseek]
@@ -14,26 +12,22 @@
 # Environment variables consumed:
 #   HERMES_HOME               — the platform root (required)
 #   HINDSIGHT_API_LLM_API_KEY — DeepSeek key (required for provider=deepseek)
-#   HINDSIGHT_PORT            — override default port (default: 18800)
+#   HINDSIGHT_PORT            — explicit port override; collisions fail safely
+#   HINDSIGHT_PYTHON          — Python interpreter to create venv with
 #   HF_HOME                   — HuggingFace model cache (optional override)
 #
-# Isolation contract:
-#   Each business process runs with HOME=<BUSINESS_HOME>.
-#   pg0 stores data at <BUSINESS_HOME>/.pg0/olo-<BUSINESS_ID>/ (pg0 default).
-#   The database URL is pg0://olo-<BUSINESS_ID> (named instance).
-#   No DATABASE_DATA_DIR override: pg0 uses HOME, not an env var.
-#
 # Port registry:
-#   Each call registers {BUSINESS_ID: {port, bank_id}} in
-#   ${HERMES_HOME}/hindsight_port_registry.json so HindsightConfig.for_business()
-#   can resolve the correct endpoint.  (Audit D9 fix.)
+#   ${HERMES_HOME}/hindsight_port_registry.json  maps  biz_id → {port, bank_id}
+#   Ports are allocated once per business; re-running setup.sh reuses the
+#   existing port unless HINDSIGHT_PORT explicitly overrides it.
+#   Collision detection: if the requested port is already claimed by ANOTHER
+#   business the script exits with an error.
 #
 # Provenance:
 #   The venv must have hindsight-api-slim installed from the fork git URL with
-#   the pinned SHA.  setup.sh verifies direct_url.json and fails if the URL is
-#   the upstream repo or a package index.  (Audit D8 fix.)
+#   the pinned SHA.  setup.sh verifies direct_url.json and fails otherwise.
 #
-# Opus architecture: §B.2, §B.9; revised spec §4 + audit corrections.
+# Opus architecture: §B.2, §B.9; revised spec §4.
 # Hindsight version: v1.2.1 commit 0eb02d8c418eac6b489bc63883c993b2257dfac4
 
 set -euo pipefail
@@ -53,36 +47,103 @@ if [[ -z "${HERMES_HOME:-}" ]]; then
     exit 1
 fi
 
-# Validate BUSINESS_ID: alphanumeric + hyphens only
 if [[ ! "$BUSINESS_ID" =~ ^[a-z0-9][a-z0-9\-]{0,62}[a-z0-9]$ ]]; then
     echo "ERROR: BUSINESS_ID must be lowercase alphanumeric + hyphens: ${BUSINESS_ID}" >&2
     exit 1
 fi
 
-# Per-business HOME — pg0 stores data under HOME/.pg0/olo-<BUSINESS_ID>/
+# ── Per-business paths ───────────────────────────────────────────────────────
 BUSINESS_HOME="${HERMES_HOME}/businesses/${BUSINESS_ID}"
 VENV="${HERMES_HOME}/olo/hindsight-venv"
-PORT="${HINDSIGHT_PORT:-18800}"
+REGISTRY_FILE="${HERMES_HOME}/hindsight_port_registry.json"
+REGISTRY_LOCK="${REGISTRY_FILE}.lock"
 
-# pg0 instance name: olo-<BUSINESS_ID> → stored at $HOME/.pg0/olo-<BUSINESS_ID>/
+# pg0 instance name; stored at $HOME/.pg0/olo-<BUSINESS_ID>/
 PG0_INSTANCE="olo-${BUSINESS_ID}"
-# Database URL uses named pg0 instance for per-business isolation.
-# NO override accepted — shared Postgres bypasses the isolation being tested.
 DATABASE_URL="pg0://${PG0_INSTANCE}"
 
 # ── Pinned fork ──────────────────────────────────────────────────────────────
-# Fork: tamdev999/olo-persistentmemory at v1.2.1
-# No upstream fallback — fork identity is part of the supply-chain guarantee.
 FORK_URL="https://github.com/tamdev999/olo-persistentmemory.git"
 PINNED_SHA="0eb02d8c418eac6b489bc63883c993b2257dfac4"
 FORK_INSTALL="hindsight-api-slim @ git+${FORK_URL}@${PINNED_SHA}#subdirectory=hindsight-api-slim"
 
-# ── Create per-business HOME ─────────────────────────────────────────────────
-mkdir -p "${BUSINESS_HOME}"
-chmod 700 "${BUSINESS_HOME}"
+# ── Port allocation (correction 1: collision-safe unique ports) ──────────────
+# If HINDSIGHT_PORT is explicitly provided check for collision; otherwise
+# auto-allocate the next free port above 18800 and register it atomically.
+_allocate_port() {
+    local requested="${HINDSIGHT_PORT:-}"
+    # Use a lock file to prevent concurrent allocation races
+    (
+        flock -x 9
 
-# ── Create venv (shared across businesses; pinned) ───────────────────────────
-# Use HINDSIGHT_PYTHON if set, otherwise try python3.14, then fall back to python3.
+        # Read existing registry
+        local existing=""
+        if [[ -f "$REGISTRY_FILE" ]]; then
+            existing=$(cat "$REGISTRY_FILE")
+        else
+            existing="{}"
+        fi
+
+        if [[ -n "$requested" ]]; then
+            # Explicit port: fail if another business already owns it
+            local owner
+            owner=$("${_PYTHON:-python3}" - <<PYEOF
+import json, sys
+try:
+    reg = json.loads('''${existing}''')
+    for biz, cfg in reg.items():
+        if isinstance(cfg, dict) and str(cfg.get('port','')) == '${requested}' and biz != '${BUSINESS_ID}':
+            print(biz)
+            sys.exit(0)
+except Exception:
+    pass
+PYEOF
+)
+            if [[ -n "$owner" ]]; then
+                echo "ERROR: port ${requested} is already allocated to business '$owner'" >&2
+                echo "ERROR: two businesses cannot share a service port." >&2
+                exit 1
+            fi
+            echo "${requested}"
+        else
+            # Auto-allocate: find the next port not in use in the registry
+            # and not bound on the system
+            "${_PYTHON:-python3}" - <<PYEOF
+import json, socket, sys
+try:
+    reg = json.loads('''${existing}''')
+except Exception:
+    reg = {}
+# Reuse this business's existing port if already registered
+biz_cfg = reg.get('${BUSINESS_ID}', {})
+if isinstance(biz_cfg, dict) and biz_cfg.get('port'):
+    print(biz_cfg['port'])
+    sys.exit(0)
+allocated = {int(cfg['port']) for cfg in reg.values()
+             if isinstance(cfg, dict) and cfg.get('port')}
+port = 18800
+while True:
+    if port not in allocated:
+        # Check system availability
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(('127.0.0.1', port))
+            s.close()
+            break
+        except OSError:
+            pass
+    port += 1
+    if port > 19900:
+        print('ERROR: no free ports available', file=sys.stderr)
+        sys.exit(1)
+print(port)
+PYEOF
+        fi
+    ) 9>"${REGISTRY_LOCK}"
+}
+
+# ── Python interpreter ───────────────────────────────────────────────────────
 _PYTHON="${HINDSIGHT_PYTHON:-}"
 if [[ -z "$_PYTHON" ]]; then
     if command -v python3.14 &>/dev/null; then
@@ -92,6 +153,14 @@ if [[ -z "$_PYTHON" ]]; then
     fi
 fi
 
+PORT="$(_allocate_port)"
+echo "[setup] Business ${BUSINESS_ID} using port ${PORT}"
+
+# ── Create per-business HOME ─────────────────────────────────────────────────
+mkdir -p "${BUSINESS_HOME}"
+chmod 700 "${BUSINESS_HOME}"
+
+# ── Create venv (shared across businesses; pinned) ───────────────────────────
 if [[ ! -d "$VENV" ]]; then
     echo "[setup] Creating Hindsight venv at $VENV (using $_PYTHON)"
     "$_PYTHON" -m venv "$VENV"
@@ -111,10 +180,8 @@ else
     HOME="${BUSINESS_HOME}" "$VENV/bin/pip" install "${FORK_INSTALL}" --quiet
 fi
 
-# ── Verify fork provenance (D8 fix) ─────────────────────────────────────────
-# After install, direct_url.json must exist and point to the fork, not upstream
-# or a package index.  Fail loudly if provenance cannot be verified.
-DIST_INFO=$("$VENV/bin/python3" -c "
+# ── Verify fork provenance ───────────────────────────────────────────────────
+DIST_INFO=$("$VENV/bin/python3" - <<PYEOF
 import importlib.metadata, pathlib, json, sys
 try:
     dist = importlib.metadata.Distribution.from_name('hindsight-api-slim')
@@ -130,86 +197,71 @@ try:
     print(f'COMMIT={commit}')
 except Exception as e:
     print(f'ERROR={e}')
-" 2>&1)
+PYEOF
+)
 
 if echo "$DIST_INFO" | grep -q "MISSING"; then
-    echo "ERROR: direct_url.json missing — hindsight-api-slim was installed from PyPI," >&2
-    echo "       not from the fork.  Re-install with: pip install '${FORK_INSTALL}'" >&2
-    exit 1
+    echo "ERROR: direct_url.json missing — not installed from fork" >&2; exit 1
 fi
 
 ACTUAL_URL=$(echo "$DIST_INFO" | grep '^URL=' | cut -d= -f2-)
 ACTUAL_COMMIT=$(echo "$DIST_INFO" | grep '^COMMIT=' | cut -d= -f2-)
 
 if [[ "$ACTUAL_URL" != "$FORK_URL" ]]; then
-    echo "ERROR: direct_url.json URL is '${ACTUAL_URL}', expected '${FORK_URL}'" >&2
-    echo "       Reject substitutes — only the approved fork is accepted." >&2
-    exit 1
+    echo "ERROR: direct_url URL '${ACTUAL_URL}' ≠ fork '${FORK_URL}'" >&2; exit 1
 fi
-
 if [[ "$ACTUAL_COMMIT" != "$PINNED_SHA" ]]; then
-    echo "ERROR: direct_url.json commit '${ACTUAL_COMMIT:0:12}' ≠ pinned '${PINNED_SHA:0:12}'" >&2
-    exit 1
+    echo "ERROR: direct_url commit '${ACTUAL_COMMIT:0:12}' ≠ pinned '${PINNED_SHA:0:12}'" >&2; exit 1
 fi
-
 echo "[setup] Provenance OK: tamdev999/olo-persistentmemory @ ${PINNED_SHA:0:12}"
 
+# ── Resolve pinned embedding-model path ─────────────────────────────────────
+# Pin via ONNX_MODEL_PATH (local path) rather than a nonexistent REVISION var.
+# This guarantees reproducibility without network access after first download.
+_HF_HOME="${HF_HOME:-${HOME:-/root}/.cache/huggingface}"
+E5_SMALL_PATH="${_HF_HOME}/hub/models--intfloat--multilingual-e5-small/snapshots/614241f622f53c4eeff9890bdc4f31cfecc418b3/onnx/model.onnx"
+if [[ -f "$E5_SMALL_PATH" ]]; then
+    ONNX_MODEL_PATH_LINE="HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_PATH=${E5_SMALL_PATH}"
+    echo "[setup] Pinned ONNX model path: ${E5_SMALL_PATH}"
+else
+    # Fall back to auto-download by model ID
+    ONNX_MODEL_PATH_LINE="# HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_PATH not set (model will be downloaded on first run)"
+    echo "[setup] WARN: local e5-small model not found; server will download on first start"
+fi
+
 # ── Write per-business .env ───────────────────────────────────────────────────
-# Stored in business HOME, chmod 600.
-# API key is NOT written here — injected via Hermes secret scope at runtime.
-# Only variables that exist in Hindsight v1.2.1 config.py are written.
 ENV_FILE="${BUSINESS_HOME}/.env"
 cat > "$ENV_FILE" <<DOTENV
 # Hindsight configuration for business: ${BUSINESS_ID}
 # Generated by olo/m3/hindsight/setup.sh
 # DO NOT COMMIT — runtime-only. API key set via Hermes secret scope.
-# Opus audit: only valid v1.2.1 env vars written.
+# Only valid Hindsight v1.2.1 env vars are written here.
 
-# ── Database (per-business pg0 instance, §B.9 isolation) ─────────────────────
 HINDSIGHT_API_DATABASE_URL=${DATABASE_URL}
-
-# ── Network (loopback only) ───────────────────────────────────────────────────
 HINDSIGHT_API_HOST=127.0.0.1
 HINDSIGHT_API_PORT=${PORT}
-
-# ── LLM provider (none = structural; deepseek = Option B) ────────────────────
 HINDSIGHT_API_LLM_PROVIDER=${PROVIDER}
 # HINDSIGHT_API_LLM_API_KEY=  <-- set via Hermes secret scope, NOT here
-
-# ── Decision model ────────────────────────────────────────────────────────────
 HINDSIGHT_API_DECISION_MODEL_PROVIDER=none
-
-# ── MCP disabled ─────────────────────────────────────────────────────────────
 HINDSIGHT_API_MCP_ENABLED=false
-
-# ── Embeddings: ONNX local CPU, pinned model (audit D12 fix) ─────────────────
 HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx
 HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID=intfloat/multilingual-e5-small
-# Pin the ONNX model revision for reproducibility (audit D12 fix)
-HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
-# Disable memory arena to reduce idle RSS (audit D14 / V10 fix)
+${ONNX_MODEL_PATH_LINE}
+# HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_REVISION is NOT a valid v1.2.1 config var
+# and is intentionally omitted.  Use ONNX_MODEL_PATH for reproducibility.
 HINDSIGHT_API_EMBEDDINGS_ONNX_CPU_MEM_ARENA=false
-
-# ── Reranker: RRF (pure algorithmic) ─────────────────────────────────────────
 HINDSIGHT_API_RERANKER_PROVIDER=rrf
-
-# ── Document text retention ───────────────────────────────────────────────────
 HINDSIGHT_API_STORE_DOCUMENT_TEXT=true
-
-# ── LLM trace ────────────────────────────────────────────────────────────────
 HINDSIGHT_API_LLM_TRACE_ENABLED=false
-
-# ── Telemetry ────────────────────────────────────────────────────────────────
 OTEL_SDK_DISABLED=true
 DOTENV
 chmod 600 "$ENV_FILE"
 
-# ── Update port registry (D9 fix) ────────────────────────────────────────────
-# Map business_id → {port, bank_id} in $HERMES_HOME/hindsight_port_registry.json
-# so HindsightConfig.for_business(id) can resolve the correct endpoint.
-REGISTRY_FILE="${HERMES_HOME}/hindsight_port_registry.json"
-"$VENV/bin/python3" - <<PYEOF
-import json, pathlib, os
+# ── Update port registry (atomic, collision-safe) ────────────────────────────
+(
+    flock -x 9
+    "$_PYTHON" - <<PYEOF
+import json, pathlib
 reg_path = pathlib.Path("${REGISTRY_FILE}")
 registry = {}
 if reg_path.exists():
@@ -221,8 +273,9 @@ registry["${BUSINESS_ID}"] = {"port": ${PORT}, "bank_id": "main-v1"}
 reg_path.parent.mkdir(parents=True, exist_ok=True)
 reg_path.write_text(json.dumps(registry, indent=2))
 PYEOF
+) 9>"${REGISTRY_LOCK}"
 
 echo "[setup] Business ${BUSINESS_ID}: env → ${ENV_FILE}"
 echo "[setup] Port registry → ${REGISTRY_FILE} (port=${PORT})"
-echo "[setup] pg0 instance: ${PG0_INSTANCE} (data: ${BUSINESS_HOME}/.pg0/${PG0_INSTANCE}/)"
+echo "[setup] pg0: ${PG0_INSTANCE} (data: ${BUSINESS_HOME}/.pg0/${PG0_INSTANCE}/)"
 echo "[setup] Start: HOME=${BUSINESS_HOME} ${VENV}/bin/hindsight-api (env from ${ENV_FILE})"

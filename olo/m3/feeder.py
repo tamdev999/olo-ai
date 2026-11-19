@@ -278,3 +278,105 @@ def populate_olo_db(
     finish_run(source, run_id, "succeeded", conn)
     conn.close()
     return total
+
+
+# ── Production retain pipeline with budget guard ──────────────────────────────
+
+def batch_retain_to_hindsight(
+    items: list[dict],
+    client,  # HindsightClient
+    *,
+    bank_id: str = "main-v1",
+    batch_size: int = 50,
+    budget_guard=None,  # Optional[UsageGuard]
+    async_: bool = True,
+) -> dict[str, int]:
+    """Retain evidence items into Hindsight, checking budget between batches.
+
+    This is the production path: olo.db evidence → Hindsight via the HTTP
+    retain API.  The budget guard is checked after each batch; if the spend
+    since the initial snapshot exceeds the limit, ``BudgetExceededError`` is
+    raised and no further batches are submitted.
+
+    Args:
+        items:        Retain-ready items from ``build_hindsight_items()``.
+        client:       Connected ``HindsightClient``.
+        bank_id:      Target Hindsight bank.
+        batch_size:   Items per retain call (default 50).
+        budget_guard: Optional ``UsageGuard``; if provided, spending is
+                      checked after every batch.  Missing or invalid usage
+                      statistics fail closed in ``OLO_GATE_STRICT=1`` mode.
+        async_:       Submit retains asynchronously (default True).
+
+    Returns:
+        {"total": N, "prose": M, "structured": K, "batches": B}
+
+    Raises:
+        FeedError:          if ``items`` is empty.
+        BudgetExceededError: if spending crosses the budget threshold.
+        StatsUnavailableError: if budget_guard is set and stats are unavailable
+                              and OLO_GATE_STRICT=1 is set.
+    """
+    import os
+    import uuid as _uuid
+
+    if not items:
+        raise FeedError("batch_retain_to_hindsight: items list is empty")
+
+    # Take a budget baseline snapshot before any work
+    baseline = None
+    if budget_guard is not None:
+        from olo.m3.hindsight.budget import StatsUnavailableError
+        try:
+            baseline = budget_guard.snapshot()
+        except StatsUnavailableError as exc:
+            if os.environ.get("OLO_GATE_STRICT"):
+                raise FeedError(
+                    f"Budget guard: stats unavailable before retain — "
+                    f"cannot enforce spending limit (fails closed): {exc}"
+                ) from exc
+            # Non-strict: proceed without budget enforcement
+            baseline = None
+
+    prose_items = [i for i in items if i.get("strategy") == "prose"]
+    struct_items = [i for i in items if i.get("strategy") != "prose"]
+
+    total_sent = 0
+    batch_num = 0
+    counters = {"total": 0, "prose": 0, "structured": 0, "batches": 0}
+
+    for label, item_list in [("prose", prose_items), ("structured", struct_items)]:
+        for start in range(0, len(item_list), batch_size):
+            batch = item_list[start:start + batch_size]
+            if not batch:
+                continue
+
+            op_id = str(_uuid.uuid5(
+                _uuid.NAMESPACE_OID,
+                f"feeder-{label}-{start}-{bank_id}",
+            ))
+            client.retain(batch, operation_id=op_id, async_=async_, bank_id=bank_id)
+
+            total_sent += len(batch)
+            batch_num += 1
+            counters["batches"] += 1
+            if label == "prose":
+                counters["prose"] += len(batch)
+            else:
+                counters["structured"] += len(batch)
+            counters["total"] += len(batch)
+
+            # Check budget after each batch
+            if budget_guard is not None and baseline is not None:
+                from olo.m3.hindsight.budget import StatsUnavailableError
+                try:
+                    budget_guard.check(baseline)
+                except StatsUnavailableError as exc:
+                    if os.environ.get("OLO_GATE_STRICT"):
+                        raise FeedError(
+                            f"Budget guard: stats unavailable mid-retain "
+                            f"(fails closed): {exc}"
+                        ) from exc
+                    # Non-strict: continue without check
+
+    return counters

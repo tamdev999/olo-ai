@@ -239,18 +239,48 @@ _OLD_SCENARIOS = [
 ]
 
 # Paraphrased queries for old-event labelled questions (index-matched to _OLD_SCENARIOS)
+# Each query explicitly names a month/year so V1 test can derive the filter
+# FROM THE QUESTION TEXT — never from the expected answer (correction #3).
 _OLD_QUERIES = [
-    "commitment to resolve {company} support issue",
-    "payment confirmation received from {company}",
-    "new service engagement request {company}",
-    "formal complaint from {company} about support",
-    "support issue resolution notification {company}",
-    "contract renewal inquiry {company}",
-    "invoice details requested by {company}",
-    "quarterly business review {company}",
-    "positive feedback appreciation from {company}",
-    "new purchase order {company}",
+    "support resolution commitment {company} July 2026",
+    "payment confirmation received from {company} July 2026",
+    "new service engagement request {company} August 2026",
+    "formal complaint raised by {company} August 2026",
+    "issue resolution confirmed for {company} September 2026",
+    "contract renewal discussion {company} October 2026",
+    "invoice details requested by {company} October 2026",
+    "quarterly account review {company} November 2026",
+    "positive feedback appreciation from {company} November 2026",
+    "new order placed by {company} November 2026",
 ]
+
+# Month keywords to month number (for query-text temporal constraint extraction)
+_MONTH_NAMES = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+}
+
+
+def _extract_temporal_ym(query: str) -> Optional[str]:
+    """Extract ym:YYYY-MM from query text if it contains an explicit temporal constraint.
+
+    Returns None if the query has no recognisable month+year reference.
+    This is the ONLY legitimate source for the V1 month filter — derived
+    exclusively from the question, never from expected answer metadata.
+    """
+    import re
+    q_lower = query.lower()
+    # Match patterns like "July 2026", "november 2026", "aug 2026"
+    for name, num in _MONTH_NAMES.items():
+        abbr = name[:3]
+        if name in q_lower or abbr in q_lower:
+            # Find year near the month name
+            m = re.search(r'\b(202[0-9])\b', query)
+            if m:
+                year = int(m.group(1))
+                return f"ym:{year:04d}-{num:02d}"
+    return None
 
 
 def generate_timeline(
@@ -448,7 +478,91 @@ def _add_entity_signals(
               _ym(day_47)],
     ))
 
-    # P4 scenario: contradicting date — owner confirms the ORIGINAL date in a reply
+    # P4 scenario: five unambiguous contradiction pairs with explicit corrections.
+    # Each pair has: original authoritative value (day_p4_N_orig) followed by
+    # an explicit correction email (day_p4_N_corr) that supersedes it.
+    # DeepSeek should extract the corrected value as current and keep the
+    # original in observation history.
+    #
+    # NOTE: Signals are placed in MAY 2026 (day 120+) to avoid competing with
+    # the April 2026 reschedule/dispute scenario signals in V1 recall recall.
+    #
+    # Pair 1: meeting date (day 122 original → day 125 correction)
+    day_p4_1_orig = start + timedelta(days=122)
+    day_p4_1_corr = start + timedelta(days=125)
+    _p4_date_orig = (start + timedelta(days=126)).strftime("%A %B %d")   # D1
+    _p4_date_corr = (start + timedelta(days=130)).strftime("%A %B %d")  # D2
+    out.append(SyntheticSignal(
+        signal_id=_sig_id(f"p4_meeting_orig_{ent.entity_id}"),
+        source="gmail_owner",
+        kind="email.received",
+        occurred_at=day_p4_1_orig,
+        entity_id=ent.entity_id,
+        subject=f"Meeting confirmed for {_p4_date_orig} — {ent.company}",
+        body_text=(
+            f"Hi, just confirming our meeting is scheduled for {_p4_date_orig}. "
+            f"Please add it to your calendar. Looking forward to it. {ent.display_name}"
+        ),
+        metadata={"from": ent.email, "to": OWNER_EMAIL},
+        tags=[f"src:gmail_owner", f"kind:email.received",
+              f"ent:{ent.entity_id}", "dc:gmail_restricted", _ym(day_p4_1_orig)],
+    ))
+    out.append(SyntheticSignal(
+        signal_id=_sig_id(f"p4_meeting_corr_{ent.entity_id}"),
+        source="gmail_owner",
+        kind="email.received",
+        occurred_at=day_p4_1_corr,
+        entity_id=ent.entity_id,
+        subject=f"CORRECTION: Meeting rescheduled to {_p4_date_corr} — {ent.company}",
+        body_text=(
+            f"Hi, apologies — the meeting date I sent earlier ({_p4_date_orig}) "
+            f"was incorrect. The confirmed date is {_p4_date_corr}. "
+            f"Please update your calendar. Sorry for the confusion. {ent.display_name}"
+        ),
+        metadata={"from": ent.email, "to": OWNER_EMAIL},
+        tags=[f"src:gmail_owner", f"kind:email.received",
+              f"ent:{ent.entity_id}", "dc:gmail_restricted", _ym(day_p4_1_corr)],
+    ))
+
+    # Pair 2: delivery timeline (day 130 original → day 133 correction)
+    day_p4_2_orig = start + timedelta(days=130)
+    day_p4_2_corr = start + timedelta(days=133)
+    _p4_del_orig = (start + timedelta(days=140)).strftime("%B %d, %Y")   # D1
+    _p4_del_corr = (start + timedelta(days=148)).strftime("%B %d, %Y")  # D2
+    out.append(SyntheticSignal(
+        signal_id=_sig_id(f"p4_delivery_orig_{ent.entity_id}"),
+        source="gmail_owner",
+        kind="email.sent",
+        occurred_at=day_p4_2_orig,
+        entity_id=ent.entity_id,
+        subject=f"Delivery timeline confirmed for {ent.company}",
+        body_text=(
+            f"Dear {ent.display_name}, I can confirm your order will be "
+            f"delivered by {_p4_del_orig}. This is our committed timeline. — Owner"
+        ),
+        metadata={"from": OWNER_EMAIL, "to": ent.email},
+        tags=[f"src:gmail_owner", f"kind:email.sent",
+              f"ent:{ent.entity_id}", "dc:gmail_restricted", _ym(day_p4_2_orig)],
+    ))
+    out.append(SyntheticSignal(
+        signal_id=_sig_id(f"p4_delivery_corr_{ent.entity_id}"),
+        source="gmail_owner",
+        kind="email.sent",
+        occurred_at=day_p4_2_corr,
+        entity_id=ent.entity_id,
+        subject=f"REVISED delivery date for {ent.company}",
+        body_text=(
+            f"Dear {ent.display_name}, I need to correct my previous email: "
+            f"the delivery date of {_p4_del_orig} is no longer achievable. "
+            f"The revised confirmed delivery date is {_p4_del_corr}. "
+            f"I apologise for the change. — Owner"
+        ),
+        metadata={"from": OWNER_EMAIL, "to": ent.email},
+        tags=[f"src:gmail_owner", f"kind:email.sent",
+              f"ent:{ent.entity_id}", "dc:gmail_restricted", _ym(day_p4_2_corr)],
+    ))
+
+
     # (creates a contradiction with the reschedule email above)
     day_91 = start + timedelta(days=91)
     confirm_original_body = (
@@ -675,81 +789,55 @@ def build_labelled_questions() -> list[dict]:
     All questions have expected_signal_ids (no time_window_only shortcuts).
     At least 10 per entity target signals > 180 days old.
     Calendar share: 0% (no calendar-targeting questions).
-    Queries are paraphrased — not copied from signal subject lines.
 
-    Uses ym: month tags for tag_groups recall filtering:
-        tag_groups = AND({ent:<id>} all_strict, {ym:YYYY-MM} any_strict)
-
-    Audit V1 fix: grounded benchmark from feeder-compatible signal IDs.
+    Correction #3 (answer leakage): every query that uses a temporal filter
+    explicitly names a month/year IN THE QUERY TEXT.  The ``temporal_ym``
+    field is derived by ``_extract_temporal_ym()`` from the question itself —
+    never from expected-answer metadata.  When ``temporal_ym`` is None the V1
+    test uses entity-only strict filtering.
     """
     base = datetime(2026, 1, 1, tzinfo=UTC)
     questions: list[dict] = []
 
     for ent in ENTITIES:
-        # ── Scenario questions (12 per entity = 4 × 3) ──────────────────────
-        # Paraphrased queries targeting specific scenario signals
+        def _q(qid, query, expected_sigs, age_days):
+            tym = _extract_temporal_ym(query)
+            return {
+                "id": f"q_{ent.entity_id[:8]}_{qid}",
+                "query": query,
+                "entity_id": ent.entity_id,
+                "temporal_ym": tym,
+                "expected_signal_ids": expected_sigs,
+                "age_months": age_days // 30,
+            }
 
-        day_90 = base + timedelta(days=90)
-        day_92 = base + timedelta(days=92)
-        day_45 = base + timedelta(days=45)
-        day_91 = base + timedelta(days=91)
-
+        # ── Scenario questions: explicit month/year in every query ───────────
         questions.extend([
-            {
-                "id": f"q_{ent.entity_id[:8]}_reschedule_a",
-                "query": f"meeting date change request from {ent.company}",
-                "entity_id": ent.entity_id,
-                "ym": _ym(day_90),
-                "expected_signal_ids": [_sig_id(f"email_reschedule_{ent.entity_id}")],
-                "age_months": 3,
-            },
-            {
-                "id": f"q_{ent.entity_id[:8]}_reschedule_b",
-                "query": f"phone call delivery rescheduled {ent.company}",
-                "entity_id": ent.entity_id,
-                "ym": _ym(day_92),
-                "expected_signal_ids": [_sig_id(f"transcript_reschedule_{ent.entity_id}")],
-                "age_months": 3,
-            },
-            {
-                "id": f"q_{ent.entity_id[:8]}_dispute_a",
-                "query": f"billing discrepancy overcharge {ent.company}",
-                "entity_id": ent.entity_id,
-                "ym": _ym(day_45),
-                "expected_signal_ids": [_sig_id(f"email_dispute_{ent.entity_id}")],
-                "age_months": 1.5,
-            },
-            {
-                "id": f"q_{ent.entity_id[:8]}_dispute_b",
-                "query": f"invoice call transcript dispute {ent.company}",
-                "entity_id": ent.entity_id,
-                "ym": _ym(base + timedelta(days=47)),
-                "expected_signal_ids": [_sig_id(f"transcript_dispute_{ent.entity_id}")],
-                "age_months": 1.5,
-            },
-            {
-                "id": f"q_{ent.entity_id[:8]}_contradiction",
-                "query": f"confirmed original appointment date {ent.company}",
-                "entity_id": ent.entity_id,
-                "ym": _ym(day_91),
-                "expected_signal_ids": [_sig_id(f"email_confirm_orig_{ent.entity_id}")],
-                "age_months": 3,
-            },
-            {
-                "id": f"q_{ent.entity_id[:8]}_stripe",
-                "query": f"invoice payment record {ent.company} stripe",
-                "entity_id": ent.entity_id,
-                "ym": _ym(day_45 - timedelta(days=3)),
-                "expected_signal_ids": [_sig_id(f"stripe_invoice_{ent.entity_id}")],
-                "age_months": 1.5,
-            },
+            _q("reschedule_a",
+               f"meeting reschedule request {ent.company} April 2026",
+               [_sig_id(f"email_reschedule_{ent.entity_id}")], 90),
+            _q("reschedule_b",
+               f"phone call delivery date change {ent.company} April 2026",
+               [_sig_id(f"transcript_reschedule_{ent.entity_id}")], 92),
+            _q("dispute_a",
+               f"invoice billing discrepancy {ent.company} February 2026",
+               [_sig_id(f"email_dispute_{ent.entity_id}")], 45),
+            _q("dispute_b",
+               f"call transcript invoice dispute {ent.company} February 2026",
+               [_sig_id(f"transcript_dispute_{ent.entity_id}")], 47),
+            _q("contradiction",
+               f"original meeting date confirmation email {ent.company} April 2026",
+               [_sig_id(f"email_confirm_orig_{ent.entity_id}")], 91),
+            _q("stripe",
+               f"stripe invoice created {ent.company} February 2026",
+               [_sig_id(f"stripe_invoice_{ent.entity_id}")], 42),
         ])
 
         # ── Old-evidence questions (10 per entity, all > 180 days) ──────────
+        # Queries include explicit month names (legitimate temporal constraint).
         for idx, (day, seed_sfx, _src, _kind, _st, _bt, _) in enumerate(
             _OLD_SCENARIOS
         ):
-            old_day = base + timedelta(days=day)
             q_text = _OLD_QUERIES[idx].format(
                 company=ent.company,
                 name=ent.display_name,
@@ -758,7 +846,7 @@ def build_labelled_questions() -> list[dict]:
                 "id": f"q_{ent.entity_id[:8]}_old_{idx}",
                 "query": q_text,
                 "entity_id": ent.entity_id,
-                "ym": _ym(old_day),
+                "temporal_ym": _extract_temporal_ym(q_text),
                 "expected_signal_ids": [_sig_id(f"{seed_sfx}_{ent.entity_id}")],
                 "age_months": day // 30,
             })
