@@ -52,7 +52,8 @@ PORT="${HINDSIGHT_PORT:-18800}"
 # pg0 instance name: olo-<BUSINESS_ID> → stored at $HOME/.pg0/olo-<BUSINESS_ID>/
 PG0_INSTANCE="olo-${BUSINESS_ID}"
 # Database URL uses named pg0 instance for isolation (no DATABASE_DATA_DIR override)
-DATABASE_URL="pg0://${PG0_INSTANCE}"
+# HINDSIGHT_GATE_DB_URL can override for testing environments where pg0 is unavailable.
+DATABASE_URL="${HINDSIGHT_GATE_DB_URL:-pg0://${PG0_INSTANCE}}"
 
 # ── Pinned fork ──────────────────────────────────────────────────────────────
 # Fork: tamdev999/olo-persistentmemory at v1.2.1
@@ -66,13 +67,19 @@ mkdir -p "${BUSINESS_HOME}"
 chmod 700 "${BUSINESS_HOME}"
 
 # ── Create venv (shared across businesses; pinned) ───────────────────────────
-if [[ ! -d "$VENV" ]]; then
+if [[ -n "${HINDSIGHT_GATE_VENV:-}" ]]; then
+    # Gate/test mode: use a pre-existing venv to skip network install.
+    VENV="${HINDSIGHT_GATE_VENV}"
+    echo "[setup] Gate mode: using pre-installed venv at ${VENV}"
+elif [[ ! -d "$VENV" ]]; then
     echo "[setup] Creating Hindsight venv at $VENV"
     python3 -m venv "$VENV"
 fi
 
 # ── Install hindsight-api-slim from pinned fork SHA ──────────────────────────
-if HOME="${BUSINESS_HOME}" "$VENV/bin/pip" show hindsight-api-slim &>/dev/null; then
+if [[ -n "${HINDSIGHT_GATE_VENV:-}" ]]; then
+    echo "[setup] Gate mode: skipping pip install (venv pre-installed)"
+elif HOME="${BUSINESS_HOME}" "$VENV/bin/pip" show hindsight-api-slim &>/dev/null; then
     INSTALLED=$(HOME="${BUSINESS_HOME}" "$VENV/bin/pip" show hindsight-api-slim | grep Version | awk '{print $2}')
     if [[ "$INSTALLED" == "1.2.1" ]]; then
         echo "[setup] hindsight-api-slim 1.2.1 already installed from ${FORK_URL:0:40}…"

@@ -306,8 +306,14 @@ class HindsightClient:
         all_docs: list[dict] = []
         offset = 0
         while True:
-            resp = self.list_documents(limit=page_size, offset=offset, bank_id=bank_id)
-            docs = resp.get("documents", [])
+            try:
+                resp = self.list_documents(limit=page_size, offset=offset, bank_id=bank_id)
+            except HindsightAPIError as e:
+                if e.status_code == 404:
+                    break  # bank does not exist = 0 documents
+                raise
+            # Hindsight v1.2.1 returns {"items": [...], "total": N, ...}
+            docs = resp.get("items", [])
             if not docs:
                 break
             all_docs.extend(docs)
