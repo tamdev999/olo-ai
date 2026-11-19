@@ -490,7 +490,7 @@ def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
             "strategy": "structured" if not sig.is_llm_eligible else "prose",
         }
         if sig.subject:
-            item["context"] = {"subject": sig.subject}
+            item["context"] = sig.subject   # v1.2.1: context is a string
         items.append(item)
     return items
 

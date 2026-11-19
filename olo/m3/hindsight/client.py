@@ -130,6 +130,13 @@ class HindsightClient:
     def __init__(self, cfg: HindsightConfig) -> None:
         self._cfg = cfg
 
+    # API prefix — v1.2.1 uses versioned, tenant-scoped, bank-scoped paths
+    _API_PREFIX = "/v1/default"
+
+    def _bank_path(self, suffix: str, bank_id: Optional[str] = None) -> str:
+        b = bank_id or self._cfg.bank_id
+        return f"{self._API_PREFIX}/banks/{urllib.parse.quote(b, safe='')}{suffix}"
+
     # ── Health ────────────────────────────────────────────────────────────────
 
     def health_check(self) -> dict:
@@ -163,36 +170,45 @@ class HindsightClient:
     ) -> dict:
         """Submit items for retention.
 
-        Args:
-            items: list of MemoryItem dicts (content, timestamp, document_id, …)
-            operation_id: idempotency key; re-submitting same ID returns original
-            async_: True (default) = fire-and-forget into worker queue;
-                    False = synchronous (blocks until processed)
-            bank_id: override the default bank for this batch
+        POST /v1/default/banks/{bank_id}/memories
+        operation_id must be a valid UUID (v1.2.1 requirement).
         """
+        import uuid as _uuid
+        # Derive a stable UUID from the caller's string operation_id
+        # so idempotency is preserved while satisfying the UUID constraint.
+        try:
+            op_uuid = str(_uuid.UUID(operation_id))
+        except ValueError:
+            op_uuid = str(_uuid.uuid5(_uuid.NAMESPACE_OID, operation_id))
         payload: dict[str, Any] = {
             "items": items,
             "async": async_,
-            "operation_id": operation_id,
+            "operation_id": op_uuid,
         }
-        if bank_id or self._cfg.bank_id:
-            payload["bank_id"] = bank_id or self._cfg.bank_id
-        return _request(self._cfg, "POST", "/memories/retain", payload)
+        return _request(self._cfg, "POST", self._bank_path("/memories", bank_id), payload)
 
-    def get_operation_status(self, operation_id: str) -> dict:
-        """Check the status of an async retain operation."""
-        return _request(self._cfg, "GET", f"/operations/{urllib.parse.quote(operation_id)}")
+    def get_operation_status(self, operation_id: str, bank_id: Optional[str] = None) -> dict:
+        """Check the status of an async retain operation.
+
+        GET /v1/default/banks/{bank_id}/operations/{operation_id}
+        """
+        path = self._bank_path(
+            f"/operations/{urllib.parse.quote(operation_id, safe='')}",
+            bank_id,
+        )
+        return _request(self._cfg, "GET", path)
 
     def wait_for_operation(
         self,
         operation_id: str,
         timeout_s: float = 60.0,
         poll_interval: float = 1.0,
+        bank_id: Optional[str] = None,
     ) -> dict:
         """Poll until a retain operation reaches a terminal state."""
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            status = self.get_operation_status(operation_id)
+            status = self.get_operation_status(operation_id, bank_id)
             state = status.get("status", "")
             if state in ("completed", "failed", "partial"):
                 return status
@@ -213,17 +229,9 @@ class HindsightClient:
         bank_id: Optional[str] = None,
         types: Optional[list[str]] = None,
     ) -> dict:
-        """Run a recall query and return results with optional trace.
+        """Run a recall query.
 
-        Args:
-            query:          Natural language query
-            max_tokens:     Token budget for results
-            trace:          Include ranking trace (required for V8 provenance)
-            tags:           Filter by tags (e.g. ["ent:ent_01ACME..."])
-            tags_match:     "any" (default) or "all"
-            temporal_window: {"from": ISO, "to": ISO} date filter
-            bank_id:        Override default bank
-            types:          Subset of memory types to return (default: all)
+        POST /v1/default/banks/{bank_id}/memories/recall
         """
         payload: dict[str, Any] = {
             "query": query,
@@ -235,24 +243,18 @@ class HindsightClient:
             payload["tags_match"] = tags_match
         if temporal_window:
             payload["temporal_window"] = temporal_window
-        if bank_id or self._cfg.bank_id:
-            payload["bank_id"] = bank_id or self._cfg.bank_id
         if types:
             payload["types"] = types
-        return _request(self._cfg, "POST", "/memories/recall", payload)
+        return _request(self._cfg, "POST", self._bank_path("/memories/recall", bank_id), payload)
 
     # ── Documents ─────────────────────────────────────────────────────────────
 
     def get_document(self, document_id: str, bank_id: Optional[str] = None) -> dict:
-        """Get a document by its document_id."""
-        params: dict[str, str] = {}
-        if bank_id or self._cfg.bank_id:
-            params["bank_id"] = bank_id or self._cfg.bank_id
-        return _request(
-            self._cfg, "GET",
-            f"/memories/documents/{urllib.parse.quote(document_id)}",
-            params=params or None,
+        path = self._bank_path(
+            f"/documents/{urllib.parse.quote(document_id, safe='')}",
+            bank_id,
         )
+        return _request(self._cfg, "GET", path)
 
     def list_documents(
         self,
@@ -260,51 +262,40 @@ class HindsightClient:
         offset: int = 0,
         bank_id: Optional[str] = None,
     ) -> dict:
-        """List document IDs in the bank."""
         params = {"limit": str(limit), "offset": str(offset)}
-        if bank_id or self._cfg.bank_id:
-            params["bank_id"] = bank_id or self._cfg.bank_id
-        return _request(self._cfg, "GET", "/memories/documents", params=params)
+        return _request(self._cfg, "GET", self._bank_path("/documents", bank_id), params=params)
 
     def delete_document(self, document_id: str, bank_id: Optional[str] = None) -> dict:
-        """Delete a document and all its memory units."""
-        params: dict[str, str] = {}
-        if bank_id or self._cfg.bank_id:
-            params["bank_id"] = bank_id or self._cfg.bank_id
-        return _request(
-            self._cfg, "DELETE",
-            f"/memories/documents/{urllib.parse.quote(document_id)}",
-            params=params or None,
+        path = self._bank_path(
+            f"/documents/{urllib.parse.quote(document_id, safe='')}",
+            bank_id,
         )
+        return _request(self._cfg, "DELETE", path)
 
     # ── Banks ─────────────────────────────────────────────────────────────────
 
     def create_bank(self, bank_id: str, description: str = "") -> dict:
-        """Create a new memory bank."""
-        return _request(self._cfg, "POST", "/banks", {
+        return _request(self._cfg, "POST", f"{self._API_PREFIX}/banks", {
             "bank_id": bank_id,
             "description": description,
         })
 
     def list_banks(self) -> dict:
-        """List all banks in this environment."""
-        return _request(self._cfg, "GET", "/banks")
+        return _request(self._cfg, "GET", f"{self._API_PREFIX}/banks")
 
     def delete_bank(self, bank_id: str) -> dict:
-        """Delete a bank and all its data (irreversible)."""
         return _request(
-            self._cfg, "DELETE", f"/banks/{urllib.parse.quote(bank_id)}"
+            self._cfg, "DELETE",
+            f"{self._API_PREFIX}/banks/{urllib.parse.quote(bank_id, safe='')}",
         )
 
     # ── Admin ─────────────────────────────────────────────────────────────────
 
     def admin_health(self) -> dict:
-        """Get detailed health including worker status."""
-        return _request(self._cfg, "GET", "/admin/health")
+        return _request(self._cfg, "GET", "/health")
 
     def retry_failed(self, bank_id: Optional[str] = None) -> dict:
-        """Retry failed consolidation operations."""
-        params: dict[str, str] = {}
-        if bank_id or self._cfg.bank_id:
-            params["bank_id"] = bank_id or self._cfg.bank_id
-        return _request(self._cfg, "POST", "/admin/retry_failed", params=params or None)
+        return _request(
+            self._cfg, "POST",
+            self._bank_path("/consolidation/recover", bank_id),
+        )
