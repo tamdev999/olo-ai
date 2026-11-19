@@ -292,6 +292,34 @@ class HindsightClient:
         params = {"limit": str(limit), "offset": str(offset)}
         return _request(self._cfg, "GET", self._bank_path("/documents", bank_id), params=params)
 
+    def list_all_documents_with_tags(
+        self,
+        tags: list[str],
+        bank_id: Optional[str] = None,
+        page_size: int = 200,
+    ) -> list[dict]:
+        """List ALL documents in the bank that have any of the given tags.
+
+        Uses pagination to fetch all documents, then filters locally by tags.
+        This avoids ranking bias from semantic recall.
+        """
+        all_docs: list[dict] = []
+        offset = 0
+        while True:
+            resp = self.list_documents(limit=page_size, offset=offset, bank_id=bank_id)
+            docs = resp.get("documents", [])
+            if not docs:
+                break
+            all_docs.extend(docs)
+            if len(docs) < page_size:
+                break
+            offset += page_size
+
+        # Filter locally by tags
+        tag_set = set(tags)
+        return [d for d in all_docs
+                if tag_set & set(d.get("tags", []) or [])]
+
     def delete_document(self, document_id: str, bank_id: Optional[str] = None) -> dict:
         path = self._bank_path(
             f"/documents/{urllib.parse.quote(document_id, safe='')}",

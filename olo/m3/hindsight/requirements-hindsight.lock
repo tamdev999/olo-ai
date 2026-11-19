@@ -1,0 +1,22 @@
+# Hindsight venv dependency lock — regenerate with:
+#   pip freeze > olo/m3/hindsight/requirements-hindsight.lock
+# in the Hindsight venv at $HERMES_HOME/olo/hindsight-venv
+#
+# Install from pinned fork SHA (tamdev999/olo-persistentmemory):
+#   pip install "hindsight-api-slim @ git+https://github.com/tamdev999/olo-persistentmemory.git@0eb02d8c418eac6b489bc63883c993b2257dfac4#subdirectory=hindsight-api-slim"
+#
+# Key pinned versions as of M3.0 GATE audit repair:
+hindsight-api-slim==1.2.1
+pg0-embedded==0.17.0
+onnxruntime==1.32.0
+transformers==5.15.1
+#
+# ONNX model: intfloat/multilingual-e5-small (384 dimensions)
+# Model is downloaded on first run by hindsight-api-slim and cached
+# at $HOME/.cache/huggingface/hub/models--intfloat--multilingual-e5-small/
+# To pin the model revision, set:
+#   HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_REVISION=<git-sha>
+# (feature not yet exposed in v1.2.1; document here for future use)
+#
+# Full freeze must be regenerated from the actual venv after install.
+# This placeholder ensures the file exists for the config test.

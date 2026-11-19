@@ -577,8 +577,30 @@ def build_labelled_questions() -> list[dict]:
             },
         ])
 
+        # More scenario-specific questions
+        questions.extend([
+            {
+                "id": f"q_{ent.entity_id[:8]}_transcript_reschedule",
+                "query": f"phone call transcript delivery {ent.company}",
+                "entity_id": ent.entity_id,
+                "time_window": {"from": (base + timedelta(days=90)).isoformat(),
+                                "to": (base + timedelta(days=95)).isoformat()},
+                "expected_signal_ids": [_sig_id(f"transcript_reschedule_{ent.entity_id}")],
+                "age_months": 3,
+            },
+            {
+                "id": f"q_{ent.entity_id[:8]}_contradiction",
+                "query": f"original meeting date confirmed {ent.company}",
+                "entity_id": ent.entity_id,
+                "time_window": {"from": (base + timedelta(days=89)).isoformat(),
+                                "to": (base + timedelta(days=93)).isoformat()},
+                "expected_signal_ids": [_sig_id(f"email_confirm_orig_{ent.entity_id}")],
+                "age_months": 3,
+            },
+        ])
+
         # Old questions (> 6 months from base = after day 180)
-        for i in range(5):
+        for i in range(10):
             day = 180 + i * 15
             dt = base + timedelta(days=day)
             q_sig_id = _sig_id(f"email_{ent.entity_id}_{i + 10}")
