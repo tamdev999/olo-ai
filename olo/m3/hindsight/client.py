@@ -389,21 +389,21 @@ class HindsightClient:
         temporal_window: Optional[dict] = None,
         bank_id: Optional[str] = None,
         types: Optional[list[str]] = None,
+        include_source_facts: bool = False,
+        query_timestamp: Optional[str] = None,
     ) -> dict:
         """Run a recall query.
 
         POST /v1/default/banks/{bank_id}/memories/recall
 
-        ``tags_match`` defaults to ``"all_strict"`` so entity tags are never
-        mixed with untagged memories (audit correction D10, fix 9).
+        ``include_source_facts=True`` adds ``include.source_facts`` to the
+        request so that observation results carry their originating world-fact
+        document IDs.  This allows crediting an observation when its source
+        document is the expected answer (Opus benchmark fix §5).
 
-        ``tag_groups`` enables AND-of-groups filtering, e.g.:
-            tag_groups = [
-                {"tags": ["ent:ent_01ACME000000000000000000"], "match": "all_strict"},
-                {"tags": ["ym:2026-04", "ym:2026-05"], "match": "any_strict"},
-            ]
-        When ``tag_groups`` is supplied, ``tags`` and ``tags_match`` are ignored
-        (the groups fully specify the filter).
+        ``query_timestamp`` sets the reference time for recency scoring; pass
+        an ISO-8601 string when evaluating historical queries so the server
+        applies the correct recency decay.
         """
         payload: dict[str, Any] = {
             "query": query,
@@ -411,7 +411,6 @@ class HindsightClient:
             "trace": trace,
         }
         if tag_groups is not None:
-            # Structured AND-of-groups filter — supersedes flat tags
             payload["tag_groups"] = tag_groups
         elif tags:
             payload["tags"] = tags
@@ -420,6 +419,10 @@ class HindsightClient:
             payload["temporal_window"] = temporal_window
         if types:
             payload["types"] = types
+        if include_source_facts:
+            payload["include"] = {"source_facts": {"max_tokens": 4096}}
+        if query_timestamp:
+            payload["query_timestamp"] = query_timestamp
         return _request(self._cfg, "POST", self._bank_path("/memories/recall", bank_id), payload)
 
     # ── Documents ─────────────────────────────────────────────────────────────
