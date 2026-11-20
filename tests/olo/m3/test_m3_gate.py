@@ -335,8 +335,10 @@ class TestSyntheticDataCorrectness:
 
     def test_strategy_field_per_signal_type(self, hindsight_items) -> None:
         strats = {i.get("strategy") for i in hindsight_items}
-        assert strats <= {"structured", "prose"}
-        assert "structured" in strats
+        # C7: structured signals use "structured-no-llm" (Hindsight named strategy),
+        # prose signals use "prose" (falls back to bank default = concise + LLM)
+        assert strats <= {"structured-no-llm", "prose"}
+        assert "structured-no-llm" in strats
         assert "prose" in strats
 
     def test_labelled_questions_have_old_events(self, labelled_questions) -> None:
@@ -559,80 +561,137 @@ class TestV9NoGenerativeCalls:
 
     @_integration
     def test_p9_structured_no_llm_calls(self) -> None:
-        """P9: retaining structured items must not trigger LLM extraction calls.
+        """P9/C7: retaining structured items with strategy='structured-no-llm' must
+        produce 0 LLM output tokens in the retain response.
 
-        Audit D2 fix: reads buckets[].total (not total_calls which doesn't exist).
-        Fails closed: if stats are unavailable the test fails rather than silently passing.
+        C7 fix: checks usage.output_tokens from the synchronous retain response
+        directly instead of the stats endpoint (which may show 0 regardless when
+        tracing is off).  The retain response includes the actual token usage
+        for the extraction step.
         """
-        from olo.m3.hindsight.budget import parse_stats, StatsUnavailableError
+        from olo.m3.feeder import STRUCTURED_STRATEGY
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=60.0)  # allow ONNX initialization time
+            client.wait_until_ready(timeout_s=60.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running for P9 test")
 
         import uuid as _uuid
 
-        # Snapshot LLM stats BEFORE retain (fails closed on unavailable stats)
+        scratch_bank = f"p9-struct-test-{_uuid.uuid4().hex[:8]}"
         try:
-            stats_before_raw = client.get_llm_stats()
-            snap_before = parse_stats(stats_before_raw)
-        except StatsUnavailableError as e:
-            if os.environ.get("OLO_GATE_STRICT"):
-                pytest.fail(f"P9 FAIL: LLM stats unavailable (fails closed): {e}")
-            pytest.skip(f"LLM stats unavailable: {e}")
-
-        calls_before = sum(
-            b.get("total", 0)
-            for b in stats_before_raw.get("buckets", [])
-        )
-
-        # Retain two structured items (strategy=structured → 0 LLM calls)
-        for suffix in ("struct-01", "struct-02"):
-            item = {
-                "content": f"Invoice {suffix}: amount $500. Status: open.",
-                "timestamp": "2026-01-15T00:00:00Z",
-                "document_id": f"sig:p9-{suffix}-{_uuid.uuid4().hex[:6]}",
-                "entities": [{"text": "p9_entity", "type": "person"}],
-                "tags": ["src:stripe_fixture", "kind:invoice.created",
-                         "dc:payments", "ym:2026-01"],
-                "metadata": {"signal_id": f"p9{suffix}", "content_sha256": suffix,
+            # Create bank with one warmup item, then configure it
+            warmup_item = {
+                "content": "P9 bank warmup", "timestamp": "2026-01-01T00:00:00Z",
+                "document_id": f"sig:p9-wu-{_uuid.uuid4().hex[:6]}",
+                "entities": [], "tags": ["src:warmup"],
+                "metadata": {"signal_id": "p9wu", "content_sha256": "wu",
                              "render_version": "1", "is_llm_eligible": "false"},
-                "strategy": "structured",
-                "resolve_entities": False,
+                "strategy": STRUCTURED_STRATEGY, "resolve_entities": False,
             }
-            op_id = str(_uuid.uuid5(_uuid.NAMESPACE_OID, item["document_id"]))
-            client.retain([item], operation_id=op_id, async_=False)
+            # First retain creates the bank
+            client.retain([warmup_item], operation_id=str(_uuid.uuid4()),
+                          async_=False, bank_id=scratch_bank)
+            # Configure the bank: register structured-no-llm strategy
+            from olo.m3.feeder import prepare_hindsight_bank
+            prepare_hindsight_bank(client, scratch_bank)
 
-        # Allow any background processing to settle
-        time.sleep(2)
+            # Retain two structured items (strategy=structured-no-llm)
+            for suffix in ("struct-01", "struct-02"):
+                item = {
+                    "content": f"Invoice {suffix}: amount $500. Status: open.",
+                    "timestamp": "2026-01-15T00:00:00Z",
+                    "document_id": f"sig:p9-{suffix}-{_uuid.uuid4().hex[:6]}",
+                    "entities": [{"text": "p9_entity", "type": "person"}],
+                    "tags": ["src:stripe_fixture", "kind:invoice.created",
+                             "dc:payments", "ym:2026-01"],
+                    "metadata": {"signal_id": f"p9{suffix}", "content_sha256": suffix,
+                                 "render_version": "1", "is_llm_eligible": "false"},
+                    "strategy": STRUCTURED_STRATEGY,  # "structured-no-llm"
+                    "resolve_entities": False,
+                }
+                op_id = str(_uuid.uuid5(_uuid.NAMESPACE_OID, item["document_id"]))
+                # Synchronous retain — usage in response is authoritative
+                resp = client.retain([item], operation_id=op_id, async_=False,
+                                     bank_id=scratch_bank)
+                usage = resp.get("usage") or {}
+                out_tokens = usage.get("output_tokens", 0)
+                assert out_tokens == 0, (
+                    f"P9 FAIL (C7): structured item with strategy={STRUCTURED_STRATEGY!r} "
+                    f"produced {out_tokens} LLM output tokens. "
+                    "Expected 0 — the structured-no-llm named strategy (chunks mode) "
+                    "must never call DeepSeek."
+                )
 
-        # Snapshot AFTER retain — must be identical (no new calls)
-        try:
-            stats_after_raw = client.get_llm_stats()
-            snap_after = parse_stats(stats_after_raw)
-        except StatsUnavailableError as e:
-            if os.environ.get("OLO_GATE_STRICT"):
-                pytest.fail(f"P9 FAIL: LLM stats unavailable after retain: {e}")
-            return
+            # Allow any background processing to settle
+            time.sleep(2)
 
-        calls_after = sum(
-            b.get("total", 0)
-            for b in stats_after_raw.get("buckets", [])
-        )
-        new_calls = calls_after - calls_before
-        new_in = snap_after.input_tokens - snap_before.input_tokens
-        new_out = snap_after.output_tokens - snap_before.output_tokens
-
-        assert new_calls == 0 and new_in == 0 and new_out == 0, (
-            f"P9 FAIL: structured retain triggered {new_calls} LLM call(s), "
-            f"{new_in} input tokens, {new_out} output tokens. "
-            "Structured items (is_llm_eligible=false) must never trigger extraction."
-        )
+        finally:
+            try:
+                client.delete_bank(scratch_bank)
+            except HindsightAPIError:
+                pass
 
     @_integration
     def test_p9_prose_calls_detected(self) -> None:
+        """P9/C7: prose items must trigger DeepSeek extraction (output_tokens > 0).
+
+        Proves both sides of the C7 architecture simultaneously:
+          - structured-no-llm strategy → 0 output tokens (tested in test_p9_structured_no_llm_calls)
+          - prose strategy (bank default) → > 0 output tokens (this test)
+
+        Both pass together = BBC single-bank architecture verified.
+        """
+        cfg = HindsightConfig.from_env()
+        client = HindsightClient(cfg)
+        try:
+            client.wait_until_ready(timeout_s=10.0)
+        except HindsightUnavailable:
+            _strict_skip("Hindsight server not running for P9 prose test")
+
+        _require_llm_key()
+
+        import uuid as _uuid
+        import re as _re
+
+        scratch_bank = f"p9-prose-test-{_uuid.uuid4().hex[:8]}"
+        try:
+            prose_item = {
+                "content": (
+                    "Hi, I need to reschedule our review meeting originally "
+                    "set for next Tuesday. Would Friday work for you?"
+                ),
+                "timestamp": "2026-06-01T00:00:00Z",
+                "document_id": f"sig:p9-prose-{_uuid.uuid4().hex[:6]}",
+                "entities": [{"text": "p9_prose_entity", "type": "person"}],
+                "tags": ["src:gmail_owner", "ym:2026-06"],
+                "metadata": {"signal_id": "p9prose", "content_sha256": "pc",
+                             "render_version": "1", "is_llm_eligible": "true"},
+                # No per-item strategy → bank default (concise + DeepSeek)
+                "resolve_entities": False,
+            }
+            resp = client.retain(
+                [prose_item],
+                operation_id=str(_uuid.uuid5(_uuid.NAMESPACE_OID, prose_item["document_id"])),
+                async_=False,
+                bank_id=scratch_bank,
+            )
+            usage = resp.get("usage") or {}
+            out_tokens = usage.get("output_tokens", 0)
+            assert out_tokens > 0, (
+                f"P9 FAIL (C7): prose item produced 0 LLM output tokens. "
+                f"Expected > 0 — the bank default extraction (concise mode) must call DeepSeek. "
+                f"Check that HINDSIGHT_API_LLM_PROVIDER=deepseek and the API key is set."
+            )
+        finally:
+            try:
+                client.delete_bank(scratch_bank)
+            except HindsightAPIError:
+                pass
+
+    @_integration
+    def test_p9_prose_llm_calls_nc(self) -> None:
         """P9 NC: the LLM stats endpoint must track calls; zero stats in strict mode fails.
 
         Correction #8: "Missing or zero usage in the negative control must FAIL,

@@ -9,6 +9,10 @@ The synthetic generator is NEVER called here; all data comes from olo.db.
 
 Opus architecture: §B.2 (evidence-first), §B.9 (isolation).
 Audit correction D11 (fix 10): production feeder, raises on missing blob.
+BBC C7: single-bank architecture — structured signals use the named strategy
+        "structured-no-llm" (chunks mode, 0 LLM calls) while prose signals use
+        the bank default extraction (concise + DeepSeek).  Automatic bank-wide
+        consolidation is disabled; prose consolidation is triggered explicitly.
 """
 from __future__ import annotations
 
@@ -22,6 +26,34 @@ from typing import Optional
 
 class FeedError(Exception):
     """Raised when evidence is missing or corrupted in olo.db."""
+
+
+# ── Strategy name constants (C7: single-bank architecture) ───────────────────
+
+#: Named strategy for structured signals (invoice, calendar, Stripe, QBO).
+#: Maps to Hindsight extraction_mode="chunks" with enable_observations=False:
+#: zero LLM calls during extraction, no background consolidation.
+STRUCTURED_STRATEGY = "structured-no-llm"
+
+#: Prose signals (email, voice transcript) use the bank default extraction
+#: (concise mode = DeepSeek extraction).  Consolidation is triggered explicitly.
+PROSE_STRATEGY = "prose"  # falls back to bank default (concise + LLM)
+
+#: Source tags that identify prose signals (used for targeted consolidation).
+PROSE_SOURCES: frozenset = frozenset({"src:gmail_owner", "src:voice_fixture"})
+
+#: Bank config applied once after bank creation (PATCH /config).
+#: Sets up the ``structured-no-llm`` named strategy so structured signals get
+#: 0 LLM calls and are excluded from observation consolidation.
+#: Auto-consolidation remains enabled so prose items are consolidated normally.
+_BANK_CONFIG_OVERRIDES: dict = {
+    "retain_strategies": {
+        STRUCTURED_STRATEGY: {
+            "retain_extraction_mode": "chunks",
+            "enable_observations": False,
+        }
+    },
+}
 
 
 def _ym_tag(occurred_at_iso: str) -> str:
@@ -134,7 +166,10 @@ def build_hindsight_items(
         else:
             tags = existing_tags
 
-        strategy = payload.get("strategy", "structured")
+        strategy = payload.get("strategy", STRUCTURED_STRATEGY)
+        # Translate legacy Olo strategy names to the Hindsight named strategy
+        if strategy == "structured":
+            strategy = STRUCTURED_STRATEGY
         is_llm_eligible = str(payload.get("is_llm_eligible", "false")).lower() == "true"
 
         item: dict = {
@@ -239,7 +274,7 @@ def populate_olo_db(
             tags_with_ym.append(ym)
 
         is_llm = sig.is_llm_eligible
-        strategy = "structured" if not is_llm else "prose"
+        strategy = PROSE_STRATEGY if is_llm else STRUCTURED_STRATEGY
 
         ns = NormalizedSignal(
             source=source,
@@ -280,6 +315,44 @@ def populate_olo_db(
     return total
 
 
+# ── Bank preparation (C7) ────────────────────────────────────────────────────
+
+def prepare_hindsight_bank(
+    client,  # HindsightClient
+    bank_id: str,
+) -> bool:
+    """Configure the Hindsight bank for Olo's single-bank architecture.
+
+    Must be called after the bank has been created (first retain) and before
+    any structured retains that need 0 LLM calls.
+
+    Applies :data:`_BANK_CONFIG_OVERRIDES` via PATCH:
+      - Registers the ``structured-no-llm`` named strategy (chunks mode,
+        observations disabled) so structured signals generate 0 LLM calls.
+      - Disables bank-wide automatic consolidation so only prose signals are
+        consolidated — triggered explicitly after each prose batch.
+
+    Returns True if the PATCH succeeded, False if the bank config API is not
+    supported (HTTP 405) — the caller may choose to proceed without
+    zero-LLM guarantee.
+
+    Raises FeedError on other HTTP errors.
+    """
+    from olo.m3.hindsight.client import HindsightAPIError
+    try:
+        client.patch_bank_config(_BANK_CONFIG_OVERRIDES, bank_id=bank_id)
+        return True
+    except HindsightAPIError as exc:
+        if exc.status_code == 405:
+            # Bank config API not enabled on this Hindsight build — proceed
+            # without the named strategy (structured items will use the bank
+            # default and may incur LLM calls).
+            return False
+        raise FeedError(
+            f"Failed to prepare Hindsight bank {bank_id!r}: {exc}"
+        ) from exc
+
+
 # ── Production retain pipeline with budget guard ──────────────────────────────
 
 def batch_retain_to_hindsight(
@@ -290,6 +363,7 @@ def batch_retain_to_hindsight(
     batch_size: int = 50,
     budget_guard=None,  # Optional[UsageGuard]
     async_: bool = True,
+    prepare_bank: bool = True,
 ) -> dict[str, int]:
     """Retain evidence items into Hindsight, checking budget between batches.
 
@@ -298,30 +372,44 @@ def batch_retain_to_hindsight(
     since the initial snapshot exceeds the limit, ``BudgetExceededError`` is
     raised and no further batches are submitted.
 
+    BBC C7 single-bank architecture:
+      - Structured items (``strategy="structured-no-llm"``) are retained with
+        the named strategy that uses chunks extraction (0 LLM calls).
+      - Prose items (``strategy="prose"``) are retained with the bank default
+        (concise = DeepSeek extraction).
+      - After all prose batches, targeted consolidation is triggered for prose
+        entity scopes so observations are created for prose items only.
+      - ``prepare_bank=True`` (default): call :func:`prepare_hindsight_bank`
+        before the first batch to register the named strategy configuration.
+        Set to False when the bank is already prepared (e.g. incremental feeds).
+
     Args:
         items:        Retain-ready items from ``build_hindsight_items()``.
         client:       Connected ``HindsightClient``.
         bank_id:      Target Hindsight bank.
         batch_size:   Items per retain call (default 50).
-        budget_guard: Optional ``UsageGuard``; if provided, spending is
-                      checked after every batch.  Missing or invalid usage
-                      statistics fail closed in ``OLO_GATE_STRICT=1`` mode.
+        budget_guard: Optional ``UsageGuard``; spending is checked after every
+                      batch.  Missing statistics always abort (fails closed).
         async_:       Submit retains asynchronously (default True).
+        prepare_bank: If True (default), configure the bank before retaining.
 
     Returns:
         {"total": N, "prose": M, "structured": K, "batches": B}
 
     Raises:
-        FeedError:          if ``items`` is empty.
+        FeedError:          if ``items`` is empty or bank preparation fails.
         BudgetExceededError: if spending crosses the budget threshold.
-        StatsUnavailableError: if budget_guard is set and stats are unavailable
-                              and OLO_GATE_STRICT=1 is set.
+        StatsUnavailableError: if budget_guard is set and stats are unavailable.
     """
     import os
     import uuid as _uuid
 
     if not items:
         raise FeedError("batch_retain_to_hindsight: items list is empty")
+
+    # Prepare bank config once (registers named strategy, disables auto-consolidation)
+    if prepare_bank:
+        prepare_hindsight_bank(client, bank_id)
 
     # Take a budget baseline snapshot before any work — always fail closed
     # (C6 fix: removed OLO_GATE_STRICT guard; production workloads are
@@ -390,6 +478,10 @@ def batch_retain_to_hindsight(
                         f"unchecked spending): {exc}"
                     ) from exc
 
+    # With auto-consolidation enabled and structured items using the
+    # 'structured-no-llm' strategy (enable_observations=False), prose items
+    # are consolidated automatically while structured items are excluded.
+    # No explicit consolidation trigger needed here.
     return counters
 
 

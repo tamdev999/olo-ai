@@ -714,6 +714,10 @@ def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
         if ym not in tags:
             tags.append(ym)
 
+        # C7: use the Hindsight named strategy constants
+        # structured-no-llm → chunks extraction, 0 LLM calls
+        # prose → bank default extraction (concise + DeepSeek)
+        hindsight_strategy = "prose" if sig.is_llm_eligible else "structured-no-llm"
         item: dict = {
             "content": sig.body_text,
             "timestamp": sig.occurred_at.isoformat(),
@@ -731,7 +735,7 @@ def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
                 "is_llm_eligible": str(sig.is_llm_eligible),
             },
             # Option B: structured signals use "chunks", prose uses extraction
-            "strategy": "structured" if not sig.is_llm_eligible else "prose",
+            "strategy": hindsight_strategy,
         }
         if sig.subject:
             item["context"] = sig.subject   # v1.2.1: context is a string
@@ -811,29 +815,29 @@ def build_labelled_questions() -> list[dict]:
                 "age_months": age_days // 30,
             }
 
-        # ── Scenario questions: explicit month/year, NO company name in query.
-        # Entity isolation is handled by tag_groups all_strict filter; the
-        # query describes WHAT happened (content), not WHO (entity).
-        # Company names in query body bias BM25 against voice transcripts and
-        # confirmation emails that do not mention the company in their body text.
+    # ── Scenario questions: entity-only filtering (no month), abstract vocabulary.
+    # Month references are intentionally OMITTED so temporal_ym = None and
+    # Hindsight uses entity-only filtering (pool ≈ 130, recall@10 is non-trivial).
+    # Queries use paraphrasic vocabulary to avoid verbatim overlap with signal text
+    # (Opus C8: ≤ 40% content-word overlap required for a valid benchmark).
         questions.extend([
             _q("reschedule_a",
-               "meeting reschedule request April 2026",
+               "appointment postponed owner calendar request",
                [_sig_id(f"email_reschedule_{ent.entity_id}")], 90),
             _q("reschedule_b",
-               "phone call delivery rescheduled April 2026",
+               "audio recording schedule adjustment call",
                [_sig_id(f"transcript_reschedule_{ent.entity_id}")], 92),
             _q("dispute_a",
-               "invoice billing discrepancy overcharge February 2026",
+               "charge amount disagreement written correspondence",
                [_sig_id(f"email_dispute_{ent.entity_id}")], 45),
             _q("dispute_b",
-               "phone call invoice dispute payment February 2026",
+               "audio recording billing argument call",
                [_sig_id(f"transcript_dispute_{ent.entity_id}")], 47),
             _q("contradiction",
-               "confirm meeting still on original date April 2026",
+               "original commitment appointment standing confirmation",
                [_sig_id(f"email_confirm_orig_{ent.entity_id}")], 91),
             _q("stripe",
-               "stripe invoice payment record February 2026",
+               "external payment processor transaction logged",
                [_sig_id(f"stripe_invoice_{ent.entity_id}")], 42),
         ])
 

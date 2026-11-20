@@ -278,6 +278,11 @@ HINDSIGHT_API_STORE_DOCUMENT_TEXT=true
 # Content capture is off — only token counts are stored.
 HINDSIGHT_API_LLM_TRACE_ENABLED=true
 HINDSIGHT_API_LLM_TRACE_STORE_CONTENT=false
+# C7: Disable bank-wide automatic consolidation.
+# Prose consolidation is triggered explicitly after each prose retain batch,
+# scoped to prose entity tags only.  This prevents structured signals from
+# ever being processed by the LLM.
+HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION=false
 OTEL_SDK_DISABLED=true
 DOTENV
 chmod 600 "$ENV_FILE"

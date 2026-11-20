@@ -503,6 +503,52 @@ class HindsightClient:
             f"{self._API_PREFIX}/banks/{urllib.parse.quote(bank_id, safe='')}",
         )
 
+    def patch_bank_config(self, updates: dict, bank_id: Optional[str] = None) -> dict:
+        """Update per-bank configuration fields (PATCH).
+
+        PATCH /v1/default/banks/{bank_id}/config
+
+        ``updates`` is a dict of field names → values.  Keys can be in Python
+        field format (``retain_extraction_mode``) or env-var format
+        (``HINDSIGHT_API_RETAIN_EXTRACTION_MODE``).
+
+        Used by the Olo feeder to configure the bank after first creation:
+          - Register the ``structured-no-llm`` named retain strategy (chunks
+            mode, observations disabled) so structured signals use zero LLM.
+          - Disable automatic bank-wide consolidation so prose consolidation
+            is triggered explicitly after each prose batch.
+
+        Returns the updated bank config.
+
+        Raises HindsightAPIError if the bank config API is not enabled on
+        this Hindsight build (HTTP 405).
+        """
+        path = f"{self._API_PREFIX}/banks/{urllib.parse.quote(bank_id or self._cfg.bank_id, safe='')}/config"
+        return _request(self._cfg, "PATCH", path, {"updates": updates})
+
+    def trigger_consolidation(
+        self,
+        observation_scopes: Optional[list] = None,
+        bank_id: Optional[str] = None,
+    ) -> dict:
+        """Trigger targeted consolidation for specific tag scopes.
+
+        POST /v1/default/banks/{bank_id}/consolidate
+
+        ``observation_scopes``: list of tag-lists.  Only memories whose tags
+        contain ALL tags in at least one scope are consolidated.  ``None``
+        consolidates everything pending.
+
+        Used after retaining prose items to run DeepSeek consolidation for
+        prose-only entity scopes without touching structured items.
+
+        Returns {"operation_id": "...", "deduplicated": bool}.
+        """
+        body: dict = {}
+        if observation_scopes is not None:
+            body["observation_scopes"] = observation_scopes
+        return _request(self._cfg, "POST", self._bank_path("/consolidate", bank_id), body or None)
+
     def get_observation_history(
         self, memory_id: str, bank_id: Optional[str] = None
     ) -> dict:
