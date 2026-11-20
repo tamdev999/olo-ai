@@ -149,6 +149,10 @@ def _request(
     Uses open_credentialed_url (C2 fix, §4.1) so Authorization headers are
     never forwarded on a cross-origin redirect.
 
+    Connection resets on the first request after a cold ONNX start are
+    retried once automatically (the ONNX embedder initialises asynchronously;
+    the first request races with model loading and is occasionally dropped).
+
     Raises HindsightUnavailable on network errors,
            HindsightAPIError on 4xx/5xx responses.
     """
@@ -163,27 +167,44 @@ def _request(
         headers["Authorization"] = f"Bearer {cfg.api_key}"
 
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
-    try:
-        with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
-            raw = resp.read()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        raw = b""
+    last_exc: Optional[Exception] = None
+    for _attempt in range(3):  # up to 2 retries on connection reset
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            raw = exc.read()
-        except Exception:
-            pass
-        raise HindsightAPIError(
-            f"Hindsight {method} {path} → HTTP {exc.code}",
-            status_code=exc.code,
-            response_body=raw,
-        ) from exc
-    except (urllib.error.URLError, ConnectionRefusedError, OSError) as exc:
-        raise HindsightUnavailable(
-            f"Hindsight not reachable at {cfg.base_url}: {exc}"
-        ) from exc
+            with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raw = b""
+            try:
+                raw = exc.read()
+            except Exception:
+                pass
+            raise HindsightAPIError(
+                f"Hindsight {method} {path} → HTTP {exc.code}",
+                status_code=exc.code,
+                response_body=raw,
+            ) from exc
+        except (urllib.error.URLError, ConnectionRefusedError, OSError) as exc:
+            # Connection reset/refused on first ONNX call → retry with backoff
+            is_transient = (
+                "Connection reset" in str(exc)
+                or "104" in str(exc)
+                or "Connection refused" in str(exc)
+                or "111" in str(exc)
+            )
+            if is_transient and _attempt < 2:
+                last_exc = exc
+                time.sleep(8 + _attempt * 5)  # 8s, then 13s
+                continue
+            raise HindsightUnavailable(
+                f"Hindsight not reachable at {cfg.base_url}: {exc}"
+            ) from exc
+
+    raise HindsightUnavailable(
+        f"Hindsight not reachable at {cfg.base_url}: {last_exc}"
+    ) from last_exc
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

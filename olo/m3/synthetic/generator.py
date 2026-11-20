@@ -242,16 +242,16 @@ _OLD_SCENARIOS = [
 # Each query explicitly names a month/year so V1 test can derive the filter
 # FROM THE QUESTION TEXT — never from the expected answer (correction #3).
 _OLD_QUERIES = [
-    "support resolution commitment {company} July 2026",
-    "payment confirmation received from {company} July 2026",
-    "new service engagement request {company} August 2026",
-    "formal complaint raised by {company} August 2026",
-    "issue resolution confirmed for {company} September 2026",
-    "contract renewal discussion {company} October 2026",
-    "invoice details requested by {company} October 2026",
-    "quarterly account review {company} November 2026",
-    "positive feedback appreciation from {company} November 2026",
-    "new order placed by {company} November 2026",
+    "support issue resolution commitment July 2026",
+    "payment confirmation acknowledgement received July 2026",
+    "new service engagement request infrastructure August 2026",
+    "formal support complaint response August 2026",
+    "issue resolution confirmed notification September 2026",
+    "contract renewal terms discussion October 2026",
+    "invoice amount query details October 2026",
+    "quarterly account business review November 2026",
+    "positive feedback appreciation received November 2026",
+    "new purchase order request November 2026",
 ]
 
 # Month keywords to month number (for query-text temporal constraint extraction)
@@ -811,25 +811,29 @@ def build_labelled_questions() -> list[dict]:
                 "age_months": age_days // 30,
             }
 
-        # ── Scenario questions: explicit month/year in every query ───────────
+        # ── Scenario questions: explicit month/year, NO company name in query.
+        # Entity isolation is handled by tag_groups all_strict filter; the
+        # query describes WHAT happened (content), not WHO (entity).
+        # Company names in query body bias BM25 against voice transcripts and
+        # confirmation emails that do not mention the company in their body text.
         questions.extend([
             _q("reschedule_a",
-               f"meeting reschedule request {ent.company} April 2026",
+               "meeting reschedule request April 2026",
                [_sig_id(f"email_reschedule_{ent.entity_id}")], 90),
             _q("reschedule_b",
-               f"phone call delivery date change {ent.company} April 2026",
+               "phone call delivery rescheduled April 2026",
                [_sig_id(f"transcript_reschedule_{ent.entity_id}")], 92),
             _q("dispute_a",
-               f"invoice billing discrepancy {ent.company} February 2026",
+               "invoice billing discrepancy overcharge February 2026",
                [_sig_id(f"email_dispute_{ent.entity_id}")], 45),
             _q("dispute_b",
-               f"call transcript invoice dispute {ent.company} February 2026",
+               "phone call invoice dispute payment February 2026",
                [_sig_id(f"transcript_dispute_{ent.entity_id}")], 47),
             _q("contradiction",
-               f"original meeting date confirmation email {ent.company} April 2026",
+               "confirm meeting still on original date April 2026",
                [_sig_id(f"email_confirm_orig_{ent.entity_id}")], 91),
             _q("stripe",
-               f"stripe invoice created {ent.company} February 2026",
+               "stripe invoice payment record February 2026",
                [_sig_id(f"stripe_invoice_{ent.entity_id}")], 42),
         ])
 
