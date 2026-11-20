@@ -53,7 +53,9 @@ MODEL_CONFIGS: list[dict] = [
         "display": "multilingual-E5-small int8 (Xenova)",
         "env": {
             "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "onnx",
-            "HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID": "Xenova/multilingual-e5-small",
+            # Tokenizer from the fully-cached intfloat snapshot (same tokenizer,
+            # Xenova snapshot only ships the ONNX file without config.json).
+            "HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID": "intfloat/multilingual-e5-small",
             "HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_PATH": (
                 f"{_HF_CACHE}/models--Xenova--multilingual-e5-small/"
                 "snapshots/761b726dd34fb83930e26aab4e9ac3899aa1fa78/onnx/model_int8.onnx"
@@ -198,10 +200,19 @@ def run_benchmark(
                              recall_at_10=0.0, hits=0, total=0)
 
     # Base env for Hindsight subprocess
+    socket_dir = str(pg0_home / "run")
+    subprocess.run(
+        ["sudo", "-u", "olo_hs", "mkdir", "-p", socket_dir],
+        check=False, capture_output=True,
+    )
     base_env = {
         "HOME": str(pg0_home),
         "HF_HOME": "/var/cache/huggingface",
-        "HINDSIGHT_API_DATABASE_URL": f"pg0://bench-{model_id}",
+        # Offline mode: models are pre-downloaded, avoid lock-file writes to
+        # /var/cache/huggingface/hub/.locks/ (owned by root; olo_hs can't create).
+        "HF_HUB_OFFLINE": "1",
+        # Route pg0 sockets into the per-model home — never /tmp
+        "HINDSIGHT_API_DATABASE_URL": f"pg0://bench-{model_id}?unix_socket_directories={socket_dir}",
         "HINDSIGHT_API_HOST": "127.0.0.1",
         "HINDSIGHT_API_PORT": str(port),
         "HINDSIGHT_API_LLM_PROVIDER": "none",
@@ -343,13 +354,17 @@ def run_benchmark(
         result.p50_latency_ms = sorted_lat[len(sorted_lat) // 2]
         result.p95_latency_ms = sorted_lat[int(len(sorted_lat) * 0.95)]
 
-    # Cleanup
+    # Cleanup: kill the server process group, then remove pg0 data
     _kill_on_port(port)
-    proc.wait(timeout=10)
-    subprocess.run(
-        ["sudo", "-u", "olo_hs", "pkill", "-f", f"bench-{model_id}"],
-        check=False, capture_output=True,
-    )
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
 
     return result
 

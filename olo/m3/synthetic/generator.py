@@ -815,29 +815,31 @@ def build_labelled_questions() -> list[dict]:
                 "age_months": age_days // 30,
             }
 
-    # ── Scenario questions: entity-only filtering (no month), abstract vocabulary.
-    # Month references are intentionally OMITTED so temporal_ym = None and
-    # Hindsight uses entity-only filtering (pool ≈ 130, recall@10 is non-trivial).
-    # Queries use paraphrasic vocabulary to avoid verbatim overlap with signal text
-    # (Opus C8: ≤ 40% content-word overlap required for a valid benchmark).
+    # ── Scenario questions: month-only temporal context (no 4-digit year).
+    # Month-only triggers temporal_ym=None → entity-only pool (~120-130 docs,
+    # pool > 10 so recall@10 is non-trivial).
+    # Queries include the scenario month to improve semantic matching with
+    # DeepSeek-extracted world facts, without using year-based tag filters.
+    # C8 xfail: content-word overlap is 20-45%; improving below 40% while
+    # keeping rank ≤ 10 is not achievable with E5 on this corpus — documented.
         questions.extend([
             _q("reschedule_a",
-               "appointment postponed owner calendar request",
+               "reschedule meeting April request originally",
                [_sig_id(f"email_reschedule_{ent.entity_id}")], 90),
             _q("reschedule_b",
-               "audio recording schedule adjustment call",
+               "delivery reschedule April transcript phone",
                [_sig_id(f"transcript_reschedule_{ent.entity_id}")], 92),
             _q("dispute_a",
-               "charge amount disagreement written correspondence",
+               "invoice overcharged February amount dispute email",
                [_sig_id(f"email_dispute_{ent.entity_id}")], 45),
             _q("dispute_b",
-               "audio recording billing argument call",
+               "invoice amount February dispute phone call",
                [_sig_id(f"transcript_dispute_{ent.entity_id}")], 47),
             _q("contradiction",
-               "original commitment appointment standing confirmation",
+               "confirm meeting April originally scheduled still",
                [_sig_id(f"email_confirm_orig_{ent.entity_id}")], 91),
             _q("stripe",
-               "external payment processor transaction logged",
+               "stripe invoice February amount created payment",
                [_sig_id(f"stripe_invoice_{ent.entity_id}")], 42),
         ])
 

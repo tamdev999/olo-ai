@@ -1,0 +1,2210 @@
+[
+  {
+    "model_id": "e5-small-fp32",
+    "display": "multilingual-E5-small fp32",
+    "recall_at_10": 0.6875,
+    "hits": 33,
+    "total": 48,
+    "idle_pss_mb": 1118.4375,
+    "steady_pss_mb": 1201.4013671875,
+    "combined_pss_mb": 1479.1103515625,
+    "p50_latency_ms": 295.51303499829373,
+    "p95_latency_ms": 528.0759989982471,
+    "ingestion_docs_per_s": 26.547917926317304,
+    "error": null,
+    "per_question": [
+      {
+        "id": "q_ent_01AC_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": true,
+        "expected": [
+          "sig:sig_08e9ea787f62d5e743bf7288"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d992bc383e81974213d7d74a",
+          "sig:sig_4fc7101f14dec0ee8fd8fa12",
+          "sig:sig_6631b6a973679a646ecf4a55",
+          "sig:sig_b405ba7afce4b100dbeaa448",
+          "sig:sig_08e9ea787f62d5e743bf7288"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": true,
+        "expected": [
+          "sig:sig_d992bc383e81974213d7d74a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ea322718dea45b9b60b3bec1",
+          "sig:sig_ead05cb269653cc58ee967b2",
+          "sig:sig_3394eee16268c576c1cc6962",
+          "sig:sig_6631b6a973679a646ecf4a55",
+          "sig:sig_92a263ad3c68152726011482"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_878c09750cb1e9720801dd5c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_26b6e0547cb5f4b0e73f92a8",
+          "sig:sig_e5fed3aefb21a087e92a1faf",
+          "sig:sig_607d45f58dd23d48dc9d219a",
+          "sig:sig_70be66cc24219a9f64a9b6ad",
+          "sig:sig_776ed92497e78704dcdba71f"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": false,
+        "expected": [
+          "sig:sig_f46c15dcb9bfa4ba042c7b68"
+        ],
+        "top_doc_ids": [
+          "sig:sig_26b6e0547cb5f4b0e73f92a8",
+          "sig:sig_039ab0ceb50eebeecb78b1b4",
+          "sig:sig_e020111df4e5efcc1354e848",
+          "sig:sig_22e9abaccaaf7b3ace5c078e",
+          "sig:sig_e5fed3aefb21a087e92a1faf"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": false,
+        "expected": [
+          "sig:sig_67d70d5b3e95a57eb6493a19"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ead05cb269653cc58ee967b2",
+          "sig:sig_6631b6a973679a646ecf4a55",
+          "sig:sig_4fc7101f14dec0ee8fd8fa12",
+          "sig:sig_08e9ea787f62d5e743bf7288",
+          "sig:sig_814e3ee17683a19e4d3910e2"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_a5cca61b8b296b8bd68bb2c0"
+        ],
+        "top_doc_ids": [
+          "sig:sig_039ab0ceb50eebeecb78b1b4",
+          "sig:sig_038fac949d410946e6a88d5e",
+          "sig:sig_22e9abaccaaf7b3ace5c078e",
+          "sig:sig_fe4f329105cb276c95294704",
+          "sig:sig_e5fed3aefb21a087e92a1faf"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_ff104c708f6f092c5e831858"
+        ],
+        "top_doc_ids": [
+          "sig:sig_a0b65333ac25491977d7718d",
+          "sig:sig_5470b2024759efe63502bcc6",
+          "sig:sig_93620153e9102f65002c0df6",
+          "sig:sig_ff104c708f6f092c5e831858",
+          "sig:sig_eba0cde0fd2d54fabbf06dc7"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_634dbe1410868424a81aa462"
+        ],
+        "top_doc_ids": [
+          "sig:sig_a0b65333ac25491977d7718d",
+          "sig:sig_70be66cc24219a9f64a9b6ad",
+          "sig:sig_634dbe1410868424a81aa462",
+          "sig:sig_5470b2024759efe63502bcc6",
+          "sig:sig_93620153e9102f65002c0df6"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_040db6c6fde51e6027819306"
+        ],
+        "top_doc_ids": [
+          "sig:sig_5eb7c4a05a04135796bf6071",
+          "sig:sig_040db6c6fde51e6027819306",
+          "sig:sig_f409d59b398e014e3baa0490",
+          "sig:sig_3337ac7cfefcd6a51a0c6c88",
+          "sig:sig_7071fe29a20cd3fbe0e7fa88"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_d1dde8ba81ad6cda551cdd6a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_5eb7c4a05a04135796bf6071",
+          "sig:sig_2495a1f42e2a6de0ec9e11b8",
+          "sig:sig_d1dde8ba81ad6cda551cdd6a",
+          "sig:sig_040db6c6fde51e6027819306",
+          "sig:sig_4a9965747ffdb8a22f7f5877"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_301dacb64994f341dfbf333c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2585a31a595fbd75eb2e13b0",
+          "sig:sig_301dacb64994f341dfbf333c",
+          "sig:sig_ab657321a7c5bdb692b3ba33",
+          "sig:sig_53b8fb580c8484fc87d56870",
+          "sig:sig_4d0920e76081d399ae573ab2"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_e020111df4e5efcc1354e848"
+        ],
+        "top_doc_ids": [
+          "sig:sig_e020111df4e5efcc1354e848",
+          "sig:sig_746609905f1e28f1c24ae943",
+          "sig:sig_829c2f720a31ae1671435ce9",
+          "sig:sig_d664fc0478dfa6bce6beb309",
+          "sig:sig_8e5ebb3c6807f02923250a8d"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_26b6e0547cb5f4b0e73f92a8"
+        ],
+        "top_doc_ids": [
+          "sig:sig_21b50af7dcd56a5ef606ae56",
+          "sig:sig_26b6e0547cb5f4b0e73f92a8",
+          "sig:sig_746609905f1e28f1c24ae943",
+          "sig:sig_8e5ebb3c6807f02923250a8d",
+          "sig:sig_829c2f720a31ae1671435ce9"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_1d82c87176524eb197343f8f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_1d82c87176524eb197343f8f",
+          "sig:sig_9ffbb0227e7d6b44943912a3",
+          "sig:sig_0394b80ad0de94e47012ae88",
+          "sig:sig_f7cf737451ca51e2664fd070",
+          "sig:sig_aa31cf634e33135c1fed4b24"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_aa31cf634e33135c1fed4b24"
+        ],
+        "top_doc_ids": [
+          "sig:sig_aa31cf634e33135c1fed4b24",
+          "sig:sig_4a061fbb69b50e24a5ba386b",
+          "sig:sig_10dc283585be1f40ce43f86a",
+          "sig:sig_882d83da0bf579b0d32399a6",
+          "sig:sig_bbc810c7195494278dab2e8d"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_3394eee16268c576c1cc6962"
+        ],
+        "top_doc_ids": [
+          "sig:sig_10dc283585be1f40ce43f86a",
+          "sig:sig_3394eee16268c576c1cc6962",
+          "sig:sig_882d83da0bf579b0d32399a6",
+          "sig:sig_4a061fbb69b50e24a5ba386b",
+          "sig:sig_bbc810c7195494278dab2e8d"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": false,
+        "expected": [
+          "sig:sig_d85fa3aa4478d40bdcab278c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2b4ea98eaf15c602d900715e",
+          "sig:sig_d1a580f7fc32c0602cb76766",
+          "sig:sig_6583393d7e7c3362f386c1da",
+          "sig:sig_45132ae2c349ba44509b016d",
+          "sig:sig_85f4c8e1445223c3e9af6a39"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": false,
+        "expected": [
+          "sig:sig_ca427e422d59ad023a7ebb1d"
+        ],
+        "top_doc_ids": [
+          "sig:sig_40464da2505febbf96916cc8",
+          "sig:sig_a8f3b5c374296c24f2af193d",
+          "sig:sig_d75bc3d557a7f75721ee10f4",
+          "sig:sig_4918642614d8f1de2d0dd565",
+          "sig:sig_9aa6a08fb9813e8265af3d44"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_7f5b418718dd44a4715e1d0f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_50535c3f48d44c5cde1c6d88",
+          "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+          "sig:sig_5be2f00d46ba438c5046e966",
+          "sig:sig_7f85f460aad67ec44e2f0458"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": false,
+        "expected": [
+          "sig:sig_9f7323a589743f5f9d333bf1"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_671ed8b7aaee2ffdd4d243d4",
+          "sig:sig_50535c3f48d44c5cde1c6d88",
+          "sig:sig_0972753fce502b76c9fa1424"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": false,
+        "expected": [
+          "sig:sig_8be758642a3e80889947453d"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3dae59525eee621b801607c3",
+          "sig:sig_d75bc3d557a7f75721ee10f4",
+          "sig:sig_a85128a42383c00bb1d34fe4",
+          "sig:sig_9c861bf358d6011463fa1414",
+          "sig:sig_d54990472e7d63ae7b9edd5d"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_32d4b42aeb8a9e8e94139a59"
+        ],
+        "top_doc_ids": [
+          "sig:sig_671ed8b7aaee2ffdd4d243d4",
+          "sig:sig_08234c81184801d8a1b48779",
+          "sig:sig_0972753fce502b76c9fa1424",
+          "sig:sig_db70d4c827051542262b0d89",
+          "sig:sig_d54990472e7d63ae7b9edd5d"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_c2e22cacbeb25f5e191e551f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_c2e22cacbeb25f5e191e551f",
+          "sig:sig_a85128a42383c00bb1d34fe4",
+          "sig:sig_9c861bf358d6011463fa1414",
+          "sig:sig_621e34e91a7d181cf08eaf2c",
+          "sig:sig_5f57ed9721d214ab8e3fdc99"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_08234c81184801d8a1b48779"
+        ],
+        "top_doc_ids": [
+          "sig:sig_08234c81184801d8a1b48779",
+          "sig:sig_848bcbc3e57816cbed18a846",
+          "sig:sig_a85128a42383c00bb1d34fe4",
+          "sig:sig_9c861bf358d6011463fa1414",
+          "sig:sig_621e34e91a7d181cf08eaf2c"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b190e9743a9a19d05f52be16"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2d40730a803a8d90c6d3031b",
+          "sig:sig_b190e9743a9a19d05f52be16",
+          "sig:sig_33b020a937ab50c57354a47f",
+          "sig:sig_410447497f6ae31d77db5c3c",
+          "sig:sig_2b4ea98eaf15c602d900715e"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_79a8b3e14d32aa307fe9f048"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2d40730a803a8d90c6d3031b",
+          "sig:sig_79a8b3e14d32aa307fe9f048",
+          "sig:sig_33b020a937ab50c57354a47f",
+          "sig:sig_410447497f6ae31d77db5c3c",
+          "sig:sig_b190e9743a9a19d05f52be16"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_dc141370fb973038afb49320"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3dae59525eee621b801607c3",
+          "sig:sig_dc141370fb973038afb49320",
+          "sig:sig_d75bc3d557a7f75721ee10f4",
+          "sig:sig_d54990472e7d63ae7b9edd5d",
+          "sig:sig_992a29b465e4b706411fe1df"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_744cc5cab66f54b7f10b8321"
+        ],
+        "top_doc_ids": [
+          "sig:sig_744cc5cab66f54b7f10b8321",
+          "sig:sig_2e72593299576accb61b5590",
+          "sig:sig_359364d058ce027f7c5643db",
+          "sig:sig_6a88c8494f7b72dacaa6bde1",
+          "sig:sig_6a568a196754847937c53d1c"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_3eb565595542c20d8fbb36fe"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_2e72593299576accb61b5590",
+          "sig:sig_744cc5cab66f54b7f10b8321",
+          "sig:sig_6a88c8494f7b72dacaa6bde1",
+          "sig:sig_fb57d1657efa339c7bcb8819"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_7c19d9a779c10cfded778354"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d1aa0c021872e61d075f9bd0",
+          "sig:sig_7c19d9a779c10cfded778354",
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_fe242946cf2412da7cdebb45",
+          "sig:sig_278293e4a0e7f21e4687035f"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_188b70392f920b43ef0c41f4"
+        ],
+        "top_doc_ids": [
+          "sig:sig_188b70392f920b43ef0c41f4",
+          "sig:sig_a8f3b5c374296c24f2af193d",
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_d1aa0c021872e61d075f9bd0",
+          "sig:sig_fe242946cf2412da7cdebb45"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_4918642614d8f1de2d0dd565"
+        ],
+        "top_doc_ids": [
+          "sig:sig_4918642614d8f1de2d0dd565",
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_fe242946cf2412da7cdebb45",
+          "sig:sig_d1aa0c021872e61d075f9bd0",
+          "sig:sig_278293e4a0e7f21e4687035f"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": true,
+        "expected": [
+          "sig:sig_5d19a947f076bdc266445f69"
+        ],
+        "top_doc_ids": [
+          "sig:sig_7413d42a9cc69d53e5afcc2b",
+          "sig:sig_4000dc52a605d5da7ebe8804",
+          "sig:sig_d430829b6730a0f9b34d2155",
+          "sig:sig_f8d914c6b8de0dcaa23a4911",
+          "sig:sig_d11d197a24e5748f7f91b890"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": false,
+        "expected": [
+          "sig:sig_c85f02b177def59cd8b287f5"
+        ],
+        "top_doc_ids": [
+          "sig:sig_f8d914c6b8de0dcaa23a4911",
+          "sig:sig_2798e9a411d2b2b667da9a9e",
+          "sig:sig_df3c84b5238f518b5a119aa4",
+          "sig:sig_0b1fb0f11ed98eb487d59d3c",
+          "sig:sig_2e47b3f76c6cff2e05e42de1"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_9315534b81d6b50bc304d55a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_c74eeaca4e928ddc49f114e8",
+          "sig:sig_898e865009d67e8f53e5dd7d",
+          "sig:sig_ed4f4905bae68d8dd7cb1207",
+          "sig:sig_b306a42d2ceab89f96f43c92",
+          "sig:sig_dda958931863b8e96f7febda"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": false,
+        "expected": [
+          "sig:sig_f43d7d07925e5398024e61d1"
+        ],
+        "top_doc_ids": [
+          "sig:sig_c74eeaca4e928ddc49f114e8",
+          "sig:sig_ed4f4905bae68d8dd7cb1207",
+          "sig:sig_898e865009d67e8f53e5dd7d",
+          "sig:sig_dda958931863b8e96f7febda",
+          "sig:sig_c508af86047f34cf66016a72"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": false,
+        "expected": [
+          "sig:sig_73573f4352378ff8dccabd5c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_ad1bac247c5a261634cf7bce",
+          "sig:sig_c85f02b177def59cd8b287f5",
+          "sig:sig_d41000cf13b430e7e70e8acc",
+          "sig:sig_266aebd291567e3b16d4202c"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_c47a2ff2893985c5d47a624a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_c74eeaca4e928ddc49f114e8",
+          "sig:sig_dda958931863b8e96f7febda",
+          "sig:sig_898e865009d67e8f53e5dd7d",
+          "sig:sig_c508af86047f34cf66016a72",
+          "sig:sig_28cd0c135962d40b2b72c4e8"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_06e06d655bd67d66b05e300f",
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e",
+          "sig:sig_d21797dc291effd396f732b8",
+          "sig:sig_870f212aec08de77e4324d16",
+          "sig:sig_a529dfaa6eccd851c4b15e6b"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b0e0ca3684d95b58d3eef949"
+        ],
+        "top_doc_ids": [
+          "sig:sig_06e06d655bd67d66b05e300f",
+          "sig:sig_b0e0ca3684d95b58d3eef949",
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e",
+          "sig:sig_870f212aec08de77e4324d16",
+          "sig:sig_d21797dc291effd396f732b8"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_d4d73bdb8a99ca5594d7e31e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d881bf2982b46945151a7e17",
+          "sig:sig_d4d73bdb8a99ca5594d7e31e",
+          "sig:sig_2798e9a411d2b2b667da9a9e",
+          "sig:sig_f8fc3fda848b185760d98515",
+          "sig:sig_55e079a6d6004685d17d6327"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_4a4b309fdcdd2a23745317d0"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d881bf2982b46945151a7e17",
+          "sig:sig_2798e9a411d2b2b667da9a9e",
+          "sig:sig_4a4b309fdcdd2a23745317d0",
+          "sig:sig_d4d73bdb8a99ca5594d7e31e",
+          "sig:sig_f8fc3fda848b185760d98515"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_f2a337f17842b04c8ca1d748"
+        ],
+        "top_doc_ids": [
+          "sig:sig_7413d42a9cc69d53e5afcc2b",
+          "sig:sig_f2a337f17842b04c8ca1d748",
+          "sig:sig_2e47b3f76c6cff2e05e42de1",
+          "sig:sig_82521e16f06239746b17f1c2",
+          "sig:sig_de94a55d76c2bc27defafcbf"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_403789cf3e4bd5aa3a2f07f8"
+        ],
+        "top_doc_ids": [
+          "sig:sig_c4ac9df965be8b047e8363e4",
+          "sig:sig_403789cf3e4bd5aa3a2f07f8",
+          "sig:sig_ad1bac247c5a261634cf7bce",
+          "sig:sig_78e50a65fb16a289e889ff75",
+          "sig:sig_ebc9d489a46a4fea7c6f7770"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_15fe5cbb51703c32461bcb46"
+        ],
+        "top_doc_ids": [
+          "sig:sig_15fe5cbb51703c32461bcb46",
+          "sig:sig_c4ac9df965be8b047e8363e4",
+          "sig:sig_ad1bac247c5a261634cf7bce",
+          "sig:sig_c74eeaca4e928ddc49f114e8",
+          "sig:sig_ed4f4905bae68d8dd7cb1207"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_8d285ecd4b34e015dc6a2f8e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_9dbe814798dc194269b45861",
+          "sig:sig_4000dc52a605d5da7ebe8804",
+          "sig:sig_e744181f22d4c42763ab95ca",
+          "sig:sig_bf8f3c7073289e7481a89cdd",
+          "sig:sig_3469e51e4d1d63151bc666d4"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_0a8b81620af634f05f39ff7b"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d430829b6730a0f9b34d2155",
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_0a8b81620af634f05f39ff7b",
+          "sig:sig_ca50db0e7616c93b7f3eacfd",
+          "sig:sig_9dbe814798dc194269b45861"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_df3c84b5238f518b5a119aa4"
+        ],
+        "top_doc_ids": [
+          "sig:sig_df3c84b5238f518b5a119aa4",
+          "sig:sig_d430829b6730a0f9b34d2155",
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_ca50db0e7616c93b7f3eacfd",
+          "sig:sig_9dbe814798dc194269b45861"
+        ]
+      }
+    ]
+  },
+  {
+    "model_id": "e5-small-int8",
+    "display": "multilingual-E5-small int8 (Xenova)",
+    "recall_at_10": 0.6458333333333334,
+    "hits": 31,
+    "total": 48,
+    "idle_pss_mb": 760.513671875,
+    "steady_pss_mb": 806.419921875,
+    "combined_pss_mb": 1124.0576171875,
+    "p50_latency_ms": 296.7007660008676,
+    "p95_latency_ms": 523.9826100005303,
+    "ingestion_docs_per_s": 26.584001875661237,
+    "error": null,
+    "per_question": [
+      {
+        "id": "q_ent_01AC_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": false,
+        "expected": [
+          "sig:sig_08e9ea787f62d5e743bf7288"
+        ],
+        "top_doc_ids": [
+          "sig:sig_fb539356b412bc999b602d0b",
+          "sig:sig_b405ba7afce4b100dbeaa448",
+          "sig:sig_9c099600ef557307743e384a",
+          "sig:sig_4a9965747ffdb8a22f7f5877",
+          "sig:sig_d992bc383e81974213d7d74a"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": true,
+        "expected": [
+          "sig:sig_d992bc383e81974213d7d74a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ead05cb269653cc58ee967b2",
+          "sig:sig_882d83da0bf579b0d32399a6",
+          "sig:sig_2585a31a595fbd75eb2e13b0",
+          "sig:sig_f96a93e5eff5526db99016fc",
+          "sig:sig_53b8fb580c8484fc87d56870"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_878c09750cb1e9720801dd5c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_26b6e0547cb5f4b0e73f92a8",
+          "sig:sig_e5fed3aefb21a087e92a1faf",
+          "sig:sig_607d45f58dd23d48dc9d219a",
+          "sig:sig_776ed92497e78704dcdba71f",
+          "sig:sig_14da54e85cafe6ae752dc965"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": false,
+        "expected": [
+          "sig:sig_f46c15dcb9bfa4ba042c7b68"
+        ],
+        "top_doc_ids": [
+          "sig:sig_26b6e0547cb5f4b0e73f92a8",
+          "sig:sig_607d45f58dd23d48dc9d219a",
+          "sig:sig_038fac949d410946e6a88d5e",
+          "sig:sig_e020111df4e5efcc1354e848",
+          "sig:sig_e5fed3aefb21a087e92a1faf"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": false,
+        "expected": [
+          "sig:sig_67d70d5b3e95a57eb6493a19"
+        ],
+        "top_doc_ids": [
+          "sig:sig_4a061fbb69b50e24a5ba386b",
+          "sig:sig_b405ba7afce4b100dbeaa448",
+          "sig:sig_f906534189f7ea7238063f7d",
+          "sig:sig_d992bc383e81974213d7d74a",
+          "sig:sig_6bf3b7488ce047993abcf660"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_a5cca61b8b296b8bd68bb2c0"
+        ],
+        "top_doc_ids": [
+          "sig:sig_038fac949d410946e6a88d5e",
+          "sig:sig_039ab0ceb50eebeecb78b1b4",
+          "sig:sig_634dbe1410868424a81aa462",
+          "sig:sig_fe4f329105cb276c95294704",
+          "sig:sig_e5fed3aefb21a087e92a1faf"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_ff104c708f6f092c5e831858"
+        ],
+        "top_doc_ids": [
+          "sig:sig_a0b65333ac25491977d7718d",
+          "sig:sig_5470b2024759efe63502bcc6",
+          "sig:sig_ff104c708f6f092c5e831858",
+          "sig:sig_93620153e9102f65002c0df6",
+          "sig:sig_eba0cde0fd2d54fabbf06dc7"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_634dbe1410868424a81aa462"
+        ],
+        "top_doc_ids": [
+          "sig:sig_a0b65333ac25491977d7718d",
+          "sig:sig_70be66cc24219a9f64a9b6ad",
+          "sig:sig_5470b2024759efe63502bcc6",
+          "sig:sig_634dbe1410868424a81aa462",
+          "sig:sig_93620153e9102f65002c0df6"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_040db6c6fde51e6027819306"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2495a1f42e2a6de0ec9e11b8",
+          "sig:sig_5eb7c4a05a04135796bf6071",
+          "sig:sig_040db6c6fde51e6027819306",
+          "sig:sig_4a9965747ffdb8a22f7f5877",
+          "sig:sig_f409d59b398e014e3baa0490"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_d1dde8ba81ad6cda551cdd6a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_5eb7c4a05a04135796bf6071",
+          "sig:sig_2495a1f42e2a6de0ec9e11b8",
+          "sig:sig_d1dde8ba81ad6cda551cdd6a",
+          "sig:sig_040db6c6fde51e6027819306",
+          "sig:sig_4a9965747ffdb8a22f7f5877"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_301dacb64994f341dfbf333c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2585a31a595fbd75eb2e13b0",
+          "sig:sig_301dacb64994f341dfbf333c",
+          "sig:sig_ab657321a7c5bdb692b3ba33",
+          "sig:sig_53b8fb580c8484fc87d56870",
+          "sig:sig_4d0920e76081d399ae573ab2"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_e020111df4e5efcc1354e848"
+        ],
+        "top_doc_ids": [
+          "sig:sig_e020111df4e5efcc1354e848",
+          "sig:sig_746609905f1e28f1c24ae943",
+          "sig:sig_d664fc0478dfa6bce6beb309",
+          "sig:sig_8e5ebb3c6807f02923250a8d",
+          "sig:sig_829c2f720a31ae1671435ce9"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_26b6e0547cb5f4b0e73f92a8"
+        ],
+        "top_doc_ids": [
+          "sig:sig_21b50af7dcd56a5ef606ae56",
+          "sig:sig_26b6e0547cb5f4b0e73f92a8",
+          "sig:sig_746609905f1e28f1c24ae943",
+          "sig:sig_829c2f720a31ae1671435ce9",
+          "sig:sig_d664fc0478dfa6bce6beb309"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_1d82c87176524eb197343f8f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_1d82c87176524eb197343f8f",
+          "sig:sig_9ffbb0227e7d6b44943912a3",
+          "sig:sig_c6a1e94c52e2b2cd7dfb6337",
+          "sig:sig_aa31cf634e33135c1fed4b24",
+          "sig:sig_12603feef342f238a891712e"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_aa31cf634e33135c1fed4b24"
+        ],
+        "top_doc_ids": [
+          "sig:sig_aa31cf634e33135c1fed4b24",
+          "sig:sig_10dc283585be1f40ce43f86a",
+          "sig:sig_bbc810c7195494278dab2e8d",
+          "sig:sig_4a061fbb69b50e24a5ba386b",
+          "sig:sig_882d83da0bf579b0d32399a6"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_3394eee16268c576c1cc6962"
+        ],
+        "top_doc_ids": [
+          "sig:sig_10dc283585be1f40ce43f86a",
+          "sig:sig_3394eee16268c576c1cc6962",
+          "sig:sig_882d83da0bf579b0d32399a6",
+          "sig:sig_4a061fbb69b50e24a5ba386b",
+          "sig:sig_bbc810c7195494278dab2e8d"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": false,
+        "expected": [
+          "sig:sig_d85fa3aa4478d40bdcab278c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_a73079f7d4adbc4ffe61413d",
+          "sig:sig_46c1755accb5465034963f3d",
+          "sig:sig_6a568a196754847937c53d1c",
+          "sig:sig_6583393d7e7c3362f386c1da",
+          "sig:sig_359364d058ce027f7c5643db"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": false,
+        "expected": [
+          "sig:sig_ca427e422d59ad023a7ebb1d"
+        ],
+        "top_doc_ids": [
+          "sig:sig_40464da2505febbf96916cc8",
+          "sig:sig_ffa706cd697e0acedd5bf76a",
+          "sig:sig_f8f1b981d1e64b02abe155a3",
+          "sig:sig_410447497f6ae31d77db5c3c",
+          "sig:sig_2d40730a803a8d90c6d3031b"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_7f5b418718dd44a4715e1d0f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+          "sig:sig_50535c3f48d44c5cde1c6d88",
+          "sig:sig_7f85f460aad67ec44e2f0458",
+          "sig:sig_3020a0107d62c0a4ce2db400"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": false,
+        "expected": [
+          "sig:sig_9f7323a589743f5f9d333bf1"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+          "sig:sig_3020a0107d62c0a4ce2db400",
+          "sig:sig_d54990472e7d63ae7b9edd5d",
+          "sig:sig_50535c3f48d44c5cde1c6d88"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": false,
+        "expected": [
+          "sig:sig_8be758642a3e80889947453d"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3dae59525eee621b801607c3",
+          "sig:sig_6a88c8494f7b72dacaa6bde1",
+          "sig:sig_5be2f00d46ba438c5046e966",
+          "sig:sig_9c861bf358d6011463fa1414",
+          "sig:sig_ce5ba919011158bbedf5c26e"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_32d4b42aeb8a9e8e94139a59"
+        ],
+        "top_doc_ids": [
+          "sig:sig_0972753fce502b76c9fa1424",
+          "sig:sig_9f11a37d6391dd097de3e649",
+          "sig:sig_6a88c8494f7b72dacaa6bde1",
+          "sig:sig_d54990472e7d63ae7b9edd5d",
+          "sig:sig_50535c3f48d44c5cde1c6d88"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_c2e22cacbeb25f5e191e551f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_9c861bf358d6011463fa1414",
+          "sig:sig_c2e22cacbeb25f5e191e551f",
+          "sig:sig_a85128a42383c00bb1d34fe4",
+          "sig:sig_621e34e91a7d181cf08eaf2c",
+          "sig:sig_5f57ed9721d214ab8e3fdc99"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_08234c81184801d8a1b48779"
+        ],
+        "top_doc_ids": [
+          "sig:sig_08234c81184801d8a1b48779",
+          "sig:sig_9c861bf358d6011463fa1414",
+          "sig:sig_a85128a42383c00bb1d34fe4",
+          "sig:sig_848bcbc3e57816cbed18a846",
+          "sig:sig_c2e22cacbeb25f5e191e551f"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b190e9743a9a19d05f52be16"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2d40730a803a8d90c6d3031b",
+          "sig:sig_b190e9743a9a19d05f52be16",
+          "sig:sig_33b020a937ab50c57354a47f",
+          "sig:sig_410447497f6ae31d77db5c3c",
+          "sig:sig_2b4ea98eaf15c602d900715e"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_79a8b3e14d32aa307fe9f048"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2d40730a803a8d90c6d3031b",
+          "sig:sig_79a8b3e14d32aa307fe9f048",
+          "sig:sig_33b020a937ab50c57354a47f",
+          "sig:sig_410447497f6ae31d77db5c3c",
+          "sig:sig_b190e9743a9a19d05f52be16"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_dc141370fb973038afb49320"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3dae59525eee621b801607c3",
+          "sig:sig_dc141370fb973038afb49320",
+          "sig:sig_d54990472e7d63ae7b9edd5d",
+          "sig:sig_d75bc3d557a7f75721ee10f4",
+          "sig:sig_992a29b465e4b706411fe1df"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_744cc5cab66f54b7f10b8321"
+        ],
+        "top_doc_ids": [
+          "sig:sig_744cc5cab66f54b7f10b8321",
+          "sig:sig_2e72593299576accb61b5590",
+          "sig:sig_359364d058ce027f7c5643db",
+          "sig:sig_6a88c8494f7b72dacaa6bde1",
+          "sig:sig_4e990e86d1ac8653d921b43c"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_3eb565595542c20d8fbb36fe"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2e72593299576accb61b5590",
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_744cc5cab66f54b7f10b8321",
+          "sig:sig_6a88c8494f7b72dacaa6bde1",
+          "sig:sig_359364d058ce027f7c5643db"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_7c19d9a779c10cfded778354"
+        ],
+        "top_doc_ids": [
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_fe242946cf2412da7cdebb45",
+          "sig:sig_7c19d9a779c10cfded778354",
+          "sig:sig_d1aa0c021872e61d075f9bd0",
+          "sig:sig_278293e4a0e7f21e4687035f"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_188b70392f920b43ef0c41f4"
+        ],
+        "top_doc_ids": [
+          "sig:sig_188b70392f920b43ef0c41f4",
+          "sig:sig_a8f3b5c374296c24f2af193d",
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_fe242946cf2412da7cdebb45",
+          "sig:sig_4918642614d8f1de2d0dd565"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_4918642614d8f1de2d0dd565"
+        ],
+        "top_doc_ids": [
+          "sig:sig_4918642614d8f1de2d0dd565",
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_fe242946cf2412da7cdebb45",
+          "sig:sig_278293e4a0e7f21e4687035f",
+          "sig:sig_d1aa0c021872e61d075f9bd0"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": false,
+        "expected": [
+          "sig:sig_5d19a947f076bdc266445f69"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ebc9d489a46a4fea7c6f7770",
+          "sig:sig_f34c180619930d5b3aaf3fa3",
+          "sig:sig_4f164eac4a721c4ef9fe3161",
+          "sig:sig_cbef937eb85bb48f7f1af858",
+          "sig:sig_3e3a42985a52954fb5fb428e"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": false,
+        "expected": [
+          "sig:sig_c85f02b177def59cd8b287f5"
+        ],
+        "top_doc_ids": [
+          "sig:sig_78e50a65fb16a289e889ff75",
+          "sig:sig_7413d42a9cc69d53e5afcc2b",
+          "sig:sig_df3c84b5238f518b5a119aa4",
+          "sig:sig_82521e16f06239746b17f1c2",
+          "sig:sig_d430829b6730a0f9b34d2155"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_9315534b81d6b50bc304d55a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_898e865009d67e8f53e5dd7d",
+          "sig:sig_0e98da4a5a572ec0942c6b60",
+          "sig:sig_e88d921786a5ff81716d0c44",
+          "sig:sig_a529dfaa6eccd851c4b15e6b",
+          "sig:sig_ed4f4905bae68d8dd7cb1207"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": false,
+        "expected": [
+          "sig:sig_f43d7d07925e5398024e61d1"
+        ],
+        "top_doc_ids": [
+          "sig:sig_dda958931863b8e96f7febda",
+          "sig:sig_c74eeaca4e928ddc49f114e8",
+          "sig:sig_0e98da4a5a572ec0942c6b60",
+          "sig:sig_a529dfaa6eccd851c4b15e6b",
+          "sig:sig_898e865009d67e8f53e5dd7d"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": false,
+        "expected": [
+          "sig:sig_73573f4352378ff8dccabd5c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_d881bf2982b46945151a7e17",
+          "sig:sig_2e47b3f76c6cff2e05e42de1",
+          "sig:sig_78e50a65fb16a289e889ff75",
+          "sig:sig_ad1bac247c5a261634cf7bce"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_c47a2ff2893985c5d47a624a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_dda958931863b8e96f7febda",
+          "sig:sig_898e865009d67e8f53e5dd7d",
+          "sig:sig_0e98da4a5a572ec0942c6b60",
+          "sig:sig_a529dfaa6eccd851c4b15e6b",
+          "sig:sig_ed4f4905bae68d8dd7cb1207"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_06e06d655bd67d66b05e300f",
+          "sig:sig_d21797dc291effd396f732b8",
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e",
+          "sig:sig_870f212aec08de77e4324d16",
+          "sig:sig_a529dfaa6eccd851c4b15e6b"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b0e0ca3684d95b58d3eef949"
+        ],
+        "top_doc_ids": [
+          "sig:sig_06e06d655bd67d66b05e300f",
+          "sig:sig_b0e0ca3684d95b58d3eef949",
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e",
+          "sig:sig_870f212aec08de77e4324d16",
+          "sig:sig_d21797dc291effd396f732b8"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_d4d73bdb8a99ca5594d7e31e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d881bf2982b46945151a7e17",
+          "sig:sig_2798e9a411d2b2b667da9a9e",
+          "sig:sig_d4d73bdb8a99ca5594d7e31e",
+          "sig:sig_f8fc3fda848b185760d98515",
+          "sig:sig_55e079a6d6004685d17d6327"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_4a4b309fdcdd2a23745317d0"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d881bf2982b46945151a7e17",
+          "sig:sig_2798e9a411d2b2b667da9a9e",
+          "sig:sig_4a4b309fdcdd2a23745317d0",
+          "sig:sig_d4d73bdb8a99ca5594d7e31e",
+          "sig:sig_f8fc3fda848b185760d98515"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_f2a337f17842b04c8ca1d748"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2e47b3f76c6cff2e05e42de1",
+          "sig:sig_7413d42a9cc69d53e5afcc2b",
+          "sig:sig_de94a55d76c2bc27defafcbf",
+          "sig:sig_82521e16f06239746b17f1c2",
+          "sig:sig_f2a337f17842b04c8ca1d748"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_403789cf3e4bd5aa3a2f07f8"
+        ],
+        "top_doc_ids": [
+          "sig:sig_403789cf3e4bd5aa3a2f07f8",
+          "sig:sig_ad1bac247c5a261634cf7bce",
+          "sig:sig_c4ac9df965be8b047e8363e4",
+          "sig:sig_78e50a65fb16a289e889ff75",
+          "sig:sig_ebc9d489a46a4fea7c6f7770"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_15fe5cbb51703c32461bcb46"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ad1bac247c5a261634cf7bce",
+          "sig:sig_c4ac9df965be8b047e8363e4",
+          "sig:sig_15fe5cbb51703c32461bcb46",
+          "sig:sig_c74eeaca4e928ddc49f114e8",
+          "sig:sig_0e98da4a5a572ec0942c6b60"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_8d285ecd4b34e015dc6a2f8e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_9dbe814798dc194269b45861",
+          "sig:sig_bf8f3c7073289e7481a89cdd",
+          "sig:sig_e744181f22d4c42763ab95ca",
+          "sig:sig_4000dc52a605d5da7ebe8804",
+          "sig:sig_91e93a76409e2024c8f88d9b"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_0a8b81620af634f05f39ff7b"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d430829b6730a0f9b34d2155",
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_0a8b81620af634f05f39ff7b",
+          "sig:sig_ca50db0e7616c93b7f3eacfd",
+          "sig:sig_4000dc52a605d5da7ebe8804"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_df3c84b5238f518b5a119aa4"
+        ],
+        "top_doc_ids": [
+          "sig:sig_df3c84b5238f518b5a119aa4",
+          "sig:sig_d430829b6730a0f9b34d2155",
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_ca50db0e7616c93b7f3eacfd",
+          "sig:sig_9dbe814798dc194269b45861"
+        ]
+      }
+    ]
+  },
+  {
+    "model_id": "granite-r2-int8",
+    "display": "IBM Granite Embedding 97M R2 int8 (CLS pooling)",
+    "recall_at_10": 0.7291666666666666,
+    "hits": 35,
+    "total": 48,
+    "idle_pss_mb": 708.521484375,
+    "steady_pss_mb": 827.3515625,
+    "combined_pss_mb": 1144.84765625,
+    "p50_latency_ms": 289.9126670017722,
+    "p95_latency_ms": 518.3976879998227,
+    "ingestion_docs_per_s": 25.63959944748193,
+    "error": null,
+    "per_question": [
+      {
+        "id": "q_ent_01AC_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": true,
+        "expected": [
+          "sig:sig_08e9ea787f62d5e743bf7288"
+        ],
+        "top_doc_ids": [
+          "sig:sig_fb539356b412bc999b602d0b",
+          "sig:sig_b405ba7afce4b100dbeaa448",
+          "sig:sig_9c099600ef557307743e384a",
+          "sig:sig_77192f2cc52068f5de5be6b2",
+          "sig:sig_a731871cacd271c2179b67a2"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": true,
+        "expected": [
+          "sig:sig_d992bc383e81974213d7d74a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_8e5ebb3c6807f02923250a8d",
+          "sig:sig_58528218515487fdc2f485ce",
+          "sig:sig_2495a1f42e2a6de0ec9e11b8",
+          "sig:sig_53b8fb580c8484fc87d56870",
+          "sig:sig_d664fc0478dfa6bce6beb309"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_878c09750cb1e9720801dd5c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_607d45f58dd23d48dc9d219a",
+          "sig:sig_70be66cc24219a9f64a9b6ad",
+          "sig:sig_e5fed3aefb21a087e92a1faf",
+          "sig:sig_21b50af7dcd56a5ef606ae56",
+          "sig:sig_4b0640097331a3049d980c3e"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": false,
+        "expected": [
+          "sig:sig_f46c15dcb9bfa4ba042c7b68"
+        ],
+        "top_doc_ids": [
+          "sig:sig_e020111df4e5efcc1354e848",
+          "sig:sig_607d45f58dd23d48dc9d219a",
+          "sig:sig_e5fed3aefb21a087e92a1faf",
+          "sig:sig_21b50af7dcd56a5ef606ae56",
+          "sig:sig_14da54e85cafe6ae752dc965"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": true,
+        "expected": [
+          "sig:sig_67d70d5b3e95a57eb6493a19"
+        ],
+        "top_doc_ids": [
+          "sig:sig_fb539356b412bc999b602d0b",
+          "sig:sig_b405ba7afce4b100dbeaa448",
+          "sig:sig_72abf6062106a8041b2ecc37",
+          "sig:sig_77192f2cc52068f5de5be6b2",
+          "sig:sig_d992bc383e81974213d7d74a"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_a5cca61b8b296b8bd68bb2c0"
+        ],
+        "top_doc_ids": [
+          "sig:sig_26b6e0547cb5f4b0e73f92a8",
+          "sig:sig_039ab0ceb50eebeecb78b1b4",
+          "sig:sig_038fac949d410946e6a88d5e",
+          "sig:sig_634dbe1410868424a81aa462",
+          "sig:sig_fe4f329105cb276c95294704"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_ff104c708f6f092c5e831858"
+        ],
+        "top_doc_ids": [
+          "sig:sig_93620153e9102f65002c0df6",
+          "sig:sig_a0b65333ac25491977d7718d",
+          "sig:sig_5470b2024759efe63502bcc6",
+          "sig:sig_ff104c708f6f092c5e831858",
+          "sig:sig_eba0cde0fd2d54fabbf06dc7"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_634dbe1410868424a81aa462"
+        ],
+        "top_doc_ids": [
+          "sig:sig_70be66cc24219a9f64a9b6ad",
+          "sig:sig_a0b65333ac25491977d7718d",
+          "sig:sig_5470b2024759efe63502bcc6",
+          "sig:sig_93620153e9102f65002c0df6",
+          "sig:sig_ff104c708f6f092c5e831858"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_040db6c6fde51e6027819306"
+        ],
+        "top_doc_ids": [
+          "sig:sig_040db6c6fde51e6027819306",
+          "sig:sig_5eb7c4a05a04135796bf6071",
+          "sig:sig_2495a1f42e2a6de0ec9e11b8",
+          "sig:sig_1cdab3e3d28a9379be86d940",
+          "sig:sig_3337ac7cfefcd6a51a0c6c88"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_d1dde8ba81ad6cda551cdd6a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_5eb7c4a05a04135796bf6071",
+          "sig:sig_2495a1f42e2a6de0ec9e11b8",
+          "sig:sig_d1dde8ba81ad6cda551cdd6a",
+          "sig:sig_040db6c6fde51e6027819306",
+          "sig:sig_4a9965747ffdb8a22f7f5877"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_301dacb64994f341dfbf333c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2585a31a595fbd75eb2e13b0",
+          "sig:sig_301dacb64994f341dfbf333c",
+          "sig:sig_4d0920e76081d399ae573ab2",
+          "sig:sig_53b8fb580c8484fc87d56870",
+          "sig:sig_ab657321a7c5bdb692b3ba33"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_e020111df4e5efcc1354e848"
+        ],
+        "top_doc_ids": [
+          "sig:sig_e020111df4e5efcc1354e848",
+          "sig:sig_d664fc0478dfa6bce6beb309",
+          "sig:sig_8e5ebb3c6807f02923250a8d",
+          "sig:sig_746609905f1e28f1c24ae943",
+          "sig:sig_829c2f720a31ae1671435ce9"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_26b6e0547cb5f4b0e73f92a8"
+        ],
+        "top_doc_ids": [
+          "sig:sig_21b50af7dcd56a5ef606ae56",
+          "sig:sig_d664fc0478dfa6bce6beb309",
+          "sig:sig_26b6e0547cb5f4b0e73f92a8",
+          "sig:sig_746609905f1e28f1c24ae943",
+          "sig:sig_8e5ebb3c6807f02923250a8d"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_1d82c87176524eb197343f8f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_1d82c87176524eb197343f8f",
+          "sig:sig_bbc810c7195494278dab2e8d",
+          "sig:sig_aa31cf634e33135c1fed4b24",
+          "sig:sig_4a061fbb69b50e24a5ba386b",
+          "sig:sig_607d45f58dd23d48dc9d219a"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_aa31cf634e33135c1fed4b24"
+        ],
+        "top_doc_ids": [
+          "sig:sig_aa31cf634e33135c1fed4b24",
+          "sig:sig_10dc283585be1f40ce43f86a",
+          "sig:sig_bbc810c7195494278dab2e8d",
+          "sig:sig_e972441fc6e39e93802b2594",
+          "sig:sig_0da408816565d6cc87038711"
+        ]
+      },
+      {
+        "id": "q_ent_01AC_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_3394eee16268c576c1cc6962"
+        ],
+        "top_doc_ids": [
+          "sig:sig_10dc283585be1f40ce43f86a",
+          "sig:sig_3394eee16268c576c1cc6962",
+          "sig:sig_882d83da0bf579b0d32399a6",
+          "sig:sig_4a061fbb69b50e24a5ba386b",
+          "sig:sig_bbc810c7195494278dab2e8d"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": false,
+        "expected": [
+          "sig:sig_d85fa3aa4478d40bdcab278c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_278293e4a0e7f21e4687035f",
+          "sig:sig_6a568a196754847937c53d1c",
+          "sig:sig_505d9f301d6af510c46a4cc2",
+          "sig:sig_d0b6940635e4b2f217af06af"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": false,
+        "expected": [
+          "sig:sig_ca427e422d59ad023a7ebb1d"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ffa706cd697e0acedd5bf76a",
+          "sig:sig_2e72593299576accb61b5590",
+          "sig:sig_40464da2505febbf96916cc8",
+          "sig:sig_992d57438ca1d15e08f4e955",
+          "sig:sig_33b020a937ab50c57354a47f"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_7f5b418718dd44a4715e1d0f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_db70d4c827051542262b0d89",
+          "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+          "sig:sig_50535c3f48d44c5cde1c6d88",
+          "sig:sig_3020a0107d62c0a4ce2db400"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": true,
+        "expected": [
+          "sig:sig_9f7323a589743f5f9d333bf1"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_50535c3f48d44c5cde1c6d88",
+          "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+          "sig:sig_744cc5cab66f54b7f10b8321",
+          "sig:sig_3020a0107d62c0a4ce2db400"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": false,
+        "expected": [
+          "sig:sig_8be758642a3e80889947453d"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ffa706cd697e0acedd5bf76a",
+          "sig:sig_9aa6a08fb9813e8265af3d44",
+          "sig:sig_ce5ba919011158bbedf5c26e",
+          "sig:sig_a85128a42383c00bb1d34fe4",
+          "sig:sig_6a88c8494f7b72dacaa6bde1"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_32d4b42aeb8a9e8e94139a59"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_9f11a37d6391dd097de3e649",
+          "sig:sig_0165eccb5dc0cbc09f0234fe",
+          "sig:sig_0415f7fff9a17671cfbf6ce9",
+          "sig:sig_0972753fce502b76c9fa1424"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_c2e22cacbeb25f5e191e551f"
+        ],
+        "top_doc_ids": [
+          "sig:sig_a85128a42383c00bb1d34fe4",
+          "sig:sig_c2e22cacbeb25f5e191e551f",
+          "sig:sig_9c861bf358d6011463fa1414",
+          "sig:sig_848bcbc3e57816cbed18a846",
+          "sig:sig_5f57ed9721d214ab8e3fdc99"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_08234c81184801d8a1b48779"
+        ],
+        "top_doc_ids": [
+          "sig:sig_08234c81184801d8a1b48779",
+          "sig:sig_a85128a42383c00bb1d34fe4",
+          "sig:sig_9c861bf358d6011463fa1414",
+          "sig:sig_c2e22cacbeb25f5e191e551f",
+          "sig:sig_848bcbc3e57816cbed18a846"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b190e9743a9a19d05f52be16"
+        ],
+        "top_doc_ids": [
+          "sig:sig_b190e9743a9a19d05f52be16",
+          "sig:sig_2d40730a803a8d90c6d3031b",
+          "sig:sig_33b020a937ab50c57354a47f",
+          "sig:sig_410447497f6ae31d77db5c3c",
+          "sig:sig_9f11a37d6391dd097de3e649"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_79a8b3e14d32aa307fe9f048"
+        ],
+        "top_doc_ids": [
+          "sig:sig_79a8b3e14d32aa307fe9f048",
+          "sig:sig_2d40730a803a8d90c6d3031b",
+          "sig:sig_b190e9743a9a19d05f52be16",
+          "sig:sig_33b020a937ab50c57354a47f",
+          "sig:sig_410447497f6ae31d77db5c3c"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_dc141370fb973038afb49320"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3dae59525eee621b801607c3",
+          "sig:sig_dc141370fb973038afb49320",
+          "sig:sig_d54990472e7d63ae7b9edd5d",
+          "sig:sig_992a29b465e4b706411fe1df",
+          "sig:sig_50535c3f48d44c5cde1c6d88"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_744cc5cab66f54b7f10b8321"
+        ],
+        "top_doc_ids": [
+          "sig:sig_744cc5cab66f54b7f10b8321",
+          "sig:sig_2e72593299576accb61b5590",
+          "sig:sig_359364d058ce027f7c5643db",
+          "sig:sig_6a88c8494f7b72dacaa6bde1",
+          "sig:sig_fb57d1657efa339c7bcb8819"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_3eb565595542c20d8fbb36fe"
+        ],
+        "top_doc_ids": [
+          "sig:sig_3eb565595542c20d8fbb36fe",
+          "sig:sig_2e72593299576accb61b5590",
+          "sig:sig_744cc5cab66f54b7f10b8321",
+          "sig:sig_359364d058ce027f7c5643db",
+          "sig:sig_fb57d1657efa339c7bcb8819"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_7c19d9a779c10cfded778354"
+        ],
+        "top_doc_ids": [
+          "sig:sig_7c19d9a779c10cfded778354",
+          "sig:sig_4918642614d8f1de2d0dd565",
+          "sig:sig_fe242946cf2412da7cdebb45",
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_278293e4a0e7f21e4687035f"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_188b70392f920b43ef0c41f4"
+        ],
+        "top_doc_ids": [
+          "sig:sig_188b70392f920b43ef0c41f4",
+          "sig:sig_a8f3b5c374296c24f2af193d",
+          "sig:sig_fe242946cf2412da7cdebb45",
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_7c19d9a779c10cfded778354"
+        ]
+      },
+      {
+        "id": "q_ent_01BE_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_4918642614d8f1de2d0dd565"
+        ],
+        "top_doc_ids": [
+          "sig:sig_4918642614d8f1de2d0dd565",
+          "sig:sig_f3540dbacb5d456e22a6b0a3",
+          "sig:sig_a8f3b5c374296c24f2af193d",
+          "sig:sig_d1aa0c021872e61d075f9bd0",
+          "sig:sig_7c19d9a779c10cfded778354"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_reschedule_a",
+        "query": "reschedule meeting April request originally",
+        "hit": false,
+        "expected": [
+          "sig:sig_5d19a947f076bdc266445f69"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ae5a793b4b8e8efc5b51710b",
+          "sig:sig_8e9e860534997106340957d4",
+          "sig:sig_5a6c9313af9bc6581ede40e2",
+          "sig:sig_4f164eac4a721c4ef9fe3161",
+          "sig:sig_3e3a42985a52954fb5fb428e"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_reschedule_b",
+        "query": "delivery reschedule April transcript phone",
+        "hit": false,
+        "expected": [
+          "sig:sig_c85f02b177def59cd8b287f5"
+        ],
+        "top_doc_ids": [
+          "sig:sig_f8d914c6b8de0dcaa23a4911",
+          "sig:sig_2e47b3f76c6cff2e05e42de1",
+          "sig:sig_06e06d655bd67d66b05e300f",
+          "sig:sig_78e50a65fb16a289e889ff75",
+          "sig:sig_7413d42a9cc69d53e5afcc2b"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_dispute_a",
+        "query": "invoice overcharged February amount dispute email",
+        "hit": false,
+        "expected": [
+          "sig:sig_9315534b81d6b50bc304d55a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_15fe5cbb51703c32461bcb46",
+          "sig:sig_a529dfaa6eccd851c4b15e6b",
+          "sig:sig_d41000cf13b430e7e70e8acc",
+          "sig:sig_b306a42d2ceab89f96f43c92",
+          "sig:sig_dda958931863b8e96f7febda"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_dispute_b",
+        "query": "invoice amount February dispute phone call",
+        "hit": true,
+        "expected": [
+          "sig:sig_f43d7d07925e5398024e61d1"
+        ],
+        "top_doc_ids": [
+          "sig:sig_e5048fceb880cc2fe438445e",
+          "sig:sig_15fe5cbb51703c32461bcb46",
+          "sig:sig_55e079a6d6004685d17d6327",
+          "sig:sig_d41000cf13b430e7e70e8acc",
+          "sig:sig_403789cf3e4bd5aa3a2f07f8"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_contradiction",
+        "query": "confirm meeting April originally scheduled still",
+        "hit": false,
+        "expected": [
+          "sig:sig_73573f4352378ff8dccabd5c"
+        ],
+        "top_doc_ids": [
+          "sig:sig_ca50db0e7616c93b7f3eacfd",
+          "sig:sig_ad1bac247c5a261634cf7bce",
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_d881bf2982b46945151a7e17",
+          "sig:sig_0d4b2efb9b5c2c6ad61b3d9a"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_stripe",
+        "query": "stripe invoice February amount created payment",
+        "hit": false,
+        "expected": [
+          "sig:sig_c47a2ff2893985c5d47a624a"
+        ],
+        "top_doc_ids": [
+          "sig:sig_0e98da4a5a572ec0942c6b60",
+          "sig:sig_dda958931863b8e96f7febda",
+          "sig:sig_c74eeaca4e928ddc49f114e8",
+          "sig:sig_ed4f4905bae68d8dd7cb1207",
+          "sig:sig_15fe5cbb51703c32461bcb46"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_0",
+        "query": "support issue resolution commitment July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d21797dc291effd396f732b8",
+          "sig:sig_06e06d655bd67d66b05e300f",
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e",
+          "sig:sig_a529dfaa6eccd851c4b15e6b",
+          "sig:sig_870f212aec08de77e4324d16"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_1",
+        "query": "payment confirmation acknowledgement received July 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_b0e0ca3684d95b58d3eef949"
+        ],
+        "top_doc_ids": [
+          "sig:sig_a529dfaa6eccd851c4b15e6b",
+          "sig:sig_b0e0ca3684d95b58d3eef949",
+          "sig:sig_b8e8cd8a748a9c8b766bdd0e",
+          "sig:sig_06e06d655bd67d66b05e300f",
+          "sig:sig_d21797dc291effd396f732b8"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_2",
+        "query": "new service engagement request infrastructure August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_d4d73bdb8a99ca5594d7e31e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d881bf2982b46945151a7e17",
+          "sig:sig_d4d73bdb8a99ca5594d7e31e",
+          "sig:sig_2798e9a411d2b2b667da9a9e",
+          "sig:sig_55e079a6d6004685d17d6327",
+          "sig:sig_f34c180619930d5b3aaf3fa3"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_3",
+        "query": "formal support complaint response August 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_4a4b309fdcdd2a23745317d0"
+        ],
+        "top_doc_ids": [
+          "sig:sig_2798e9a411d2b2b667da9a9e",
+          "sig:sig_d881bf2982b46945151a7e17",
+          "sig:sig_4a4b309fdcdd2a23745317d0",
+          "sig:sig_d4d73bdb8a99ca5594d7e31e",
+          "sig:sig_55e079a6d6004685d17d6327"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_4",
+        "query": "issue resolution confirmed notification September 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_f2a337f17842b04c8ca1d748"
+        ],
+        "top_doc_ids": [
+          "sig:sig_82521e16f06239746b17f1c2",
+          "sig:sig_7413d42a9cc69d53e5afcc2b",
+          "sig:sig_f2a337f17842b04c8ca1d748",
+          "sig:sig_de94a55d76c2bc27defafcbf",
+          "sig:sig_2e47b3f76c6cff2e05e42de1"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_5",
+        "query": "contract renewal terms discussion October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_403789cf3e4bd5aa3a2f07f8"
+        ],
+        "top_doc_ids": [
+          "sig:sig_403789cf3e4bd5aa3a2f07f8",
+          "sig:sig_ad1bac247c5a261634cf7bce",
+          "sig:sig_c4ac9df965be8b047e8363e4",
+          "sig:sig_78e50a65fb16a289e889ff75",
+          "sig:sig_ebc9d489a46a4fea7c6f7770"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_6",
+        "query": "invoice amount query details October 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_15fe5cbb51703c32461bcb46"
+        ],
+        "top_doc_ids": [
+          "sig:sig_15fe5cbb51703c32461bcb46",
+          "sig:sig_c74eeaca4e928ddc49f114e8",
+          "sig:sig_0e98da4a5a572ec0942c6b60",
+          "sig:sig_ed4f4905bae68d8dd7cb1207",
+          "sig:sig_ad1bac247c5a261634cf7bce"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_7",
+        "query": "quarterly account business review November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_8d285ecd4b34e015dc6a2f8e"
+        ],
+        "top_doc_ids": [
+          "sig:sig_9dbe814798dc194269b45861",
+          "sig:sig_8d285ecd4b34e015dc6a2f8e",
+          "sig:sig_e744181f22d4c42763ab95ca",
+          "sig:sig_bf8f3c7073289e7481a89cdd",
+          "sig:sig_ae5a793b4b8e8efc5b51710b"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_8",
+        "query": "positive feedback appreciation received November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_0a8b81620af634f05f39ff7b"
+        ],
+        "top_doc_ids": [
+          "sig:sig_0a8b81620af634f05f39ff7b",
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_ca50db0e7616c93b7f3eacfd",
+          "sig:sig_d430829b6730a0f9b34d2155",
+          "sig:sig_ae5a793b4b8e8efc5b51710b"
+        ]
+      },
+      {
+        "id": "q_ent_01GA_old_9",
+        "query": "new purchase order request November 2026",
+        "hit": true,
+        "expected": [
+          "sig:sig_df3c84b5238f518b5a119aa4"
+        ],
+        "top_doc_ids": [
+          "sig:sig_d430829b6730a0f9b34d2155",
+          "sig:sig_df3c84b5238f518b5a119aa4",
+          "sig:sig_6f5c20d57b7ffc26a66a6568",
+          "sig:sig_ca50db0e7616c93b7f3eacfd",
+          "sig:sig_9dbe814798dc194269b45861"
+        ]
+      }
+    ]
+  }
+]

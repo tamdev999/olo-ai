@@ -215,13 +215,16 @@ def _request(
         except (urllib.error.URLError, ConnectionRefusedError, OSError) as exc:
             # Retry only on transient connection failures, and only for
             # idempotent calls: GET/HEAD requests, or POST requests that carry
-            # an operation_id (the server will deduplicate on replay).
-            # Retrying a POST without operation_id risks duplicate writes and
-            # unexpected LLM costs.
+            # an operation_id (the server will deduplicate on replay),
+            # or POST to recall/stats endpoints (read-only).
             is_idempotent = method in ("GET", "HEAD") or (
                 method == "POST"
-                and body is not None
-                and "operation_id" in body
+                and (
+                    (body is not None and "operation_id" in body)
+                    or "/memories/recall" in path
+                    or "/llm-requests/stats" in path
+                    or "/stats" in path
+                )
             )
             # Match by errno to avoid false positives from substring scanning.
             _TRANSIENT_ERRNOS = frozenset({
@@ -235,6 +238,22 @@ def _request(
             if is_idempotent and is_transient and _attempt < 2:
                 last_exc = exc
                 time.sleep(8 + _attempt * 5)  # 8s, then 13s
+                continue
+            raise HindsightUnavailable(
+                f"Hindsight not reachable at {cfg.base_url}: {exc}"
+            ) from exc
+        except TimeoutError as exc:
+            # HTTP timeout: safe to retry for idempotent calls (V6 retain with
+            # operation_id, recall, stats).  The server may be temporarily slow
+            # under memory pressure from V5/V7 pg0 instances.
+            is_idempotent_for_timeout = method in ("GET", "HEAD") or (
+                method == "POST"
+                and body is not None
+                and "operation_id" in body
+            )
+            if is_idempotent_for_timeout and _attempt < 2:
+                last_exc = exc
+                time.sleep(8 + _attempt * 5)
                 continue
             raise HindsightUnavailable(
                 f"Hindsight not reachable at {cfg.base_url}: {exc}"

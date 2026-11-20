@@ -1,0 +1,205 @@
+Server ready. Bank: main-v1
+
+Recall@10: 30/48 = 62.5%
+
+================================================================================
+FAILURES:
+================================================================================
+
+Q: q_ent_01AC_reschedule_a
+  query:    reschedule meeting April request originally
+  entity:   ent_01ACME0000000000
+  ym:       None
+  pool:     131
+  expected: ['sig:sig_08e9ea787f62d5e743bf7288']
+  top10_ids (first 5): ['sig:sig_4d0920e76081d399ae573ab2', 'sig:sig_829c2f720a31ae1671435ce9', 'sig:sig_3337ac7cfefcd6a51a0c6c88', 'sig:sig_ab657321a7c5bdb692b3ba33', 'sig:sig_ead05cb269653cc58ee967b2']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01AC_reschedule_b
+  query:    delivery reschedule April transcript phone
+  entity:   ent_01ACME0000000000
+  ym:       None
+  pool:     131
+  expected: ['sig:sig_d992bc383e81974213d7d74a']
+  top10_ids (first 5): ['sig:sig_882d83da0bf579b0d32399a6', 'sig:sig_829c2f720a31ae1671435ce9', 'sig:sig_0da408816565d6cc87038711', 'sig:sig_0da408816565d6cc87038711', 'sig:sig_74f98069979ade55f818e371']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01AC_dispute_a
+  query:    invoice overcharged February amount dispute email
+  entity:   ent_01ACME0000000000
+  ym:       None
+  pool:     131
+  expected: ['sig:sig_878c09750cb1e9720801dd5c']
+  top10_ids (first 5): ['sig:sig_0da408816565d6cc87038711', 'sig:sig_607d45f58dd23d48dc9d219a', 'sig:sig_e5fed3aefb21a087e92a1faf', 'sig:sig_21b50af7dcd56a5ef606ae56', '']
+  top10_types: ['world', 'world', 'world', 'world', 'observation']
+
+Q: q_ent_01AC_dispute_b
+  query:    invoice amount February dispute phone call
+  entity:   ent_01ACME0000000000
+  ym:       None
+  pool:     131
+  expected: ['sig:sig_f46c15dcb9bfa4ba042c7b68']
+  top10_ids (first 5): ['sig:sig_039ab0ceb50eebeecb78b1b4', 'sig:sig_26b6e0547cb5f4b0e73f92a8', 'sig:sig_0da408816565d6cc87038711', 'sig:sig_607d45f58dd23d48dc9d219a', 'sig:sig_e972441fc6e39e93802b2594']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01AC_contradiction
+  query:    confirm meeting April originally scheduled still
+  entity:   ent_01ACME0000000000
+  ym:       None
+  pool:     131
+  expected: ['sig:sig_67d70d5b3e95a57eb6493a19']
+  top10_ids (first 5): ['sig:sig_74f98069979ade55f818e371', 'sig:sig_4d0920e76081d399ae573ab2', 'sig:sig_ea322718dea45b9b60b3bec1', 'sig:sig_3337ac7cfefcd6a51a0c6c88', 'sig:sig_ab657321a7c5bdb692b3ba33']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01AC_stripe
+  query:    stripe invoice February amount created payment
+  entity:   ent_01ACME0000000000
+  ym:       None
+  pool:     131
+  expected: ['sig:sig_a5cca61b8b296b8bd68bb2c0']
+  top10_ids (first 5): ['sig:sig_21b50af7dcd56a5ef606ae56', 'sig:sig_039ab0ceb50eebeecb78b1b4', 'sig:sig_038fac949d410946e6a88d5e', '', '']
+  top10_types: ['world', 'world', 'world', 'observation', 'observation']
+
+Q: q_ent_01BE_reschedule_a
+  query:    reschedule meeting April request originally
+  entity:   ent_01BETA0000000000
+  ym:       None
+  pool:     122
+  expected: ['sig:sig_d85fa3aa4478d40bdcab278c']
+  top10_ids (first 5): ['sig:sig_f3540dbacb5d456e22a6b0a3', 'sig:sig_410447497f6ae31d77db5c3c', 'sig:sig_33b020a937ab50c57354a47f', 'sig:sig_992d57438ca1d15e08f4e955', 'sig:sig_621e34e91a7d181cf08eaf2c']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01BE_reschedule_b
+  query:    delivery reschedule April transcript phone
+  entity:   ent_01BETA0000000000
+  ym:       None
+  pool:     122
+  expected: ['sig:sig_ca427e422d59ad023a7ebb1d']
+  top10_ids (first 5): ['sig:sig_ffa706cd697e0acedd5bf76a', 'sig:sig_40464da2505febbf96916cc8', 'sig:sig_a8f3b5c374296c24f2af193d', 'sig:sig_992d57438ca1d15e08f4e955', 'sig:sig_2d40730a803a8d90c6d3031b']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01BE_dispute_a
+  query:    invoice overcharged February amount dispute email
+  entity:   ent_01BETA0000000000
+  ym:       None
+  pool:     122
+  expected: ['sig:sig_7f5b418718dd44a4715e1d0f']
+  top10_ids (first 5): ['sig:sig_3ff84f5dfe7a590a38bbcfb2', 'sig:sig_50535c3f48d44c5cde1c6d88', '', 'sig:sig_3eb565595542c20d8fbb36fe', 'sig:sig_671ed8b7aaee2ffdd4d243d4']
+  top10_types: ['world', 'world', 'observation', 'world', 'world']
+
+Q: q_ent_01BE_dispute_b
+  query:    invoice amount February dispute phone call
+  entity:   ent_01BETA0000000000
+  ym:       None
+  pool:     122
+  expected: ['sig:sig_9f7323a589743f5f9d333bf1']
+  top10_ids (first 5): ['sig:sig_a8f3b5c374296c24f2af193d', 'sig:sig_fb57d1657efa339c7bcb8819', 'sig:sig_3ff84f5dfe7a590a38bbcfb2', 'sig:sig_992a29b465e4b706411fe1df', 'sig:sig_50535c3f48d44c5cde1c6d88']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01BE_contradiction
+  query:    confirm meeting April originally scheduled still
+  entity:   ent_01BETA0000000000
+  ym:       None
+  pool:     122
+  expected: ['sig:sig_8be758642a3e80889947453d']
+  top10_ids (first 5): ['sig:sig_992d57438ca1d15e08f4e955', 'sig:sig_359364d058ce027f7c5643db', 'sig:sig_d1aa0c021872e61d075f9bd0', 'sig:sig_505d9f301d6af510c46a4cc2', 'sig:sig_10e0726b1a473156d048ae8d']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01BE_stripe
+  query:    stripe invoice February amount created payment
+  entity:   ent_01BETA0000000000
+  ym:       None
+  pool:     122
+  expected: ['sig:sig_32d4b42aeb8a9e8e94139a59']
+  top10_ids (first 5): ['sig:sig_0972753fce502b76c9fa1424', 'sig:sig_9f11a37d6391dd097de3e649', '', '', 'sig:sig_3ff84f5dfe7a590a38bbcfb2']
+  top10_types: ['world', 'world', 'observation', 'observation', 'world']
+
+Q: q_ent_01GA_reschedule_a
+  query:    reschedule meeting April request originally
+  entity:   ent_01GAMM0000000000
+  ym:       None
+  pool:     132
+  expected: ['sig:sig_5d19a947f076bdc266445f69']
+  top10_ids (first 5): ['sig:sig_d430829b6730a0f9b34d2155', 'sig:sig_f8d914c6b8de0dcaa23a4911', 'sig:sig_bf8f3c7073289e7481a89cdd', 'sig:sig_4f164eac4a721c4ef9fe3161', 'sig:sig_06e06d655bd67d66b05e300f']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01GA_reschedule_b
+  query:    delivery reschedule April transcript phone
+  entity:   ent_01GAMM0000000000
+  ym:       None
+  pool:     132
+  expected: ['sig:sig_c85f02b177def59cd8b287f5']
+  top10_ids (first 5): ['sig:sig_f8d914c6b8de0dcaa23a4911', 'sig:sig_78e50a65fb16a289e889ff75', 'sig:sig_c4ac9df965be8b047e8363e4', 'sig:sig_2e47b3f76c6cff2e05e42de1', 'sig:sig_82521e16f06239746b17f1c2']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01GA_dispute_a
+  query:    invoice overcharged February amount dispute email
+  entity:   ent_01GAMM0000000000
+  ym:       None
+  pool:     132
+  expected: ['sig:sig_9315534b81d6b50bc304d55a']
+  top10_ids (first 5): ['sig:sig_15fe5cbb51703c32461bcb46', 'sig:sig_e5048fceb880cc2fe438445e', 'sig:sig_d41000cf13b430e7e70e8acc', 'sig:sig_55e079a6d6004685d17d6327', 'sig:sig_ed4f4905bae68d8dd7cb1207']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01GA_dispute_b
+  query:    invoice amount February dispute phone call
+  entity:   ent_01GAMM0000000000
+  ym:       None
+  pool:     132
+  expected: ['sig:sig_f43d7d07925e5398024e61d1']
+  top10_ids (first 5): ['sig:sig_15fe5cbb51703c32461bcb46', 'sig:sig_e5048fceb880cc2fe438445e', 'sig:sig_d41000cf13b430e7e70e8acc', 'sig:sig_6f75e347a3ca46ba6b07496c', 'sig:sig_55e079a6d6004685d17d6327']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+Q: q_ent_01GA_contradiction
+  query:    confirm meeting April originally scheduled still
+  entity:   ent_01GAMM0000000000
+  ym:       None
+  pool:     132
+  expected: ['sig:sig_73573f4352378ff8dccabd5c']
+  top10_ids (first 5): ['sig:sig_f8d914c6b8de0dcaa23a4911', '', 'sig:sig_d430829b6730a0f9b34d2155', 'sig:sig_8321afda49addb8f971dd333', 'sig:sig_3e3a42985a52954fb5fb428e']
+  top10_types: ['world', 'observation', 'world', 'world', 'world']
+
+Q: q_ent_01GA_stripe
+  query:    stripe invoice February amount created payment
+  entity:   ent_01GAMM0000000000
+  ym:       None
+  pool:     132
+  expected: ['sig:sig_c47a2ff2893985c5d47a624a']
+  top10_ids (first 5): ['sig:sig_898e865009d67e8f53e5dd7d', 'sig:sig_dda958931863b8e96f7febda', 'sig:sig_15fe5cbb51703c32461bcb46', 'sig:sig_c74eeaca4e928ddc49f114e8', 'sig:sig_ed4f4905bae68d8dd7cb1207']
+  top10_types: ['world', 'world', 'world', 'world', 'world']
+
+================================================================================
+PASSES (rank info):
+================================================================================
+  q_ent_01AC_old_0                          rank= 3  pool= 12  lat= 300ms
+  q_ent_01AC_old_1                          rank= 2  pool= 12  lat= 294ms
+  q_ent_01AC_old_2                          rank= 4  pool= 13  lat= 295ms
+  q_ent_01AC_old_3                          rank= 3  pool= 13  lat= 287ms
+  q_ent_01AC_old_4                          rank= 1  pool=  9  lat= 324ms
+  q_ent_01AC_old_5                          rank= 3  pool= 10  lat= 294ms
+  q_ent_01AC_old_6                          rank= 3  pool= 10  lat= 292ms
+  q_ent_01AC_old_7                          rank= 3  pool= 18  lat= 337ms
+  q_ent_01AC_old_8                          rank= 2  pool= 18  lat= 328ms
+  q_ent_01AC_old_9                          rank= 4  pool= 18  lat= 345ms
+  q_ent_01BE_old_0                          rank= 3  pool= 15  lat= 305ms
+  q_ent_01BE_old_1                          rank= 2  pool= 15  lat= 302ms
+  q_ent_01BE_old_2                          rank= 1  pool= 10  lat= 275ms
+  q_ent_01BE_old_3                          rank= 2  pool= 10  lat= 281ms
+  q_ent_01BE_old_4                          rank= 3  pool=  7  lat= 288ms
+  q_ent_01BE_old_5                          rank= 2  pool=  9  lat= 281ms
+  q_ent_01BE_old_6                          rank= 2  pool=  9  lat= 288ms
+  q_ent_01BE_old_7                          rank= 5  pool=  8  lat= 293ms
+  q_ent_01BE_old_8                          rank= 2  pool=  8  lat= 297ms
+  q_ent_01BE_old_9                          rank= 1  pool=  8  lat= 281ms
+  q_ent_01GA_old_0                          rank= 3  pool= 11  lat= 304ms
+  q_ent_01GA_old_1                          rank= 1  pool= 11  lat= 297ms
+  q_ent_01GA_old_2                          rank= 1  pool= 15  lat= 293ms
+  q_ent_01GA_old_3                          rank= 1  pool= 15  lat= 297ms
+  q_ent_01GA_old_4                          rank= 1  pool=  7  lat= 302ms
+  q_ent_01GA_old_5                          rank= 2  pool= 13  lat= 301ms
+  q_ent_01GA_old_6                          rank= 2  pool= 13  lat= 303ms
+  q_ent_01GA_old_7                          rank= 5  pool= 16  lat= 310ms
+  q_ent_01GA_old_8                          rank= 2  pool= 16  lat= 319ms
+  q_ent_01GA_old_9                          rank= 1  pool= 16  lat= 325ms
+
+Final: 30/48 = 62.5%
