@@ -34,7 +34,7 @@ from olo.signals import (
 )
 
 # ── Schema version ────────────────────────────────────────────────────────────
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_LEASE_TTL = 900  # seconds
@@ -94,38 +94,48 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
 
     Sets WAL mode, foreign keys, busy timeout, and synchronous=FULL.
     Creates the DB file at mode 0o600 and restricts the parent directory to
-    0o700 on POSIX **only if Olo creates it**.  An existing directory is never
-    chmod'd — doing so would clobber system directories (e.g. ``/tmp``) if the
-    caller passes a path that happens to live there.
+    0o700 on POSIX.  Rules for the parent directory (POSIX only):
+
+    - **New directory** (did not exist): Olo creates it at 0o700.
+    - **Existing directory owned by this process** (st_uid == geteuid()):
+      Olo chmods it to 0o700 to enforce the security invariant.
+    - **Sticky + world-writable** (e.g. ``/tmp``): refused.  Such directories
+      let any process unlink the DB file.
+    - **Owned by a different uid**: refused.  Chmoding a foreign directory
+      is a privilege escalation.
 
     Raises:
-        ValueError: if ``db.parent`` is a world-writable sticky directory
-            (e.g. ``/tmp``).  An application-owned path must be used instead.
+        ValueError: for the two refusal cases above.
     """
     import stat as _stat
 
     db = path or db_path()
 
     if os.name != "nt":
-        # Refuse placing the DB directly in a world-writable sticky directory
-        # (e.g. /tmp).  Such directories let any process rename or unlink the
-        # DB file, and chmod-ing them clobbers system state.
         if db.parent.exists():
-            parent_mode = db.parent.stat().st_mode
-            is_sticky_world_writable = (
-                bool(parent_mode & _stat.S_ISVTX)    # sticky bit
-                and bool(parent_mode & _stat.S_IWOTH) # world-writable
-            )
-            if is_sticky_world_writable:
+            parent_st = db.parent.stat()
+            parent_mode = parent_st.st_mode
+
+            # Refuse sticky + world-writable (e.g. /tmp)
+            if bool(parent_mode & _stat.S_ISVTX) and bool(parent_mode & _stat.S_IWOTH):
                 raise ValueError(
                     f"Refusing to place Olo DB in world-writable sticky directory "
                     f"{str(db.parent)!r}.  Use an application-owned path "
                     f"(e.g. a subdirectory of the application home)."
                 )
-            # Directory already exists; leave its permissions untouched.
+            # Refuse if owned by a different user — chmoding a foreign directory
+            # would be a privilege escalation.
+            if parent_st.st_uid != os.geteuid():
+                raise ValueError(
+                    f"Refusing to place Olo DB in a directory owned by uid "
+                    f"{parent_st.st_uid} (current uid={os.geteuid()}): "
+                    f"{str(db.parent)!r}.  Use a path owned by this process."
+                )
+            # Existing directory owned by us: enforce 0700
             db.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(str(db.parent), 0o700)
         else:
-            # Directory does not exist; Olo creates it at 0o700.
+            # New directory: Olo creates it secured
             db.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chmod(str(db.parent), 0o700)
     else:
@@ -218,6 +228,17 @@ _DDL_STATEMENTS = [
     PRIMARY KEY (source, sha256)
 )""",
     "CREATE INDEX IF NOT EXISTS idx_blobs_run ON content_blobs(run_id)",
+    # M3.0 §C2: projection ledger tracks which Olo signals are confirmed in Hindsight
+    """CREATE TABLE IF NOT EXISTS hindsight_projection (
+    signal_id      TEXT NOT NULL,
+    bank_id        TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    operation_id   TEXT NOT NULL,
+    status         TEXT NOT NULL CHECK (status IN ('pending','confirmed','failed')),
+    confirmed_at   TEXT,
+    PRIMARY KEY (signal_id, bank_id)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_proj_bank_status ON hindsight_projection(bank_id, status)",
 ]
 
 
@@ -781,6 +802,84 @@ def get_blob_raw(source: str, sha256: str, conn: sqlite3.Connection) -> Optional
     if row["encoding"] == "zlib":
         return zlib.decompress(row["data"])
     return bytes(row["data"])
+
+
+# ── Projection ledger (M3.0 §C2) ─────────────────────────────────────────────
+
+def record_projection(
+    signal_id: str,
+    bank_id: str,
+    content_sha256: str,
+    operation_id: str,
+    conn: sqlite3.Connection,
+) -> None:
+    """Upsert a pending projection row.  Call before each retain batch."""
+    conn.execute(
+        "INSERT INTO hindsight_projection"
+        "(signal_id, bank_id, content_sha256, operation_id, status)"
+        " VALUES (?,?,?,?,'pending')"
+        " ON CONFLICT(signal_id, bank_id) DO UPDATE SET"
+        "  content_sha256=excluded.content_sha256,"
+        "  operation_id=excluded.operation_id,"
+        "  status='pending',"
+        "  confirmed_at=NULL",
+        (signal_id, bank_id, content_sha256, operation_id),
+    )
+
+
+def confirm_projection(
+    signal_id: str,
+    bank_id: str,
+    conn: sqlite3.Connection,
+    clock: Callable[[], datetime] = utc_now,
+) -> None:
+    """Mark a projection row as confirmed."""
+    conn.execute(
+        "UPDATE hindsight_projection SET status='confirmed', confirmed_at=?"
+        " WHERE signal_id=? AND bank_id=?",
+        (format_utc(clock()), signal_id, bank_id),
+    )
+
+
+def fail_projection(
+    signal_id: str,
+    bank_id: str,
+    conn: sqlite3.Connection,
+) -> None:
+    """Mark a projection row as failed."""
+    conn.execute(
+        "UPDATE hindsight_projection SET status='failed'"
+        " WHERE signal_id=? AND bank_id=?",
+        (signal_id, bank_id),
+    )
+
+
+def list_unconfirmed_projections(
+    bank_id: str,
+    conn: sqlite3.Connection,
+) -> list[dict]:
+    """Return all pending or failed projection rows for *bank_id*."""
+    rows = conn.execute(
+        "SELECT signal_id, content_sha256, operation_id, status"
+        " FROM hindsight_projection"
+        " WHERE bank_id=? AND status IN ('pending','failed')"
+        " ORDER BY signal_id",
+        (bank_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_projection_summary(
+    bank_id: str,
+    conn: sqlite3.Connection,
+) -> dict[str, int]:
+    """Return counts by status for *bank_id*."""
+    rows = conn.execute(
+        "SELECT status, COUNT(*) n FROM hindsight_projection"
+        " WHERE bank_id=? GROUP BY status",
+        (bank_id,),
+    ).fetchall()
+    return {r["status"]: r["n"] for r in rows}
 
 
 def purge_content(source: str, conn: sqlite3.Connection,

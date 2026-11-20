@@ -291,24 +291,25 @@ def test_ts5_v1_to_v2_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     conn = connect(db_file)
     migrate(conn)
 
-    # Schema version must be 2
+    # Schema version must be latest (3)
     version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
-    assert version == _SCHEMA_VERSION == 2, f"schema_version={version}"
+    assert version == _SCHEMA_VERSION, f"schema_version={version}, expected {_SCHEMA_VERSION}"
 
     # Existing signal intact
     n = conn.execute("SELECT COUNT(*) n FROM signals WHERE source='src1'").fetchone()["n"]
     assert n == 1
 
-    # content_blobs table exists
+    # content_blobs and hindsight_projection tables must exist
     tables = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     ).fetchall()}
     assert "content_blobs" in tables
+    assert "hindsight_projection" in tables, "schema v3 must add hindsight_projection"
 
     # Idempotent second migrate
     migrate(conn)
     version2 = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
-    assert version2 == 2
+    assert version2 == _SCHEMA_VERSION
     conn.close()
 
 

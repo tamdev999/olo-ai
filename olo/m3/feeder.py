@@ -323,20 +323,19 @@ def batch_retain_to_hindsight(
     if not items:
         raise FeedError("batch_retain_to_hindsight: items list is empty")
 
-    # Take a budget baseline snapshot before any work
+    # Take a budget baseline snapshot before any work — always fail closed
+    # (C6 fix: removed OLO_GATE_STRICT guard; production workloads are
+    # protected the same way as gate runs).
     baseline = None
     if budget_guard is not None:
         from olo.m3.hindsight.budget import StatsUnavailableError
         try:
             baseline = budget_guard.snapshot()
         except StatsUnavailableError as exc:
-            if os.environ.get("OLO_GATE_STRICT"):
-                raise FeedError(
-                    f"Budget guard: stats unavailable before retain — "
-                    f"cannot enforce spending limit (fails closed): {exc}"
-                ) from exc
-            # Non-strict: proceed without budget enforcement
-            baseline = None
+            raise FeedError(
+                f"Budget guard: stats unavailable before retain — "
+                f"cannot enforce spending limit (fails closed): {exc}"
+            ) from exc
 
     prose_items = [i for i in items if i.get("strategy") == "prose"]
     struct_items = [i for i in items if i.get("strategy") != "prose"]
@@ -351,9 +350,20 @@ def batch_retain_to_hindsight(
             if not batch:
                 continue
 
+            # Content-addressed operation ID: stable across reordering and
+            # batch-boundary changes.  A later feed whose batch 0 holds
+            # different signals gets a different ID, so Hindsight does not
+            # treat it as an already-completed operation (C1 fix).
+            batch_content_key = "|".join(
+                sorted(
+                    f"{item.get('document_id', '')}:"
+                    f"{item.get('metadata', {}).get('content_sha256', '')}"
+                    for item in batch
+                )
+            )
             op_id = str(_uuid.uuid5(
                 _uuid.NAMESPACE_OID,
-                f"feeder-{label}-{start}-{bank_id}",
+                f"{bank_id}|{label}|{batch_content_key}",
             ))
             client.retain(batch, operation_id=op_id, async_=async_, bank_id=bank_id)
 
@@ -366,17 +376,164 @@ def batch_retain_to_hindsight(
                 counters["structured"] += len(batch)
             counters["total"] += len(batch)
 
-            # Check budget after each batch
+            # Check budget after each batch — always fail closed on unavailable
+            # statistics (C6 fix: removed the OLO_GATE_STRICT guard so production
+            # workloads are protected, not just strict-mode gate runs).
             if budget_guard is not None and baseline is not None:
                 from olo.m3.hindsight.budget import StatsUnavailableError
                 try:
                     budget_guard.check(baseline)
                 except StatsUnavailableError as exc:
-                    if os.environ.get("OLO_GATE_STRICT"):
-                        raise FeedError(
-                            f"Budget guard: stats unavailable mid-retain "
-                            f"(fails closed): {exc}"
-                        ) from exc
-                    # Non-strict: continue without check
+                    raise FeedError(
+                        f"Budget guard: stats unavailable mid-retain "
+                        f"(fails closed — missing statistics must never mean "
+                        f"unchecked spending): {exc}"
+                    ) from exc
 
     return counters
+
+
+# ── Projection reconciler (M3.0 §C2) ─────────────────────────────────────────
+
+def reconcile_hindsight_projection(
+    db_path: Path,
+    client,  # HindsightClient
+    *,
+    bank_id: str,
+    source: str = "hindsight_gate",
+    batch_size: int = 50,
+) -> dict[str, int]:
+    """Diff olo.db signals against Hindsight documents and re-submit missing ones.
+
+    Algorithm:
+      1. Load all signals from olo.db.
+      2. List all documents in the Hindsight bank.
+      3. For each signal missing from Hindsight (or with a different
+         content_sha256 in the document metadata), re-submit it via
+         ``batch_retain_to_hindsight``.
+      4. Confirm projection rows for signals whose documents exist and have
+         the correct content_sha256.
+      5. Fail loudly if any operation ends in ``failed`` status.
+
+    Returns:
+        {
+            "total": N,     # signals in olo.db
+            "confirmed": C, # already or newly confirmed
+            "resubmitted": R, # re-retained this run
+            "failed": F,    # operations that ended failed
+        }
+
+    Raises:
+        FeedError: if any operation ends failed or any evidence is missing.
+    """
+    from olo.store import connect as _connect, migrate, record_projection, \
+        confirm_projection, fail_projection, list_unconfirmed_projections
+    from olo.m3.hindsight.client import HindsightAPIError
+
+    # 1. Load all items from olo.db
+    items = build_hindsight_items(db_path, source=source)
+    signal_map = {
+        item["document_id"]: item
+        for item in items
+    }
+
+    # 2. Open projection ledger
+    conn = _connect(db_path)
+    migrate(conn)
+
+    # 3. List current Hindsight documents for this bank
+    try:
+        all_docs = client.list_all_documents_with_tags([], bank_id=bank_id)
+    except HindsightAPIError as exc:
+        if exc.status_code == 404:
+            all_docs = []  # bank doesn't exist yet — everything is missing
+        else:
+            conn.close()
+            raise FeedError(f"Cannot list Hindsight documents: {exc}") from exc
+
+    # Build a lookup: document_id → content_sha256 in Hindsight
+    hindsight_sha: dict[str, str] = {}
+    for doc in all_docs:
+        doc_id = doc.get("document_id") or doc.get("id", "")
+        meta = doc.get("document_metadata") or doc.get("metadata") or {}
+        sha = meta.get("content_sha256", "")
+        if doc_id:
+            hindsight_sha[doc_id] = sha
+
+    # 4. Identify missing or mismatched signals
+    missing_items: list[dict] = []
+    for doc_id, item in signal_map.items():
+        expected_sha = item.get("metadata", {}).get("content_sha256", "")
+        if doc_id not in hindsight_sha or hindsight_sha[doc_id] != expected_sha:
+            missing_items.append(item)
+
+    # 5. Re-submit missing items
+    resubmitted = 0
+    if missing_items:
+        # Use content-addressed IDs for all re-submissions
+        counters = batch_retain_to_hindsight(
+            missing_items,
+            client,
+            bank_id=bank_id,
+            batch_size=batch_size,
+            async_=False,  # synchronous for deterministic reconciliation
+        )
+        resubmitted = counters["total"]
+
+    # 6. Verify and confirm all signals
+    failed_sigs: list[str] = []
+    confirmed_count = 0
+
+    # Refresh document list after re-submissions
+    try:
+        all_docs_after = client.list_all_documents_with_tags([], bank_id=bank_id)
+    except HindsightAPIError:
+        all_docs_after = all_docs
+
+    hindsight_sha_after: dict[str, str] = {}
+    for doc in all_docs_after:
+        doc_id = doc.get("document_id") or doc.get("id", "")
+        meta = doc.get("document_metadata") or doc.get("metadata") or {}
+        sha = meta.get("content_sha256", "")
+        if doc_id:
+            hindsight_sha_after[doc_id] = sha
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for doc_id, item in signal_map.items():
+            sig_id = doc_id[4:] if doc_id.startswith("sig:") else doc_id
+            expected_sha = item.get("metadata", {}).get("content_sha256", "")
+            operation_id = str(
+                __import__("uuid").uuid5(
+                    __import__("uuid").NAMESPACE_OID,
+                    f"reconcile|{bank_id}|{doc_id}|{expected_sha}",
+                )
+            )
+            if (doc_id in hindsight_sha_after and
+                    hindsight_sha_after[doc_id] == expected_sha):
+                record_projection(sig_id, bank_id, expected_sha, operation_id, conn)
+                confirm_projection(sig_id, bank_id, conn)
+                confirmed_count += 1
+            else:
+                fail_projection(sig_id, bank_id, conn)
+                failed_sigs.append(sig_id)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        conn.close()
+        raise
+
+    conn.close()
+
+    if failed_sigs:
+        raise FeedError(
+            f"Reconciliation: {len(failed_sigs)} signals not confirmed in Hindsight "
+            f"after re-submission. Missing: {failed_sigs[:5]}"
+        )
+
+    return {
+        "total": len(signal_map),
+        "confirmed": confirmed_count,
+        "resubmitted": resubmitted,
+        "failed": len(failed_sigs),
+    }

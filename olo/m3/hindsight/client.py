@@ -112,10 +112,34 @@ class HindsightConfig:
         return cls(
             host="127.0.0.1",
             port=int(entry["port"]),
-            # Default to business-specific bank so a mis-routed client gets 404
-            # rather than silently reading another business's data.
-            bank_id=entry.get("bank_id") or f"{business_id}-main",
+            # Use the bank_id from the registry (written by setup.sh as
+            # "olo-{business_id}").  A mis-routed client targeting the wrong
+            # bank gets 404, not another business's data (C4 fix).
+            bank_id=entry.get("bank_id") or f"olo-{business_id}",
+            # Load the per-business API key from the .env file for authenticated
+            # requests.  The key is not in the registry (security); read it
+            # from the per-business directory.
+            api_key=cls._load_business_api_key(business_id, reg_path),
         )
+
+    @classmethod
+    def _load_business_api_key(
+        cls,
+        business_id: str,
+        registry_path: "pathlib.Path",  # type: ignore[name-defined]
+    ) -> str:
+        """Load the per-business tenant API key from the business .env file."""
+        import pathlib as _pathlib
+        # The .env file lives next to the registry, in businesses/{id}/.env
+        hermes_home = registry_path.parent
+        env_file = hermes_home / "businesses" / business_id / ".env"
+        if not env_file.exists():
+            return ""
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("HINDSIGHT_API_TENANT_EXTENSION_API_KEY="):
+                return line.split("=", 1)[1].strip()
+        return ""
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────

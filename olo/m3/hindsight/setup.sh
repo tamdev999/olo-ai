@@ -60,86 +60,87 @@ REGISTRY_LOCK="${REGISTRY_FILE}.lock"
 
 # pg0 instance name; stored at $HOME/.pg0/olo-<BUSINESS_ID>/
 PG0_INSTANCE="olo-${BUSINESS_ID}"
-DATABASE_URL="pg0://${PG0_INSTANCE}"
+# C4: add fsync + synchronous_commit for OS-crash durability (pg0 runs with
+# -F by default; this parameter re-enables fsync for the specific instance).
+DATABASE_URL="pg0://${PG0_INSTANCE}?fsync=on&synchronous_commit=on"
+
+# C4: per-business bank ID — a mis-routed client gets 404, not another
+# business's data.  Format: olo-<business_id>
+BANK_ID="olo-${BUSINESS_ID}"
 
 # ── Pinned fork ──────────────────────────────────────────────────────────────
 FORK_URL="https://github.com/tamdev999/olo-persistentmemory.git"
 PINNED_SHA="0eb02d8c418eac6b489bc63883c993b2257dfac4"
 FORK_INSTALL="hindsight-api-slim @ git+${FORK_URL}@${PINNED_SHA}#subdirectory=hindsight-api-slim"
 
-# ── Port allocation (correction 1: collision-safe unique ports) ──────────────
-# If HINDSIGHT_PORT is explicitly provided check for collision; otherwise
-# auto-allocate the next free port above 18800 and register it atomically.
-_allocate_port() {
+# ── Port allocation and registry update (C4: one flock covers both steps) ───
+# Keeping allocation and registration under the same flock eliminates the race
+# where two concurrent setup.sh runs could both select the same port before
+# either writes the registry.
+_allocate_and_register() {
     local requested="${HINDSIGHT_PORT:-}"
-    # Use a lock file to prevent concurrent allocation races
     (
         flock -x 9
 
         # Read existing registry
-        local existing=""
+        local existing="{}"
         if [[ -f "$REGISTRY_FILE" ]]; then
             existing=$(cat "$REGISTRY_FILE")
-        else
-            existing="{}"
         fi
 
-        if [[ -n "$requested" ]]; then
-            # Explicit port: fail if another business already owns it
-            local owner
-            owner=$("${_PYTHON:-python3}" - <<PYEOF
-import json, sys
-try:
-    reg = json.loads('''${existing}''')
-    for biz, cfg in reg.items():
-        if isinstance(cfg, dict) and str(cfg.get('port','')) == '${requested}' and biz != '${BUSINESS_ID}':
-            print(biz)
-            sys.exit(0)
-except Exception:
-    pass
-PYEOF
-)
-            if [[ -n "$owner" ]]; then
-                echo "ERROR: port ${requested} is already allocated to business '$owner'" >&2
-                echo "ERROR: two businesses cannot share a service port." >&2
-                exit 1
-            fi
-            echo "${requested}"
-        else
-            # Auto-allocate: find the next port not in use in the registry
-            # and not bound on the system
-            "${_PYTHON:-python3}" - <<PYEOF
+        # Allocate / validate port, then immediately write the registry —
+        # all within the same lock.
+        "${_PYTHON:-python3}" - <<PYEOF
 import json, socket, sys
+
 try:
     reg = json.loads('''${existing}''')
 except Exception:
     reg = {}
-# Reuse this business's existing port if already registered
-biz_cfg = reg.get('${BUSINESS_ID}', {})
-if isinstance(biz_cfg, dict) and biz_cfg.get('port'):
-    print(biz_cfg['port'])
-    sys.exit(0)
-allocated = {int(cfg['port']) for cfg in reg.values()
-             if isinstance(cfg, dict) and cfg.get('port')}
-port = 18800
-while True:
-    if port not in allocated:
-        # Check system availability
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind(('127.0.0.1', port))
-            s.close()
-            break
-        except OSError:
-            pass
-    port += 1
-    if port > 19900:
-        print('ERROR: no free ports available', file=sys.stderr)
-        sys.exit(1)
+
+requested = '${requested}'
+biz_id    = '${BUSINESS_ID}'
+
+if requested:
+    # Explicit port: fail if another business already owns it
+    for biz, cfg in reg.items():
+        if isinstance(cfg, dict) and str(cfg.get('port','')) == requested and biz != biz_id:
+            print(f'ERROR: port {requested} already allocated to {biz!r}', file=sys.stderr)
+            sys.exit(1)
+    port = int(requested)
+else:
+    # Reuse existing registration for this business
+    biz_cfg = reg.get(biz_id, {})
+    if isinstance(biz_cfg, dict) and biz_cfg.get('port'):
+        port = int(biz_cfg['port'])
+    else:
+        # Auto-allocate the next free port not already in the registry
+        allocated = {int(cfg['port']) for cfg in reg.values()
+                     if isinstance(cfg, dict) and cfg.get('port')}
+        port = 18800
+        while True:
+            if port not in allocated:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind(('127.0.0.1', port))
+                    s.close()
+                    break
+                except OSError:
+                    pass
+            port += 1
+            if port > 19900:
+                print('ERROR: no free ports available', file=sys.stderr)
+                sys.exit(1)
+
+# Write the registry entry atomically (still inside the flock)
+import pathlib
+reg[biz_id] = {"port": port, "bank_id": '${BANK_ID}'}
+reg_path = pathlib.Path('${REGISTRY_FILE}')
+reg_path.parent.mkdir(parents=True, exist_ok=True)
+reg_path.write_text(json.dumps(reg, indent=2))
 print(port)
 PYEOF
-        fi
     ) 9>"${REGISTRY_LOCK}"
 }
 
@@ -153,7 +154,7 @@ if [[ -z "$_PYTHON" ]]; then
     fi
 fi
 
-PORT="$(_allocate_port)"
+PORT="$(_allocate_and_register)"
 echo "[setup] Business ${BUSINESS_ID} using port ${PORT}"
 
 # ── Create per-business HOME ─────────────────────────────────────────────────
@@ -229,12 +230,25 @@ else
     echo "[setup] WARN: local e5-small model not found; server will download on first start"
 fi
 
+# ── Generate per-business API key (C4: tenant authentication) ───────────────
+# A unique API key per business means a mis-routed client gets 401, not data.
+BUSINESS_API_KEY=$("$_PYTHON" -c "import secrets; print(secrets.token_hex(32))")
+
+# If a key already exists (re-run), preserve it
+EXISTING_KEY=""
+if [[ -f "$ENV_FILE" ]]; then
+    EXISTING_KEY=$(grep '^HINDSIGHT_API_TENANT_EXTENSION_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+fi
+if [[ -n "$EXISTING_KEY" ]]; then
+    BUSINESS_API_KEY="$EXISTING_KEY"
+fi
+
 # ── Write per-business .env ───────────────────────────────────────────────────
 ENV_FILE="${BUSINESS_HOME}/.env"
 cat > "$ENV_FILE" <<DOTENV
 # Hindsight configuration for business: ${BUSINESS_ID}
 # Generated by olo/m3/hindsight/setup.sh
-# DO NOT COMMIT — runtime-only. API key set via Hermes secret scope.
+# DO NOT COMMIT — runtime-only. DeepSeek API key set via Hermes secret scope.
 # Only valid Hindsight v1.2.1 env vars are written here.
 
 HINDSIGHT_API_DATABASE_URL=${DATABASE_URL}
@@ -242,6 +256,14 @@ HINDSIGHT_API_HOST=127.0.0.1
 HINDSIGHT_API_PORT=${PORT}
 HINDSIGHT_API_LLM_PROVIDER=${PROVIDER}
 # HINDSIGHT_API_LLM_API_KEY=  <-- set via Hermes secret scope, NOT here
+
+# C4: Per-business tenant authentication.
+# A client with a different key gets HTTP 401, never another business's data.
+HINDSIGHT_API_TENANT_EXTENSION_API_KEY=${BUSINESS_API_KEY}
+
+# C4: Per-business bank ID — a mis-routed client gets 404, not data.
+HINDSIGHT_API_DEFAULT_BANK_ID=${BANK_ID}
+
 HINDSIGHT_API_DECISION_MODEL_PROVIDER=none
 HINDSIGHT_API_MCP_ENABLED=false
 HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx
@@ -252,30 +274,26 @@ ${ONNX_MODEL_PATH_LINE}
 HINDSIGHT_API_EMBEDDINGS_ONNX_CPU_MEM_ARENA=false
 HINDSIGHT_API_RERANKER_PROVIDER=rrf
 HINDSIGHT_API_STORE_DOCUMENT_TEXT=true
-HINDSIGHT_API_LLM_TRACE_ENABLED=false
+# C6: Enable LLM trace so the budget guard can see token counts.
+# Content capture is off — only token counts are stored.
+HINDSIGHT_API_LLM_TRACE_ENABLED=true
+HINDSIGHT_API_LLM_TRACE_STORE_CONTENT=false
 OTEL_SDK_DISABLED=true
 DOTENV
 chmod 600 "$ENV_FILE"
 
-# ── Update port registry (atomic, collision-safe) ────────────────────────────
-(
-    flock -x 9
-    "$_PYTHON" - <<PYEOF
-import json, pathlib
-reg_path = pathlib.Path("${REGISTRY_FILE}")
-registry = {}
-if reg_path.exists():
-    try:
-        registry = json.loads(reg_path.read_text())
-    except Exception:
-        registry = {}
-registry["${BUSINESS_ID}"] = {"port": ${PORT}, "bank_id": "main-v1"}
-reg_path.parent.mkdir(parents=True, exist_ok=True)
-reg_path.write_text(json.dumps(registry, indent=2))
-PYEOF
-) 9>"${REGISTRY_LOCK}"
+# (Port registry was written atomically by _allocate_and_register above.)
 
 echo "[setup] Business ${BUSINESS_ID}: env → ${ENV_FILE}"
 echo "[setup] Port registry → ${REGISTRY_FILE} (port=${PORT})"
 echo "[setup] pg0: ${PG0_INSTANCE} (data: ${BUSINESS_HOME}/.pg0/${PG0_INSTANCE}/)"
+echo "[setup] Bank ID: ${BANK_ID}"
+echo "[setup] LLM trace: enabled (content capture: off)"
 echo "[setup] Start: HOME=${BUSINESS_HOME} ${VENV}/bin/hindsight-api (env from ${ENV_FILE})"
+echo ""
+echo "[setup] ARCHITECTURE NOTE (C7): Zero-LLM structured signals and LLM"
+echo "[setup] observations for prose cannot coexist in a single Hindsight bank."
+echo "[setup] Consolidation is bank-level; enabling it for prose means it also"
+echo "[setup] runs on structured signals.  BBC decision required on whether to"
+echo "[setup] use two banks per business (structured: observations off; prose: on)"
+echo "[setup] or accept consolidation cost for structured facts."

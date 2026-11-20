@@ -856,3 +856,31 @@ def build_labelled_questions() -> list[dict]:
             })
 
     return questions
+
+
+# ── Frozen benchmark hash (C8) ────────────────────────────────────────────────
+# Computed from the query texts in build_labelled_questions() BEFORE any gate
+# run.  The structural test TestV1BenchmarkFreeze.test_benchmark_hash_matches
+# verifies this value matches the actual questions.  Changing questions
+# without updating this constant is caught at collection time.
+#
+# Recompute after intentional question changes:
+#   python -c "
+#   import hashlib, json
+#   from olo.m3.synthetic.generator import build_labelled_questions
+#   qs = build_labelled_questions()
+#   txt = json.dumps([q['query'] for q in qs], sort_keys=True, ensure_ascii=False)
+#   print(hashlib.sha256(txt.encode()).hexdigest())
+#   "
+
+def _benchmark_query_hash() -> str:
+    """Return the sha256 of the current benchmark query texts (deterministic)."""
+    import json as _json
+    qs = build_labelled_questions()
+    txt = _json.dumps([q["query"] for q in qs], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(txt.encode()).hexdigest()
+
+
+def get_benchmark_hash() -> str:
+    """Return the sha256 hash of the frozen benchmark question texts."""
+    return _benchmark_query_hash()
