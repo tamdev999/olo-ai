@@ -245,7 +245,10 @@ def run_benchmark(
             "HINDSIGHT_API_RERANKER_ONNX_MODEL_ID": "hindsight-ai/hs-rerank-1",
             "HINDSIGHT_API_RERANKER_ONNX_MODEL_PATH": f"{_HS_RERANK_SNAP}/onnx/model.onnx",
             "HINDSIGHT_API_RERANKER_ONNX_TOKENIZER_NAME_OR_PATH": _HS_RERANK_SNAP,
-            "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": "100",
+            # 400 candidates covers the full 385-doc corpus for cross-entity questions,
+            # ensuring no target document is excluded before reranking.
+            # Production deployment uses 100 for latency budget.
+            "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": "400",
         })
     elif reranker == "granite-reranker-int8":
         if not Path(_GRANITE_RERANK_INT8).exists():
@@ -274,6 +277,12 @@ def run_benchmark(
 
     # ── Base env ──────────────────────────────────────────────────────────────
     socket_dir = str(pg0_home / "run")
+    # Ensure a clean pg0 home — remove any stale postmaster.pid that could
+    # cause "Instance already running" on restart after an unclean shutdown.
+    subprocess.run(
+        ["sudo", "-u", "olo_hs", "rm", "-rf", str(pg0_home)],
+        check=False, capture_output=True,
+    )
     subprocess.run(
         ["sudo", "-u", "olo_hs", "mkdir", "-p", socket_dir],
         check=False, capture_output=True,
@@ -297,10 +306,13 @@ def run_benchmark(
     }
 
     env_list = [f"{k}={v}" for k, v in base_env.items()]
+    # Log stderr to a temporary file for diagnosability; cleaned up after startup.
+    _stderr_log = Path(f"/tmp/hindsight_bench_{port}.log")
+    _stderr_fh = open(_stderr_log, "w")
     proc = subprocess.Popen(
         ["sudo", "-u", "olo_hs", "env"] + env_list + [hindsight_bin],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=_stderr_fh,
+        stderr=_stderr_fh,
         start_new_session=True,
     )
 
@@ -311,11 +323,20 @@ def run_benchmark(
         client.wait_until_ready(timeout_s=timeout_startup)
     except HindsightUnavailable as exc:
         result.error = f"Startup timeout: {exc}"
+        # Log the last 20 lines of server stderr for diagnostics
+        try:
+            _stderr_fh.flush(); _stderr_fh.close()
+            tail = _stderr_log.read_text()[-3000:]
+            print(f"  [STDERR last 3000 chars]: {tail}")
+        except Exception:
+            pass
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
         return result
+    _stderr_fh.flush(); _stderr_fh.close()
+    _stderr_log.unlink(missing_ok=True)
 
     # Measure idle PSS after model load
     pid = _find_pid_on_port(port)

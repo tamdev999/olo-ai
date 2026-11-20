@@ -604,28 +604,100 @@ def build_benchmark_v2(timeline: Optional[list] = None) -> list[BenchmarkQuestio
         questions.extend(_historical_questions(ent, timeline))      # 10
         questions.extend(_relationship_questions(ent, timeline))    # 10
         questions.extend(_multidoc_contradiction_questions(ent))    # 6
-    # Total per entity: 52  ×  3 entities = 156
+        questions.extend(_disambiguation_questions(ent, timeline))  # 5
+    # Total per entity: 57  ×  3 entities = 171 entity-scoped
 
-    # Additional cross-entity questions (no entity filter)
-    questions.extend(_cross_entity_questions(timeline))  # ~50 more
+    # Cross-entity questions (no entity filter) — 10 per entity = 30
+    questions.extend(_cross_entity_questions(timeline))
 
     return questions
 
 
-def _cross_entity_questions(timeline: list) -> list[BenchmarkQuestion]:
-    """~50 cross-entity questions that test retrieval without entity filter."""
+def _disambiguation_questions(
+    ent: SyntheticEntity, timeline_sigs: list,
+) -> list[BenchmarkQuestion]:
+    """5 near-duplicate-disambiguation and cross-source questions per entity.
+
+    These test the system's ability to:
+      a) Distinguish evidence channel (email vs voice) for the same event.
+      b) Retrieve specific historical events from a pool of similar documents.
+      c) Match cross-system billing queries to the correct structured record.
+    """
     qs: list[BenchmarkQuestion] = []
-    base = datetime(2026, 1, 1, tzinfo=UTC)
+
+    email_dispute  = _sig_id(f"email_dispute_{ent.entity_id}")
+    dispute_trans  = _sig_id(f"transcript_dispute_{ent.entity_id}")
+    voice_qbo      = _sig_id(f"voice_qbo_{ent.entity_id}")
+    stripe_inv     = _sig_id(f"stripe_invoice_{ent.entity_id}")
+    qbo_inv        = _sig_id(f"qbo_invoice_{ent.entity_id}")
+
+    # (a) Channel-disambiguation: email channel only
+    qs.append(BenchmarkQuestion(
+        id=_qid(ent, "dis", 1),
+        query=f"Show me the email where {ent.company} reported the billing discrepancy.",
+        entity_id=ent.entity_id,
+        expected_signal_ids=[email_dispute],
+        category="disambiguation_email",
+        description="Near-dup: email channel for billing dispute (not voice)",
+        is_specific=True,
+    ))
+    # (a) Channel-disambiguation: voice channel only
+    qs.append(BenchmarkQuestion(
+        id=_qid(ent, "dis", 2),
+        query=f"Find the voice call where {ent.company} raised the billing issue.",
+        entity_id=ent.entity_id,
+        expected_signal_ids=[dispute_trans, voice_qbo],
+        category="disambiguation_voice",
+        description="Near-dup: voice channel for billing dispute (not email)",
+    ))
+    # (b) Historical: payment acknowledgement (specific, archival)
+    qs.append(BenchmarkQuestion(
+        id=_qid(ent, "dis", 3),
+        query=f"Find the payment acknowledgement email from {ent.company} in our records.",
+        entity_id=ent.entity_id,
+        expected_signal_ids=[_sig_id(f"old_payment_ack_{ent.entity_id}")],
+        category="disambiguation_payment_ack",
+        description="Historical: payment acknowledgement (specific)",
+        is_specific=True,
+    ))
+    # (b) Historical: invoice query in archive
+    qs.append(BenchmarkQuestion(
+        id=_qid(ent, "dis", 4),
+        query=f"Find the invoice question or query that {ent.company} sent us.",
+        entity_id=ent.entity_id,
+        expected_signal_ids=[_sig_id(f"old_invoice_qry_{ent.entity_id}")],
+        category="disambiguation_invoice_query",
+        description="Historical: invoice query email (specific, archival)",
+        is_specific=True,
+    ))
+    # (c) Cross-system billing: both Stripe and QBO records
+    qs.append(BenchmarkQuestion(
+        id=_qid(ent, "dis", 5),
+        query=f"What billing data exists for {ent.company} in both Stripe and QuickBooks?",
+        entity_id=ent.entity_id,
+        expected_signal_ids=[stripe_inv, qbo_inv],
+        category="disambiguation_dual_billing",
+        description="Cross-source: Stripe + QBO records (multi-label)",
+    ))
+    return qs
+
+
+def _cross_entity_questions(timeline: list) -> list[BenchmarkQuestion]:
+    """10 per-entity cross-entity questions (no entity filter) = 30 total.
+
+    Tests retrieval from the full corpus without an entity tag filter.
+    Covers: reschedule, invoice, Stripe, delivery, voice, appreciation,
+    complaint, renewal, account review, new service.
+    """
+    qs: list[BenchmarkQuestion] = []
 
     for ent in ENTITIES:
-        # For each entity: 15 questions without entity filter
-        # These test whether the system can find the right entity's doc
-        # from the full corpus
         qs.extend([
+            # ── Original 5 ────────────────────────────────────────────────────
             BenchmarkQuestion(
                 id=f"v2_xent_{ent.entity_id[:8]}_1",
                 query=f"Find the meeting rescheduling request from {ent.display_name}.",
-                entity_id=None,  # no entity filter — searches full corpus
+                entity_id=None,
                 expected_signal_ids=[_sig_id(f"email_reschedule_{ent.entity_id}")],
                 category="xent_reschedule",
                 description=f"Cross-entity: reschedule email for {ent.display_name}",
@@ -669,15 +741,63 @@ def _cross_entity_questions(timeline: list) -> list[BenchmarkQuestion]:
                 description=f"Cross-entity: reschedule transcript for {ent.company}",
                 is_specific=True,
             ),
+            # ── Additional 5 (§5 expansion) ────────────────────────────────────
+            BenchmarkQuestion(
+                id=f"v2_xent_{ent.entity_id[:8]}_6",
+                query=f"Find the customer appreciation or thank-you email from {ent.display_name}.",
+                entity_id=None,
+                expected_signal_ids=[_sig_id(f"old_appreciation_{ent.entity_id}")],
+                category="xent_appreciation",
+                description=f"Cross-entity: appreciation email from {ent.display_name}",
+                is_specific=True,
+            ),
+            BenchmarkQuestion(
+                id=f"v2_xent_{ent.entity_id[:8]}_7",
+                query=f"Find the formal complaint email filed by {ent.company}.",
+                entity_id=None,
+                expected_signal_ids=[_sig_id(f"old_complaint_{ent.entity_id}")],
+                category="xent_complaint",
+                description=f"Cross-entity: formal complaint from {ent.company}",
+                is_specific=True,
+            ),
+            BenchmarkQuestion(
+                id=f"v2_xent_{ent.entity_id[:8]}_8",
+                query=f"Find the contract renewal discussion with {ent.company}.",
+                entity_id=None,
+                expected_signal_ids=[_sig_id(f"old_renewal_{ent.entity_id}")],
+                category="xent_renewal",
+                description=f"Cross-entity: contract renewal email for {ent.company}",
+                is_specific=True,
+            ),
+            BenchmarkQuestion(
+                id=f"v2_xent_{ent.entity_id[:8]}_9",
+                query=f"Find the account review or business summary sent to {ent.company}.",
+                entity_id=None,
+                expected_signal_ids=[_sig_id(f"old_acct_review_{ent.entity_id}")],
+                category="xent_account_review",
+                description=f"Cross-entity: quarterly account review for {ent.company}",
+                is_specific=True,
+            ),
+            BenchmarkQuestion(
+                id=f"v2_xent_{ent.entity_id[:8]}_10",
+                query=f"Find any new service or project request submitted by {ent.company}.",
+                entity_id=None,
+                expected_signal_ids=[
+                    _sig_id(f"old_new_service_{ent.entity_id}"),
+                    _sig_id(f"old_new_order_{ent.entity_id}"),
+                ],
+                category="xent_new_service",
+                description=f"Cross-entity: new service/order request from {ent.company}",
+            ),
         ])
-    return qs  # 15 × 3 = 45 questions
+    return qs  # 10 × 3 = 30 questions
 
 
 # ── Freeze and hash ───────────────────────────────────────────────────────────
 
 #: Frozen SHA256 hash of the v2 benchmark question texts.
 #: Recompute with: python -c "from olo.m3.benchmark_v2 import benchmark_v2_hash; print(benchmark_v2_hash())"
-BENCHMARK_V2_HASH: str = ""  # populated by get_benchmark_v2_hash() on first call
+BENCHMARK_V2_HASH: str = ""  # cleared — will recompute with §5 expansion (201 questions)
 
 
 def _compute_v2_hash() -> str:
