@@ -93,13 +93,43 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     """Return a new SQLite connection to the Olo database.
 
     Sets WAL mode, foreign keys, busy timeout, and synchronous=FULL.
-    Creates the DB file at mode 0o600 and restricts an existing parent
-    directory to 0o700 on POSIX.
+    Creates the DB file at mode 0o600 and restricts the parent directory to
+    0o700 on POSIX **only if Olo creates it**.  An existing directory is never
+    chmod'd — doing so would clobber system directories (e.g. ``/tmp``) if the
+    caller passes a path that happens to live there.
+
+    Raises:
+        ValueError: if ``db.parent`` is a world-writable sticky directory
+            (e.g. ``/tmp``).  An application-owned path must be used instead.
     """
+    import stat as _stat
+
     db = path or db_path()
-    db.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
     if os.name != "nt":
-        os.chmod(str(db.parent), 0o700)
+        # Refuse placing the DB directly in a world-writable sticky directory
+        # (e.g. /tmp).  Such directories let any process rename or unlink the
+        # DB file, and chmod-ing them clobbers system state.
+        if db.parent.exists():
+            parent_mode = db.parent.stat().st_mode
+            is_sticky_world_writable = (
+                bool(parent_mode & _stat.S_ISVTX)    # sticky bit
+                and bool(parent_mode & _stat.S_IWOTH) # world-writable
+            )
+            if is_sticky_world_writable:
+                raise ValueError(
+                    f"Refusing to place Olo DB in world-writable sticky directory "
+                    f"{str(db.parent)!r}.  Use an application-owned path "
+                    f"(e.g. a subdirectory of the application home)."
+                )
+            # Directory already exists; leave its permissions untouched.
+            db.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            # Directory does not exist; Olo creates it at 0o700.
+            db.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(str(db.parent), 0o700)
+    else:
+        db.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db), isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row

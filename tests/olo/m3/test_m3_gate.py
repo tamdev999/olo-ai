@@ -66,6 +66,42 @@ pytestmark = pytest.mark.not_integration
 
 _integration = pytest.mark.integration
 
+# ── Process-group cleanup helper ─────────────────────────────────────────────
+
+def _kill_process_group(proc: "subprocess.Popen[bytes]") -> None:  # type: ignore[type-arg]
+    """Terminate the process group that *proc* leads, waiting for exit.
+
+    Uses SIGTERM → 10-second wait → SIGKILL to allow graceful shutdown.
+    Only kills the specific process group created with ``start_new_session=True``,
+    never a user-wide or name-pattern kill.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        # Process is already gone — just reap the zombie if present
+        try:
+            proc.wait(timeout=3)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
 # ── Strict-mode gate enforcement ─────────────────────────────────────────────
 
 def _strict_skip(msg: str) -> None:
@@ -1052,48 +1088,41 @@ class TestV3HistoryPreserved:
         except HindsightAPIError:
             _strict_skip("V3: document not indexed yet — try after full processing")
 
-        # Verify history endpoint has ≥ 1 entry.
-        # Hindsight v1.2.1 tracks history at the OBSERVATION level (not document level).
-        # Find an observation for the entity, then check its history.
-        from olo.m3.hindsight.client import _request
-        # First try to find an observation via recall (if LLM was running during load)
-        recall_result = hs_client.recall(
-            "v3 entity merge re-retain",
-            tag_groups=[{"tags": ["ent:ent_01ACME000000000000000000"], "match": "all_strict"}],
-            max_tokens=1000,
-            trace=True,
-        )
-        obs_results = [r for r in recall_result.get("results", [])
-                       if r.get("type") == "observation" and r.get("id")]
-
-        # Look for ANY observation in the bank that has history entries
-        # (bank has been loaded with the full corpus, so observations should have history)
-        any_history = False
-        for r in obs_results[:5]:
-            obs_id = r.get("id", "")
-            if not obs_id:
-                continue
-            try:
-                history_path2 = hs_client._bank_path(
-                    f"/memories/{urllib.parse.quote(obs_id, safe='')}/history"
+        # Hard assertion on the document history endpoint.
+        # Audit V3 fix: /documents/{id}/history is the correct endpoint (not
+        # /memories/{obs_id}/history which requires an observation UUID).
+        try:
+            history_resp = hs_client.get_document_history(v3_doc_id)
+            history_items = (
+                history_resp
+                if isinstance(history_resp, list)
+                else history_resp.get("history", history_resp.get("items", []))
+            )
+            assert isinstance(history_items, list), (
+                f"V3 FAIL: /documents/{v3_doc_id}/history response is not a list: "
+                f"{type(history_items).__name__}"
+            )
+            assert len(history_items) >= 1, (
+                f"V3 FAIL: /documents/{v3_doc_id}/history returned 0 entries. "
+                "Re-retaining the same document_id must preserve at least one "
+                "prior version in the history."
+            )
+            # Verify the original content is present somewhere in history
+            history_text = " ".join(
+                str(h.get("content", h.get("text", h))) for h in history_items
+            ).lower()
+            assert original_content[:40].lower() in history_text, (
+                f"V3 FAIL: original content not found in document history. "
+                f"First 40 chars searched: {original_content[:40]!r}. "
+                f"History entries: {len(history_items)}"
+            )
+        except HindsightAPIError as _e:
+            if _e.status_code == 405:
+                _strict_skip(
+                    "V3: document history endpoint returned 405 — "
+                    "not supported by this Hindsight build."
                 )
-                history = _request(hs_client._cfg, "GET", history_path2)
-                history_items = history if isinstance(history, list) else \
-                    history.get("history", history.get("items", []))
-                if len(history_items) >= 1:
-                    any_history = True
-                    break
-            except HindsightAPIError:
-                continue
-
-        if not any_history and obs_results:
-            # All checked observations have 0 history entries
-            # This could be because they're fresh (1 version) — not necessarily a failure
-            # for the document count test. The count test already passed.
-            pass  # don't assert history if observations are single-version
-
-        # The primary V3 assertion is already done: document count preserved.
-        # History is a best-effort check.
+            raise
 
     def test_v3_negative_control(self, hs_client) -> None:
         """NC for V3: a brand-new document (retained once, never updated) has 0 history entries.
@@ -1207,35 +1236,18 @@ class TestV5CrashRecovery:
         # Create a home directory for the olo_hs Hindsight instance
         # Must be under /home/olo_hs/ (not tmp_path which root owns)
         v5_home = Path("/home/olo_hs/v5_gate_home")
-        # Kill any lingering olo_hs Hindsight processes from previous test runs.
-        subprocess.run(["pkill", "-u", "olo_hs", "-f", "hindsight-api"],
-                       check=False, capture_output=True)
-        time.sleep(2)
-        # Also kill any orphaned pg0 (olo-v5gate) left from a previous V5 run.
-        # pg0 becomes an orphan when hindsight-api is SIGKILL'd mid-startup and
-        # will prevent "Instance already running" on the first attempt if not killed.
-        subprocess.run(["pkill", "-9", "-f", "olo-v5gate"],
-                       check=False, capture_output=True)
-        subprocess.run(
-            ["sudo", "-u", "olo_hs", "pkill", "-9", "-f", "olo-v5gate"],
-            check=False, capture_output=True,
-        )
-        # Ensure /tmp is world-writable: pg0 (running as olo_hs) creates socket and
-        # lock files in /tmp. WSL may reset /tmp to drwx------ on restart.
-        subprocess.run(["chmod", "1777", "/tmp"], check=False, capture_output=True)
-        # Remove stale pg0 lock files from /tmp (prevents "Instance already running")
-        subprocess.run(
-            ["rm", "-f"] +
-            [str(p) for p in Path("/tmp").glob(".s.PGSQL.*") if p.is_file()],
-            check=False, capture_output=True,
-        )
-        time.sleep(3)
+        # Socket directory is per-test and NOT /tmp, so pg0 sockets are
+        # isolated and never interfere with any other service.
+        v5_socket_dir = v5_home / "run"
+
+        # Clean up only the directories this test owns.
+        # Never modify /tmp, never use pkill -u or -f patterns.
         subprocess.run(
             ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_home)],
             check=False, capture_output=True,
         )
         subprocess.run(
-            ["sudo", "-u", "olo_hs", "mkdir", "-p", str(v5_home)],
+            ["sudo", "-u", "olo_hs", "mkdir", "-p", str(v5_socket_dir)],
             check=True, capture_output=True,
         )
 
@@ -1252,7 +1264,11 @@ class TestV5CrashRecovery:
         env_vars = {
             "HOME": str(v5_home),
             "HF_HOME": hf_cache,
-            "HINDSIGHT_API_DATABASE_URL": f"pg0://{pg0_instance}",
+            # Route pg0 sockets into the per-test directory, not /tmp.
+            "HINDSIGHT_API_DATABASE_URL": (
+                f"pg0://{pg0_instance}"
+                f"?unix_socket_directories={v5_socket_dir}"
+            ),
             "HINDSIGHT_API_HOST": "127.0.0.1",
             "HINDSIGHT_API_PORT": str(v5_port),
             "HINDSIGHT_API_LLM_PROVIDER": "none",
@@ -1276,19 +1292,17 @@ class TestV5CrashRecovery:
             """Start Hindsight as olo_hs via sudo, with retries for transient startup failures."""
             env_list = [f"{k}={v}" for k, v in env_vars.items()]
             for _attempt in range(3):
-                # Clean stale pg0 state before each attempt
+                # Clean only per-test directories; never touch /tmp global state.
                 subprocess.run(
-                    ["rm", "-f"] +
-                    [str(p) for p in Path("/tmp").glob(".s.PGSQL.*") if p.is_file()],
+                    ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_socket_dir)],
                     check=False, capture_output=True,
                 )
-                # Recreate clean home directory
+                subprocess.run(
+                    ["sudo", "-u", "olo_hs", "mkdir", "-p", str(v5_socket_dir)],
+                    check=False, capture_output=True,
+                )
                 subprocess.run(
                     ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_home / ".pg0")],
-                    check=False, capture_output=True,
-                )
-                subprocess.run(
-                    ["sudo", "-u", "olo_hs", "mkdir", "-p", str(v5_home)],
                     check=False, capture_output=True,
                 )
                 with open(str(v5_log), "w") as log_f:
@@ -1302,23 +1316,9 @@ class TestV5CrashRecovery:
                     client.wait_until_ready(timeout_s=120.0)
                     return proc
                 except HindsightUnavailable:
-                    _kill_hindsight_on_port(v5_port)
-                    try:
-                        proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait(timeout=5)
-                    subprocess.run(["pkill", "-u", "olo_hs", "-f", "hindsight-api"],
-                                   check=False, capture_output=True)
-                    # Kill orphaned pg0 (olo-v5gate) — it survives hindsight-api SIGKILL
-                    # and causes "Instance already running" on the next attempt.
-                    subprocess.run(["pkill", "-9", "-f", "olo-v5gate"],
-                                   check=False, capture_output=True)
-                    subprocess.run(
-                        ["sudo", "-u", "olo_hs", "pkill", "-9", "-f", "olo-v5gate"],
-                        check=False, capture_output=True,
-                    )
-                    time.sleep(5)
+                    # Kill only the specific process group we started
+                    _kill_process_group(proc)
+                    time.sleep(3)
 
             log_tail = ""
             try:
@@ -1330,58 +1330,36 @@ class TestV5CrashRecovery:
                 f"Log: {log_tail!r}"
             )
 
-        def _kill_hindsight_on_port(port: int) -> None:
-            """Find and kill the hindsight-api process listening on port."""
-            try:
-                result = subprocess.run(
-                    ["ss", "-tlnp", f"sport = :{port}"],
-                    capture_output=True, text=True,
-                )
-                # Parse pid from ss output: ... pid=12345,fd=6 ...
-                import re as _re
-                for m in _re.finditer(r"pid=(\d+)", result.stdout):
-                    pid = int(m.group(1))
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-            except Exception:
-                pass
-
         import uuid as _uuid
 
-        proc = _start_as_olo_hs()
-        # Warm-up retain: ensures ONNX embedding pool is initialized before test.
-        # wait_until_ready passes on health check but ONNX initialises async;
-        # one structured retain triggers the first embedding and stabilises.
-        warmup_op = str(_uuid.uuid5(_uuid.NAMESPACE_OID, "v5-onnx-warmup"))
-        warmup_item = {
-            "content": "V5 ONNX warmup retain — ignore",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "document_id": "sig:v5-onnx-warmup",
-            "entities": [], "tags": ["src:v5_warmup"],
-            "metadata": {"signal_id": "v5warmup", "content_sha256": "wu",
-                         "render_version": "1", "is_llm_eligible": "false"},
-            "strategy": "structured", "resolve_entities": False,
-        }
-        for _wu in range(5):
-            try:
-                client.retain([warmup_item], operation_id=warmup_op, async_=False)
-                break
-            except (HindsightUnavailable, HindsightAPIError):
-                time.sleep(5)
-
+        _procs_started: list[subprocess.Popen] = []
         try:
-            # D13 fix: submit ASYNC retain in batches to keep operations in-flight
-            # without overwhelming the server with 385 individual HTTP calls.
-            #
-            # Hindsight v1.2.1 requires all items in a single batch (with
-            # operation_id) to have the same strategy; mixed prose+structured
-            # batches return HTTP 400 "operation_id requires all retain items to
-            # resolve to a single strategy".  Separate by strategy first.
+            proc = _start_as_olo_hs()
+            _procs_started.append(proc)
+
+            # Warmup retain (synchronous) — this document is the baseline anchor.
+            # It was committed before the crash and MUST survive restart.
+            warmup_op = str(_uuid.uuid5(_uuid.NAMESPACE_OID, "v5-onnx-warmup"))
+            warmup_item = {
+                "content": "V5 ONNX warmup retain — ignore",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "document_id": "sig:v5-onnx-warmup",
+                "entities": [], "tags": ["src:v5_warmup"],
+                "metadata": {"signal_id": "v5warmup", "content_sha256": "wu",
+                             "render_version": "1", "is_llm_eligible": "false"},
+                "strategy": "structured", "resolve_entities": False,
+            }
+            for _wu in range(5):
+                try:
+                    client.retain([warmup_item], operation_id=warmup_op, async_=False)
+                    break
+                except (HindsightUnavailable, HindsightAPIError):
+                    time.sleep(5)
+
+            # Separate items by strategy — Hindsight v1.2.1 requires all items in
+            # an operation_id batch to share the same strategy.
             sorted_prose  = [i for i in hindsight_items if i.get("strategy") == "prose"]
             sorted_struct = [i for i in hindsight_items if i.get("strategy") != "prose"]
-
             BATCH = 50
             op_batches: list[tuple[str, list]] = []
             for label, item_list in [("prose", sorted_prose), ("struct", sorted_struct)]:
@@ -1390,64 +1368,97 @@ class TestV5CrashRecovery:
                     op = str(_uuid.uuid5(_uuid.NAMESPACE_OID, f"v5a-{label}-{start_idx}"))
                     op_batches.append((op, batch))
 
+            # Record the doc count BEFORE submitting async retains.
+            # After restart, count must not regress below this baseline.
+            pre_crash_docs = client.list_documents(limit=10000)
+            pre_crash_doc_count = len(pre_crash_docs.get("items", []))
+
+            # Submit async retains — some will be in-flight when server dies.
             for op, batch in op_batches:
                 client.retain(batch, operation_id=op, async_=True)
 
-            # Kill immediately while async operations are queued
-            _kill_hindsight_on_port(v5_port)
-            proc.wait(timeout=5)
+            # ── Crash simulation ─────────────────────────────────────────────
+            # kill -9 the entire process group (sudo + hindsight-api + pg0).
+            # This is the core of V5: verify Hindsight recovers its own queue.
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
             time.sleep(0.5)
 
-            # Restart and retain all items again (same op_ids = idempotent)
+            # ── Post-crash restart ───────────────────────────────────────────
             proc2 = _start_as_olo_hs()
-            try:
-                for op, batch in op_batches:
-                    client.retain(batch, operation_id=op, async_=False)
+            _procs_started.append(proc2)
 
-                # Verify all expected documents are present (warmup doc excluded)
-                docs = client.list_documents(limit=10000)
-                doc_ids = {d.get("document_id") or d.get("id", "")
-                           for d in docs.get("items", [])}
-                expected_ids = {i["document_id"] for i in hindsight_items}
+            # Wait for Hindsight's automatic crash recovery.
+            # DO NOT re-submit items — that would mask recovery failures.
+            deadline = time.monotonic() + 180.0
+            recovery_complete = False
+            while time.monotonic() < deadline:
+                try:
+                    stats = client.get_bank_stats()
+                    ops = stats.get("operations_by_status", {})
+                    pending_ops = (
+                        ops.get("pending", 0)
+                        if isinstance(ops, dict) else 0
+                    )
+                    pending_consol = stats.get("pending_consolidation", 0)
+                    if pending_ops == 0 and pending_consol == 0:
+                        recovery_complete = True
+                        break
+                except (HindsightAPIError, HindsightUnavailable):
+                    pass
+                time.sleep(3)
 
-                missing = expected_ids - doc_ids
-                assert not missing, (
-                    f"V5 FAIL: {len(missing)} documents lost after crash: "
-                    f"{list(missing)[:5]}"
+            assert recovery_complete, (
+                "V5 FAIL: operations still pending 180 s after restart — "
+                "Hindsight crash recovery did not complete."
+            )
+
+            # The synchronously-retained warmup document MUST survive kill -9
+            docs_post = client.list_documents(limit=10000)
+            doc_ids_post = {
+                d.get("document_id") or d.get("id", "")
+                for d in docs_post.get("items", [])
+            }
+            assert warmup_item["document_id"] in doc_ids_post, (
+                "V5 FAIL: synchronously retained document is missing after crash/restart. "
+                "Hindsight does not preserve committed writes across kill -9."
+            )
+
+            # Total doc count must not regress vs the pre-crash baseline
+            assert len(doc_ids_post) >= pre_crash_doc_count, (
+                f"V5 FAIL: document count regressed after restart: "
+                f"{len(doc_ids_post)} < pre-crash {pre_crash_doc_count}"
+            )
+
+            # Idempotent replay: re-retain the first batch with its ORIGINAL op_id.
+            # Must produce no new documents (server must deduplicate by operation_id).
+            if op_batches:
+                op_replay, batch_replay = op_batches[0]
+                client.retain(batch_replay, operation_id=op_replay, async_=False)
+                docs_replay = client.list_documents(limit=10000)
+                replay_count = len(docs_replay.get("items", []))
+                assert replay_count == len(doc_ids_post), (
+                    f"V5 FAIL: idempotent re-retain created "
+                    f"{replay_count - len(doc_ids_post)} duplicate document(s). "
+                    "operation_id deduplication is broken."
                 )
-                # Count check: allow +1 for the warm-up document
-                extra = doc_ids - expected_ids
-                extra_non_warmup = {d for d in extra if "warmup" not in d}
-                assert not extra_non_warmup, (
-                    f"V5 FAIL: unexpected extra documents (not warmup): "
-                    f"{list(extra_non_warmup)[:5]}"
-                )
-            finally:
-                _kill_hindsight_on_port(v5_port)
-                proc2.wait(timeout=5)
+
         finally:
-            # Clean up pg0 data directory and ensure pg0 PostgreSQL is dead
+            # Kill only the processes this test started, using their process groups.
+            for _p in _procs_started:
+                _kill_process_group(_p)
+            # Remove the per-test directory (includes pg0 data and sockets).
             subprocess.run(
                 ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_home)],
                 check=False, capture_output=True,
             )
-            # Kill olo_hs hindsight-api FIRST
-            subprocess.run(["pkill", "-u", "olo_hs", "-f", "hindsight-api"],
-                           check=False, capture_output=True)
-            time.sleep(2)
-            # Then kill orphaned pg0 PostgreSQL subprocesses
-            subprocess.run(["pkill", "-f", "olo-v5gate"], check=False, capture_output=True)
-            subprocess.run(
-                ["sudo", "-u", "olo_hs", "pkill", "-f", "olo-v5gate"],
-                check=False, capture_output=True,
-            )
-            # Remove stale pg0 lock files so next run can start cleanly
-            subprocess.run(
-                ["rm", "-f"] +
-                [str(p) for p in Path("/tmp").glob(".s.PGSQL.*") if p.is_file()],
-                check=False, capture_output=True,
-            )
-            time.sleep(3)
 
 
 @_integration
@@ -1637,29 +1648,9 @@ class TestV7IsolationIntegration:
         port_b = 18871
         hf_cache = "/var/cache/huggingface"
 
-        # Kill any lingering olo_hs Hindsight processes from previous tests
-        # This prevents port conflicts and memory pressure from orphaned instances
-        subprocess.run(["pkill", "-u", "olo_hs", "-f", "hindsight-api"],
-                       check=False, capture_output=True)
-        time.sleep(2)
-        for pg0_name in ["olo-v5gate", "olo-v7-biz-aa", "olo-v7-biz-bb"]:
-            subprocess.run(["pkill", "-f", pg0_name], check=False, capture_output=True)
-            subprocess.run(
-                ["sudo", "-u", "olo_hs", "pkill", "-f", pg0_name],
-                check=False, capture_output=True,
-            )
-        # Ensure /tmp is world-writable: pg0 (running as olo_hs) creates socket and
-        # lock files in /tmp. WSL may reset /tmp to drwx------ on restart.
-        subprocess.run(["chmod", "1777", "/tmp"], check=False, capture_output=True)
-        # Remove stale pg0 lock files
-        subprocess.run(
-            ["rm", "-f"] +
-            [str(p) for p in Path("/tmp").glob(".s.PGSQL.*") if p.is_file()],
-            check=False, capture_output=True,
-        )
-        time.sleep(1)
-
-        # Create hermes homes under /home/olo_hs/ (accessible to olo_hs user)
+        # Create hermes homes under /home/olo_hs/ (accessible to olo_hs user).
+        # Clean only the directories this test owns — never touch /tmp or
+        # kill processes by user/name pattern.
         hermes_home_a = Path("/home/olo_hs/v7_hermes_a")
         hermes_home_b = Path("/home/olo_hs/v7_hermes_b")
         for d in (hermes_home_a, hermes_home_b):
@@ -1732,29 +1723,35 @@ class TestV7IsolationIntegration:
             env_vars_local["HOME"] = str(biz_home)
             env_vars_local["HF_HOME"] = hf_cache
             env_vars_local["PATH"] = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-            # Start as olo_hs so pg0 can operate; retry on asyncpg SSL transients
-            cfg_local = HindsightConfig(host="127.0.0.1", port=port, bank_id="main-v1")
+
+            # Route pg0 sockets into the per-business directory, not /tmp.
+            # This prevents any cross-business or cross-test socket interference.
+            socket_dir = str(biz_home / "run")
+            db_url = env_vars_local.get("HINDSIGHT_API_DATABASE_URL", "")
+            if db_url.startswith("pg0://") and "unix_socket_directories" not in db_url:
+                env_vars_local["HINDSIGHT_API_DATABASE_URL"] = (
+                    f"{db_url}?unix_socket_directories={socket_dir}"
+                )
+
+            # Business-specific bank ID: a mis-routed client gets 404 instead of
+            # silently reading another business's data.
+            cfg_local = HindsightConfig(
+                host="127.0.0.1", port=port, bank_id=f"{biz_id}-main"
+            )
             client_local = HindsightClient(cfg_local)
+
             for _attempt in range(3):
-                # Kill any orphaned pg0 for this business from a previous attempt.
-                # pg0 survives hindsight-api SIGKILL and causes "Instance already running".
-                pg0_name = f"olo-{biz_id}"
-                subprocess.run(["pkill", "-9", "-f", pg0_name],
-                               check=False, capture_output=True)
+                # Clean only the per-business socket and pg0 data directories.
                 subprocess.run(
-                    ["sudo", "-u", "olo_hs", "pkill", "-9", "-f", pg0_name],
-                    check=False, capture_output=True,
-                )
-                time.sleep(1)  # allow pg0 to fully exit before starting a new instance
-                # Clean stale pg0 state
-                subprocess.run(
-                    ["rm", "-f"] +
-                    [str(p) for p in Path("/tmp").glob(".s.PGSQL.*") if p.is_file()],
+                    ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
                     check=False, capture_output=True,
                 )
                 subprocess.run(
-                    ["sudo", "-u", "olo_hs", "rm", "-rf",
-                     str(biz_home / ".pg0")],
+                    ["sudo", "-u", "olo_hs", "mkdir", "-p", socket_dir],
+                    check=False, capture_output=True,
+                )
+                subprocess.run(
+                    ["sudo", "-u", "olo_hs", "rm", "-rf", str(biz_home / ".pg0")],
                     check=False, capture_output=True,
                 )
                 proc = subprocess.Popen(
@@ -1769,14 +1766,9 @@ class TestV7IsolationIntegration:
                     client_local.wait_until_ready(timeout_s=120.0)
                     return proc
                 except HindsightUnavailable:
-                    subprocess.run(["pkill", "-u", "olo_hs", "-f", "hindsight-api"],
-                                   check=False, capture_output=True)
-                    try:
-                        proc.wait(timeout=15)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait(timeout=5)
-                    time.sleep(5)
+                    # Kill only this process group — not all olo_hs processes
+                    _kill_process_group(proc)
+                    time.sleep(3)
             raise HindsightUnavailable(f"V7 business {biz_id} not ready after 3 attempts")
 
         try:
@@ -1830,8 +1822,8 @@ class TestV7IsolationIntegration:
                 raise
 
         # Restart to verify pg0 data persists and isolation holds across restart
-        proc_a.kill(); proc_b.kill()
-        proc_a.wait(timeout=5); proc_b.wait(timeout=5)
+        _kill_process_group(proc_a)
+        _kill_process_group(proc_b)
         time.sleep(1)
 
         proc_a2 = _start_biz(hermes_home_a, biz_a, port_a)
@@ -1846,12 +1838,8 @@ class TestV7IsolationIntegration:
         except HindsightUnavailable:
             ids_a2 = set()  # best-effort
         finally:
-            proc_a2.kill(); proc_b2.kill()
-            try:
-                proc_a2.wait(timeout=5)
-                proc_b2.wait(timeout=5)
-            except Exception:
-                pass
+            _kill_process_group(proc_a2)
+            _kill_process_group(proc_b2)
 
         # PIDs must differ (new processes each start)
         assert pid_a_second != pid_a_first, (
@@ -1883,20 +1871,17 @@ class TestV7IsolationIntegration:
             "Recall isolation broken."
         )
 
-        # Cleanup V7 olo_hs processes
-        subprocess.run(["pkill", "-u", "olo_hs", "-f", "hindsight-api"],
-                       check=False, capture_output=True)
-        for pg0_name in ["olo-v7-biz-aa", "olo-v7-biz-bb"]:
-            subprocess.run(
-                ["sudo", "-u", "olo_hs", "pkill", "-f", pg0_name],
-                check=False, capture_output=True,
-            )
+        # Cleanup V7: kill only the processes this test started
+        for _p in [proc_a, proc_b, proc_a2, proc_b2]:
+            try:
+                _kill_process_group(_p)
+            except Exception:
+                pass
         subprocess.run(
             ["sudo", "-u", "olo_hs", "rm", "-rf",
              "/home/olo_hs/v7_hermes_a", "/home/olo_hs/v7_hermes_b"],
             check=False, capture_output=True,
         )
-        time.sleep(2)
 
 
 @_integration
@@ -2463,54 +2448,71 @@ class TestP4ContradictionHistory:
                             if r.get("type") == "observation"]
 
             if not observations:
-                fail_details.append(f"{case['name']}: no observations")
+                fail_details.append(f"{case['name']}: no observations in recall results")
                 continue
 
-            # Find the most relevant observation (mentions correction or D2)
+            # Find the most relevant observation — prefer one that mentions D2
             relevant = next(
                 (o for o in observations
-                 if case["d2"] in (o.get("text") or "").lower()
-                 or "correct" in (o.get("text") or "").lower()),
+                 if case["d2"] in (o.get("text") or "").lower()),
                 observations[0],
             )
             obs_text = (relevant.get("text") or "").lower()
             obs_id   = relevant.get("id", "")
 
-            # Check correction signal appears somewhere in results
-            all_doc_ids = {r.get("document_id", "") for r in result.get("results", [])[:20]}
-            source_ids = {
-                sfid.get("document_id", "") if isinstance(sfid, dict) else str(sfid)
-                for r in result.get("results", [])[:20]
-                for sfid in (r.get("source_fact_ids", []) or [])
-            }
-            corr_found = (case["corr_sig"] in all_doc_ids or
-                          case["corr_sig"] in source_ids or
-                          case["d2"] in obs_text)
-
-            if not corr_found:
+            # D2 must appear in the CURRENT observation text
+            if case["d2"] not in obs_text:
                 fail_details.append(
-                    f"{case['name']}: D2={case['d2']!r} not in results. "
-                    f"obs={obs_text[:60]!r}"
+                    f"{case['name']}: D2={case['d2']!r} not in current observation. "
+                    f"obs={obs_text[:80]!r}"
                 )
                 continue
 
-            # Check history
-            if obs_id:
-                try:
-                    h = _request(hs_client._cfg, "GET",
-                                 hs_client._bank_path(f"/memories/{obs_id}/history"))
-                    hi = h if isinstance(h, list) else h.get("history", h.get("items", []))
-                    if len(hi) >= 1:
-                        pass_count += 1
-                        continue
-                except HindsightAPIError:
-                    pass
+            # D1 must NOT appear in the current observation (it was superseded)
+            if case["d1"] in obs_text:
+                fail_details.append(
+                    f"{case['name']}: D1={case['d1']!r} still present in current "
+                    f"observation — it should have been superseded. "
+                    f"obs={obs_text[:80]!r}"
+                )
+                continue
 
-            # Correction found but no history — count as pass (DeepSeek consolidated)
-            if corr_found:
+            # D1 must appear in the observation HISTORY (prior version preserved)
+            if not obs_id:
+                fail_details.append(
+                    f"{case['name']}: no observation ID available for history check"
+                )
+                continue
+            try:
+                from olo.m3.hindsight.client import _request
+                h = _request(
+                    hs_client._cfg, "GET",
+                    hs_client._bank_path(f"/memories/{obs_id}/history"),
+                )
+                hi = (
+                    h if isinstance(h, list)
+                    else h.get("history", h.get("items", []))
+                )
+                if not hi:
+                    fail_details.append(
+                        f"{case['name']}: history endpoint returned 0 entries. "
+                        "DeepSeek must have consolidated the original claim into "
+                        "history. Run with LLM enabled."
+                    )
+                    continue
+                history_text = " ".join(str(entry) for entry in hi).lower()
+                if case["d1"] not in history_text:
+                    fail_details.append(
+                        f"{case['name']}: D1={case['d1']!r} not found in "
+                        f"{len(hi)} history entry(ies)."
+                    )
+                    continue
                 pass_count += 1
-            else:
-                fail_details.append(f"{case['name']}: no correction evidence")
+            except HindsightAPIError as _e:
+                fail_details.append(
+                    f"{case['name']}: history fetch failed with HTTP {_e.status_code}"
+                )
+                continue
 
         assert pass_count >= 5, (
             f"P4 FAIL: only {pass_count}/5 contradiction pairs confirmed.\n"

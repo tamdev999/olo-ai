@@ -112,7 +112,9 @@ class HindsightConfig:
         return cls(
             host="127.0.0.1",
             port=int(entry["port"]),
-            bank_id=entry.get("bank_id", "main-v1"),
+            # Default to business-specific bank so a mis-routed client gets 404
+            # rather than silently reading another business's data.
+            bank_id=entry.get("bank_id") or f"{business_id}-main",
         )
 
 
@@ -187,14 +189,26 @@ def _request(
                 response_body=raw,
             ) from exc
         except (urllib.error.URLError, ConnectionRefusedError, OSError) as exc:
-            # Connection reset/refused on first ONNX call → retry with backoff
-            is_transient = (
-                "Connection reset" in str(exc)
-                or "104" in str(exc)
-                or "Connection refused" in str(exc)
-                or "111" in str(exc)
+            # Retry only on transient connection failures, and only for
+            # idempotent calls: GET/HEAD requests, or POST requests that carry
+            # an operation_id (the server will deduplicate on replay).
+            # Retrying a POST without operation_id risks duplicate writes and
+            # unexpected LLM costs.
+            is_idempotent = method in ("GET", "HEAD") or (
+                method == "POST"
+                and body is not None
+                and "operation_id" in body
             )
-            if is_transient and _attempt < 2:
+            # Match by errno to avoid false positives from substring scanning.
+            _TRANSIENT_ERRNOS = frozenset({
+                104,  # ECONNRESET
+                111,  # ECONNREFUSED
+            })
+            inner = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            is_transient = isinstance(inner, OSError) and (
+                getattr(inner, "errno", None) in _TRANSIENT_ERRNOS
+            )
+            if is_idempotent and is_transient and _attempt < 2:
                 last_exc = exc
                 time.sleep(8 + _attempt * 5)  # 8s, then 13s
                 continue
@@ -370,6 +384,25 @@ class HindsightClient:
     def get_document(self, document_id: str, bank_id: Optional[str] = None) -> dict:
         path = self._bank_path(
             f"/documents/{urllib.parse.quote(document_id, safe='')}",
+            bank_id,
+        )
+        return _request(self._cfg, "GET", path)
+
+    def get_document_history(
+        self, document_id: str, bank_id: Optional[str] = None
+    ) -> dict:
+        """Return the full revision history for a document.
+
+        GET /v1/default/banks/{bank_id}/documents/{document_id}/history
+
+        Returns a list or dict of history entries.  Each entry contains the
+        content and metadata at that revision.
+
+        Audit V3 fix: use the real document-history endpoint instead of the
+        observation-level ``/memories/{id}/history`` path.
+        """
+        path = self._bank_path(
+            f"/documents/{urllib.parse.quote(document_id, safe='')}/history",
             bank_id,
         )
         return _request(self._cfg, "GET", path)

@@ -6,7 +6,6 @@ connection resets from one heavy test class cascading into the next.
 from __future__ import annotations
 
 import os
-import subprocess
 import time
 
 import pytest
@@ -59,23 +58,8 @@ def _m3_server_stabilize(request):
 
     yield
 
-    # Post-test cleanup: kill any olo_hs processes spawned by V5/V7
-    if os.environ.get("OLO_GATE_STRICT"):
-        try:
-            subprocess.run(
-                ["pkill", "-u", "olo_hs", "-f", "hindsight-api"],
-                check=False, capture_output=True,
-            )
-            # Also kill stale pg0 PostgreSQL subprocesses and clean lock files
-            for pg0_name in ["olo-v5gate", "olo-v7-biz-aa", "olo-v7-biz-bb"]:
-                subprocess.run(["pkill", "-f", pg0_name], check=False, capture_output=True)
-            # Remove stale PGSQL lock files so next test can bind port 5433
-            from pathlib import Path as _Path
-            for lf in _Path("/tmp").glob(".s.PGSQL.*"):
-                try:
-                    lf.unlink()
-                except Exception:
-                    pass
-            time.sleep(2)
-        except Exception:
-            pass
+    # Post-test: no destructive cleanup here.
+    # Each integration test that starts its own server processes must track
+    # those processes and kill only them (using process groups) in its own
+    # finally block.  Global pkill/-u/-f/-9 and /tmp socket deletion are
+    # prohibited: they kill unrelated processes and servers.
