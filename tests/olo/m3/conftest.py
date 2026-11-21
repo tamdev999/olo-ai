@@ -33,9 +33,10 @@ def _m3_server_stabilize(request):
         client = HindsightClient(cfg)
 
         # Warm-up: attempt a lightweight recall to verify ONNX pool is ready.
-        # Retry multiple times — connection resets after heavy loads need ~15s.
+        # Retry multiple times — connection resets after heavy consolidation
+        # (e.g. P1's trigger_consolidation) need up to 90s to drain.
         stabilised = False
-        for _attempt in range(8):
+        for _attempt in range(18):   # 18 × 5 s = 90 s max wait
             try:
                 client.recall("warmup", max_tokens=10, trace=False)
                 stabilised = True
@@ -50,8 +51,12 @@ def _m3_server_stabilize(request):
             except HindsightUnavailable:
                 pass  # let the test fixture handle the error
         else:
-            # Server stabilised — brief settle before yielding
-            time.sleep(2)
+            # Server stabilised — brief settle before yielding.
+            # 5 s gives consolidation triggered by the previous test class
+            # (e.g. V9 prose detection, P1 scratch bank) time to drain from
+            # the LLM concurrency pool before V3/V6 fire their hs_client
+            # fixture's wait_until_ready.
+            time.sleep(5)
 
     except Exception:
         pass  # structural tests don't need server

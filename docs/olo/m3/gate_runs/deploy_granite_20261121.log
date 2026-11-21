@@ -1,0 +1,23 @@
+============================================================
+Granite R2 deployment  →  main-v1-granite
+============================================================
+[ok] Server healthy on port 18800
+[ok] Granite embedding model confirmed active in server process
+[warn] E5 bank 'main-v1' not found — rollback may be unavailable
+Loading enriched evidence from /root/gate_olo.db…
+  385 items  (229 prose, 156 structured)
+Ingesting evidence…
+Configuring bank strategy…
+  retry 1/5 after transient error: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer
+  retain_strategies registered
+  All 385 items queued in 55s
+Running LLM consolidation rounds…
+  Consolidation round 1/4… completed
+  Consolidation round 2/4… completed
+  Consolidation round 3/4… skipped (Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer)
+  Consolidation stable after 3 round(s)
+
+[ok] 'main-v1-granite': 847 facts
+[ok] E5 bank 'main-v1' preserved
+
+Deployment complete.  Set HINDSIGHT_BANK_ID=main-v1-granite in gate runner.

@@ -812,9 +812,11 @@ class TestV9NoGenerativeCalls:
         # Use a scratch bank so prose items don't contaminate the main bank.
         # Stats are always checked against main-v1 (the global stats bank).
         scratch_bank = "p9-budget-scratch"
-        # UsageGuard monitors the main bank for LLM usage stats
-        # (scratch bank may not have stats endpoint initialized)
-        guard = UsageGuard(client, bank_id="main-v1", budget_usd=0.01)
+        # UsageGuard monitors the main bank for LLM usage stats.
+        # Use main-v1-granite (the current gate bank); main-v1 is not guaranteed
+        # to exist after the Granite migration.
+        gate_bank = os.environ.get("HINDSIGHT_BANK_ID", "main-v1-granite")
+        guard = UsageGuard(client, bank_id=gate_bank, budget_usd=0.01)
         try:
             baseline = guard.snapshot()
         except Exception as exc:
@@ -1009,6 +1011,30 @@ class TestV8ProvenanceLive:
             _strict_skip("No structured items for V8 live test")
 
         scratch_bank = f"v8-live-provenance-{_uuid.uuid4().hex[:8]}"
+        # V8 step 1: Create the bank with a minimal warmup item.
+        # Using short content (<10 words) so any inline DeepSeek call returns
+        # trivially fast (<1s). This avoids the 3-4s per-item DeepSeek delay
+        # that occurs when structured-no-llm isn't registered yet.
+        warmup = {
+            "content": "V8 bank warmup retain",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "document_id": f"sig:v8-wu-{_uuid.uuid4().hex[:6]}",
+            "entities": [], "tags": ["src:v8_warmup"],
+            "metadata": {"signal_id": "v8wu", "content_sha256": "wu",
+                         "render_version": "1", "is_llm_eligible": "false"},
+            "strategy": "structured-no-llm", "resolve_entities": False,
+        }
+        hs_client.retain([warmup], operation_id=str(_uuid.uuid4()),
+                         async_=False, bank_id=scratch_bank)
+        # V8 step 2: Register structured-no-llm so actual items skip DeepSeek.
+        from olo.m3.feeder import prepare_hindsight_bank as _v8_prep
+        for _attempt in range(3):
+            try:
+                _v8_prep(hs_client, scratch_bank)
+                break
+            except (HindsightAPIError, HindsightUnavailable):
+                time.sleep(5)
+        # V8 step 3: Retain actual structured items (now LLM-free).
         for start in range(0, len(struct_items), 5):
             batch = struct_items[start:start + 5]
             # Content-addressed op ID (C1)
@@ -1355,8 +1381,11 @@ class TestV3HistoryPreserved:
           4. Asserts /documents/{id}/history has ≥ 1 entry with the original content.
         """
         import uuid as _uuid
-        # Pick a fixed document_id for this test
-        v3_doc_id = "sig:v3-history-test-fixed-001"
+        # Per-run unique document_id eliminates 409 conflicts caused by a prior
+        # run's pending async consolidation task on the same document.  Within
+        # this run we still test both the original and updated retain on the
+        # SAME id — the history assertion verifies that.
+        v3_doc_id = f"sig:v3-history-test-{_uuid.uuid4().hex[:12]}"
         original_content = "V3 test: original content — owner committed to April 15 deadline."
         updated_content = "V3 test: updated content — deadline moved to April 22."
 
@@ -1369,7 +1398,8 @@ class TestV3HistoryPreserved:
             "ent:ent_01ACME000000000000000000", "ym:2026-04", "v3:updated",
         ]
 
-        def _retain(content: str, tags: list, async_: bool = False) -> None:
+        def _retain(content: str, tags: list, async_: bool = False) -> str:
+            """Retain item; return the echoed operation_id for async tracking."""
             item = {
                 "content": content,
                 "timestamp": "2026-04-10T00:00:00Z",
@@ -1385,27 +1415,33 @@ class TestV3HistoryPreserved:
                 "strategy": "structured",
                 "resolve_entities": False,
             }
+            # Include v3_doc_id in the op_id seed so it's unique across runs
+            # (via the random suffix) and deterministic within a run.
             op_id = str(_uuid.uuid5(
-                _uuid.NAMESPACE_OID, f"v3-history-{content[:20]}"
+                _uuid.NAMESPACE_OID,
+                f"v3-{v3_doc_id}-{content[:30]}",
             ))
-            hs_client.retain([item], operation_id=op_id, async_=async_)
+            response = hs_client.retain([item], operation_id=op_id, async_=async_)
+            return response.get("operation_id", op_id)
 
         # Count docs before
         docs_before = hs_client.list_documents(limit=10000)
         count_before = len(docs_before.get("items", []))
 
-        # First retain (sync baseline)
+        # First retain (sync baseline — blocks until committed).
         _retain(original_content, original_tags, async_=False)
-        # Brief pause to allow internal document state to settle before the async update.
-        # Required on banks with active consolidation (Granite migration): the fold
-        # mechanism can return 409 if the async retain arrives before the sync
-        # retain's internal lock fully releases.
-        import time as _time
-        _time.sleep(2)
         # Second retain — ASYNC so Hindsight creates a history event.
         # Audit C9: sync retains produce 0 history entries; async retains
         # produce history with facts_added/facts_removed counts.
-        _retain(updated_content, updated_tags, async_=True)
+        # The per-run unique v3_doc_id prevents 409 from prior-run pending work.
+        # We wait for the async operation to reach a terminal state (not a
+        # time-based sleep) before checking document history.
+        async_op_id = _retain(updated_content, updated_tags, async_=True)
+        if async_op_id:
+            try:
+                hs_client.wait_for_operation(async_op_id, timeout_s=90.0)
+            except TimeoutError:
+                _strict_skip("V3: async retain operation did not complete in 90s")
 
         # Count docs after — must not increase by more than 1 (the new doc)
         docs_after = hs_client.list_documents(limit=10000)
@@ -1434,16 +1470,17 @@ class TestV3HistoryPreserved:
         # C9: the second retain was async.  Async retains produce history events
         # with facts_removed >= 1 (the old observation was superseded).
         # Wait for consolidation before checking.
-        import time as _time
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            try:
-                stats = hs_client.get_bank_stats()
-                if stats.get("pending_consolidation", 0) == 0:
-                    break
-            except HindsightAPIError:
-                pass
-            _time.sleep(2)
+        # Trigger consolidation and wait for it to process the async update.
+        # This creates the document history entry with facts_removed >= 1.
+        # Using event-based completion (wait_for_operation) instead of a
+        # polling loop avoids races under server load.
+        try:
+            cons = hs_client.trigger_consolidation()
+            cons_op = cons.get("operation_id", "")
+            if cons_op:
+                hs_client.wait_for_operation(cons_op, timeout_s=120.0)
+        except (HindsightAPIError, TimeoutError):
+            pass  # consolidation failure is surfaced by the history assertion below
 
         try:
             history_resp = hs_client.get_document_history(v3_doc_id)
@@ -1665,6 +1702,15 @@ class TestV5CrashRecovery:
             """
             env_list = [f"{k}={v}" for k, v in env_vars.items()]
             for _attempt in range(3):
+                # Kill any stale pg0 or hindsight-api processes from a previous
+                # V5 attempt that may have left pg0 running after Python exited.
+                # Only kill processes that contain the specific pg0_instance name
+                # so the main Hindsight server on port 18800 is not disturbed.
+                subprocess.run(
+                    ["sudo", "pkill", "-f", pg0_instance],
+                    check=False, capture_output=True, timeout=5,
+                )
+                time.sleep(1)  # give the stale process time to exit
                 # Clean only per-test directories; never touch /tmp global state.
                 subprocess.run(
                     ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_socket_dir)],
@@ -1867,15 +1913,51 @@ class TestV6Replay:
 
         import uuid as _uuid
 
+        # Configure the scratch bank with the structured-no-llm strategy so
+        # retained items use chunks extraction (0 LLM calls).  V6 only tests
+        # document-ID determinism — LLM extraction is irrelevant and would
+        # trigger background consolidation that can cause connection resets.
+        # NOTE: bank config must be applied AFTER the first retain (which
+        # implicitly creates the bank). Calling PATCH on a non-existent bank
+        # causes intermittent ECONNRESET under load.
+
         # Cap at 20 items — just enough to exercise determinism without
         # overwhelming the server with synchronous retain calls.
-        v6_items = hindsight_items[:20]
+        # Override strategy to structured-no-llm: document IDs are caller-set
+        # and unaffected by strategy; this keeps V6 entirely LLM-free.
+        v6_items = [
+            {**item, "strategy": "structured-no-llm"}
+            for item in hindsight_items[:20]
+        ]
 
-        # Reload into scratch bank (small batches to avoid HTTP timeout)
-        def _load_to_bank(bank: str, items: list) -> None:
+        # Reload into scratch bank (small batches to avoid HTTP timeout).
+        # Banks are created implicitly on first retain. Use a short warmup
+        # item to create the bank, then register structured-no-llm before
+        # retaining actual items — this prevents inline DeepSeek on the
+        # first batch.
+        def _load_to_bank(bank: str, items: list, configure_bank: bool = False) -> None:
+            if configure_bank:
+                # Create bank with a short warmup item (fast/trivial LLM call)
+                wu = {
+                    "content": "V6 bank warmup", "timestamp": "2026-01-01T00:00:00Z",
+                    "document_id": f"sig:v6-wu-{_uuid.uuid4().hex[:6]}",
+                    "entities": [], "tags": ["src:v6_warmup"],
+                    "metadata": {"signal_id": "v6wu", "content_sha256": "v6wu",
+                                 "render_version": "1", "is_llm_eligible": "false"},
+                    "strategy": "structured-no-llm", "resolve_entities": False,
+                }
+                hs_client.retain([wu], operation_id=str(_uuid.uuid4()),
+                                  async_=False, bank_id=bank)
+                # Bank now exists — register strategy so actual items skip LLM
+                from olo.m3.feeder import prepare_hindsight_bank as _v6_prep_bank
+                for _r in range(3):
+                    try:
+                        _v6_prep_bank(hs_client, bank)
+                        break
+                    except (HindsightAPIError, HindsightUnavailable):
+                        time.sleep(5)
             for start in range(0, len(items), 5):
                 batch = items[start:start + 5]
-                label = batch[0].get("strategy", "prose") if batch else "prose"
                 op_id = str(_uuid.uuid5(
                     _uuid.NAMESPACE_OID,
                     f"v6-{bank}-{start}"
@@ -1883,22 +1965,30 @@ class TestV6Replay:
                 hs_client.retain(batch, operation_id=op_id,
                                  async_=False, bank_id=bank)
 
-        # First load
-        _load_to_bank(scratch_bank, v6_items)
+        # First load (configure bank on first batch)
+        _load_to_bank(scratch_bank, v6_items, configure_bank=True)
         docs_first = hs_client.list_documents(limit=1000, bank_id=scratch_bank)
         ids_first = {d.get("document_id") or d.get("id", "")
                      for d in docs_first.get("items", [])}
 
         # Drop scratch bank and reload
-        try:
-            hs_client.delete_bank(scratch_bank)
-        except HindsightAPIError as e:
-            if e.status_code == 405:
-                _strict_skip(
-                    f"V6: delete_bank returned 405 — bank deletion not supported in this version. "
-                    "Cannot verify empty-before-reload."
-                )
-            raise  # propagate real errors
+        for _del_attempt in range(3):
+            try:
+                hs_client.delete_bank(scratch_bank)
+                break
+            except HindsightAPIError as e:
+                if e.status_code == 405:
+                    _strict_skip(
+                        f"V6: delete_bank returned 405 — bank deletion not supported in this version. "
+                        "Cannot verify empty-before-reload."
+                    )
+                raise  # propagate real errors
+            except HindsightUnavailable:
+                # Transient connection reset — retry with backoff
+                if _del_attempt < 2:
+                    time.sleep(10)
+                    continue
+                _strict_skip("V6: delete_bank failed with connection reset after 3 attempts")
 
         # Verify 0 documents before reload — poll up to 10s
         # delete_bank may cause list_documents to return 404 (bank not found),
@@ -1922,18 +2012,29 @@ class TestV6Replay:
             f"({doc_count_after_delete} docs). "
             "Cannot rebuild from clean state."
         )
-        _load_to_bank(scratch_bank, v6_items)
-
+        _load_to_bank(scratch_bank, v6_items, configure_bank=True)
         docs_second = hs_client.list_documents(limit=1000, bank_id=scratch_bank)
         ids_second = {d.get("document_id") or d.get("id", "")
                       for d in docs_second.get("items", [])}
 
-        # Cleanup
-        try:
-            hs_client.delete_bank(scratch_bank)
-        except HindsightAPIError as e:
-            if e.status_code != 405:
-                raise
+        # Cleanup — best-effort; connection resets are non-fatal after
+        # the assertions have passed.
+        for _cl_attempt in range(3):
+            try:
+                hs_client.delete_bank(scratch_bank)
+                break
+            except HindsightAPIError as e:
+                if e.status_code == 405:
+                    break
+                if _cl_attempt < 2:
+                    time.sleep(5)
+                    continue
+                break
+            except HindsightUnavailable:
+                if _cl_attempt < 2:
+                    time.sleep(10)
+                    continue
+                break  # Give up — don't fail the test on cleanup
 
         assert ids_first == ids_second, (
             f"V6 FAIL: document-ID set differs after rebuild. "
@@ -1951,7 +2052,34 @@ class TestV6Replay:
         # Cap at 20 items to avoid per-request timeouts
         v6_nc_items = hindsight_items[:20]
 
-        def _load_subset(items, bank):
+        # Configure the scratch bank (structured-no-llm: no LLM during V6 NC)
+        # NOTE: bank config must be set AFTER the first retain (bank creation).
+        from olo.m3.feeder import prepare_hindsight_bank as _prep_nc
+        # Override all items to use structured-no-llm (same rationale as main test)
+        v6_nc_items = [
+            {**item, "strategy": "structured-no-llm"}
+            for item in hindsight_items[:20]
+        ]
+
+        def _load_subset(items, bank, configure: bool = False):
+            if configure:
+                # Create bank with short warmup item, then register strategy
+                wu2 = {
+                    "content": "V6 NC warmup", "timestamp": "2026-01-01T00:00:00Z",
+                    "document_id": f"sig:v6nc-wu-{_uuid.uuid4().hex[:6]}",
+                    "entities": [], "tags": ["src:v6nc_warmup"],
+                    "metadata": {"signal_id": "v6ncwu", "content_sha256": "v6ncwu",
+                                 "render_version": "1", "is_llm_eligible": "false"},
+                    "strategy": "structured-no-llm", "resolve_entities": False,
+                }
+                hs_client.retain([wu2], operation_id=str(_uuid.uuid4()),
+                                  async_=False, bank_id=bank)
+                for _r in range(3):
+                    try:
+                        _prep_nc(hs_client, bank)
+                        break
+                    except (HindsightAPIError, HindsightUnavailable):
+                        time.sleep(5)
             for start in range(0, len(items), 5):
                 batch = items[start:start + 5]
                 op_id = str(_uuid.uuid5(
@@ -1960,29 +2088,49 @@ class TestV6Replay:
                 hs_client.retain(batch, operation_id=op_id,
                                  async_=False, bank_id=bank)
 
-        # Full load
-        _load_subset(v6_nc_items, scratch)
+        # Full load (configure bank on first batch)
+        _load_subset(v6_nc_items, scratch, configure=True)
         docs_full = {d.get("document_id", "") or d.get("id", "")
                      for d in hs_client.list_documents(
                          limit=1000, bank_id=scratch
                      ).get("items", [])}
 
         # Reload minus one item
-        try:
-            hs_client.delete_bank(scratch)
-        except HindsightAPIError as e:
-            if e.status_code != 405:
-                raise
+        for _del_nc in range(3):
+            try:
+                hs_client.delete_bank(scratch)
+                break
+            except HindsightAPIError as e:
+                if e.status_code != 405:
+                    if _del_nc < 2:
+                        time.sleep(5)
+                        continue
+                break
+            except HindsightUnavailable:
+                if _del_nc < 2:
+                    time.sleep(10)
+                    continue
+                break
         _load_subset(v6_nc_items[1:], scratch)
         docs_minus_one = {d.get("document_id", "") or d.get("id", "")
                           for d in hs_client.list_documents(
                               limit=1000, bank_id=scratch
                           ).get("items", [])}
-        try:
-            hs_client.delete_bank(scratch)
-        except HindsightAPIError as e:
-            if e.status_code != 405:
-                raise
+        for _cl_nc in range(3):
+            try:
+                hs_client.delete_bank(scratch)
+                break
+            except HindsightAPIError as e:
+                if e.status_code != 405:
+                    if _cl_nc < 2:
+                        time.sleep(5)
+                        continue
+                break
+            except HindsightUnavailable:
+                if _cl_nc < 2:
+                    time.sleep(10)
+                    continue
+                break
 
         diff = docs_full - docs_minus_one
         assert diff, (
@@ -2131,6 +2279,21 @@ class TestV7IsolationIntegration:
             client_local = HindsightClient(cfg_local)
 
             for _attempt in range(3):
+                # Stop any stale pg0 instance using pg0's own stop command.
+                # PostgreSQL renames its process after startup, making pkill
+                # unreliable. pg0 stop uses state file tracking instead.
+                _pg0_bin = "/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/pg0/bin/pg0"
+                _db_url = env_vars_local.get("HINDSIGHT_API_DATABASE_URL", "")
+                if _db_url.startswith("pg0://"):
+                    _pg0_inst = _db_url[6:].split("?")[0].split("/")[0]
+                    if _pg0_inst:
+                        subprocess.run(
+                            ["sudo", "-u", "olo_hs", "env",
+                             f"HOME={biz_home}",
+                             _pg0_bin, "stop", "--name", _pg0_inst],
+                            check=False, capture_output=True, timeout=15,
+                        )
+                        time.sleep(2)
                 # Clean only the per-business socket and pg0 data directories.
                 subprocess.run(
                     ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
@@ -2515,17 +2678,27 @@ class TestP1DeliveryDateConsolidation:
         yield client
 
     def test_new_date_in_observation_old_date_in_history(
-        self, hs_client, timeline
+        self, hs_client, timeline, hindsight_items
     ) -> None:
-        """P1: current observation has D2 (new date), not D1 (original).
+        """P1: delivery date changes are consolidated; old date in observation history.
 
-        Correction #5:
-        - Checks actual date strings, not keywords.
-        - Verifies BOTH source document IDs (reschedule email + transcript).
-        - Removes duplicate history check blocks.
-        - D1 (original date) must NOT appear as the current observation value.
+        Self-contained: creates a fresh scratch bank per run and retains the
+        P1 evidence in the correct causal order:
+
+          1. email_confirm_orig  → confirms the original April 04 meeting date.
+          2. trigger_consolidation + wait_for_operation → initial observation
+             "Meeting April 04 confirmed" is created.
+          3. email_reschedule   → requests to move the meeting to April 08.
+          4. trigger_consolidation + wait_for_operation → LLM detects the
+             contradiction and updates the observation to "April 08" with a
+             history entry showing "April 04" as the prior value.
+
+        This guarantees versioned history without manual bank preparation and
+        without relying on external bank state from previous runs.
         """
+        import uuid as _uuid
         from datetime import datetime, timedelta, timezone
+
         UTC = timezone.utc
         ent = ENTITIES[0]
         base = datetime(2026, 1, 1, tzinfo=UTC)
@@ -2534,155 +2707,190 @@ class TestP1DeliveryDateConsolidation:
         date_new  = (day_90 + timedelta(days=7)).strftime("%B %d")   # D2 "April 08"
         ym_tag = f"ym:{day_90.year:04d}-{day_90.month:02d}"
 
-        # Both source documents for the P1 scenario
+        # Signal IDs for the P1 source documents
+        confirm_id    = f"sig:{_sig_id(f'email_confirm_orig_{ent.entity_id}')}"
         reschedule_email_id = f"sig:{_sig_id(f'email_reschedule_{ent.entity_id}')}"
         transcript_id       = f"sig:{_sig_id(f'transcript_reschedule_{ent.entity_id}')}"
         expected_sources = {reschedule_email_id, transcript_id}
 
-        result = hs_client.recall(
-            f"meeting reschedule {ent.company} April 2026",
-            tag_groups=[
-                {"tags": [f"ent:{ent.entity_id}"], "match": "all_strict"},
-                {"tags": [ym_tag], "match": "any_strict"},
-            ],
-            max_tokens=4000,
-            trace=True,
-        )
-        observations = [r for r in result.get("results", [])
-                        if r.get("type") == "observation"]
-        assert observations, (
-            "P1 FAIL: no observations returned — LLM extraction may not have run."
-        )
+        # Look up the actual enriched items (contact name + source metadata)
+        item_map = {item["document_id"]: item for item in (hindsight_items or [])}
+        confirm_item    = item_map.get(confirm_id)
+        reschedule_item = item_map.get(reschedule_email_id)
+        if not confirm_item or not reschedule_item:
+            _strict_skip(
+                f"P1: required signals not in hindsight_items — "
+                f"confirm={confirm_id in item_map}, "
+                f"reschedule={reschedule_email_id in item_map}"
+            )
 
-        # Find an observation mentioning the new date D2
-        reschedule_obs = next(
-            (o for o in observations
-             if any(kw in (o.get("text") or "").lower()
-                    for kw in (date_new.lower(), "april 08", "april 8", "reschedule"))),
-            None,
-        )
-        assert reschedule_obs is not None, (
-            f"P1 FAIL: no observation mentions rescheduling or D2={date_new!r}. "
-            f"observations[:3]={[o.get('text','')[:80] for o in observations[:3]]!r}"
-        )
+        # Fresh per-run scratch bank so consolidation order is fully controlled.
+        p1_bank = f"p1-delivery-{_uuid.uuid4().hex[:8]}"
 
-        obs_text = reschedule_obs.get("text", "")
-        obs_id   = reschedule_obs.get("id", "")
+        try:
+            # ── Step 1: retain original evidence (confirms April 04 meeting) ──
+            op_confirm = str(_uuid.uuid5(_uuid.NAMESPACE_OID, f"p1-confirm-{p1_bank}"))
+            hs_client.retain(
+                [confirm_item], operation_id=op_confirm,
+                async_=False, bank_id=p1_bank,
+            )
 
-        # Correction #5: assert D2 is present in current observation
-        # DeepSeek may format the date differently (e.g., "7 April" vs "April 08",
-        # or extract "made on 2026-04-01" instead of "rescheduled to April 08").
-        # Accept any April date > D1 day, any ISO date in April after D1 day,
-        # or any observation that explicitly mentions rescheduling.
-        import re as _re
+            # ── Step 2: consolidate — creates "Meeting April 04" observation ──
+            cons1 = hs_client.trigger_consolidation(bank_id=p1_bank)
+            cons1_op = cons1.get("operation_id", "")
+            if cons1_op:
+                try:
+                    hs_client.wait_for_operation(cons1_op, timeout_s=120.0, bank_id=p1_bank)
+                except TimeoutError:
+                    _strict_skip("P1: first consolidation timed out (120 s)")
 
-        # Try ISO date format YYYY-04-DD
-        iso_april = _re.findall(r'2026-04-(\d{2})', obs_text.lower())
-        extracted_days = {int(d.lstrip('0') or '0') for d in iso_april}
+            # ── Step 3: retain correction (rescheduled April 04 → April 08) ──
+            op_reschedule = str(_uuid.uuid5(_uuid.NAMESPACE_OID, f"p1-reschedule-{p1_bank}"))
+            hs_client.retain(
+                [reschedule_item], operation_id=op_reschedule,
+                async_=True, bank_id=p1_bank,
+            )
 
-        # Try "April DD" or "DD April" format
-        april_numbers = _re.findall(r'april\s+(\d+)|(\d+)\s+april', obs_text.lower())
-        extracted_days.update(
-            int(n) for pair in april_numbers for n in pair if n
-        )
+            # ── Step 4: consolidate — LLM detects contradiction, updates ──────
+            # observation to "April 08" with history showing "April 04".
+            cons2 = hs_client.trigger_consolidation(bank_id=p1_bank)
+            cons2_op = cons2.get("operation_id", "")
+            if cons2_op:
+                try:
+                    hs_client.wait_for_operation(cons2_op, timeout_s=120.0, bank_id=p1_bank)
+                except TimeoutError:
+                    _strict_skip("P1: second consolidation timed out (120 s)")
 
-        d2_day = int(date_new.split()[-1].lstrip("0") or "0")  # "08" → 8
-        d1_day = int(date_orig.split()[-1].lstrip("0") or "0")  # "04" → 4
-        date_reference_found = any(d > d1_day for d in extracted_days)
+            # ── Step 5: query and verify ─────────────────────────────────────
+            result = hs_client.recall(
+                f"meeting reschedule {ent.company} April 2026",
+                tag_groups=[
+                    {"tags": [f"ent:{ent.entity_id}"], "match": "all_strict"},
+                    {"tags": [ym_tag], "match": "any_strict"},
+                ],
+                max_tokens=4000,
+                trace=True,
+                bank_id=p1_bank,
+            )
+            observations = [r for r in result.get("results", [])
+                            if r.get("type") == "observation"]
+            assert observations, (
+                "P1 FAIL: no observations returned — LLM extraction may not have run."
+            )
 
-        rescheduling_confirmed = any(
-            kw in obs_text.lower()
-            for kw in ("reschedule", "rescheduled", "moved", "changed", "new date",
-                       date_new.lower(), "april 08", "april 8")
-        )
+            reschedule_obs = next(
+                (o for o in observations
+                 if any(kw in (o.get("text") or "").lower()
+                        for kw in (date_new.lower(), "april 08", "april 8",
+                                   "reschedule"))),
+                None,
+            )
+            assert reschedule_obs is not None, (
+                f"P1 FAIL: no observation mentions rescheduling or D2={date_new!r}. "
+                f"observations[:3]={[o.get('text','')[:80] for o in observations[:3]]!r}"
+            )
 
-        # Accept if: D2 date explicitly mentioned, OR any post-D1 April date,
-        # OR clear rescheduling language (DeepSeek might extract request not target date)
-        assert date_reference_found or rescheduling_confirmed, (
-            f"P1 FAIL: Observation does not confirm rescheduling or mention D2={date_new!r}. "
-            f"extracted_days={extracted_days}, d1_day={d1_day}, "
-            f"obs={obs_text[:200]!r}"
-        )
+            obs_text = reschedule_obs.get("text", "")
+            obs_id   = reschedule_obs.get("id", "")
 
-        # Correction #5: assert D1 is NOT current (may be in history, not current value)
-        # We check that D1 alone is not the only date mentioned (D2 must be there)
-        # NOTE: D1 may appear in the text as historical context — that's acceptable.
+            import re as _re
+            iso_april = _re.findall(r'2026-04-(\d{2})', obs_text.lower())
+            extracted_days = {int(d.lstrip('0') or '0') for d in iso_april}
+            april_numbers = _re.findall(r'april\s+(\d+)|(\d+)\s+april', obs_text.lower())
+            extracted_days.update(int(n) for pair in april_numbers for n in pair if n)
+            d2_day = int(date_new.split()[-1].lstrip("0") or "0")
+            d1_day = int(date_orig.split()[-1].lstrip("0") or "0")
+            date_reference_found = any(d > d1_day for d in extracted_days)
+            rescheduling_confirmed = any(
+                kw in obs_text.lower()
+                for kw in ("reschedule", "rescheduled", "moved", "changed", "new date",
+                           date_new.lower(), "april 08", "april 8")
+            )
+            assert date_reference_found or rescheduling_confirmed, (
+                f"P1 FAIL: Observation does not confirm rescheduling or D2={date_new!r}. "
+                f"extracted_days={extracted_days}, obs={obs_text[:200]!r}"
+            )
 
-        # Correction #5: check source_fact_ids reference at least one source doc
-        raw_sources = set()
-        for sfid in reschedule_obs.get("source_fact_ids", []) or []:
-            sid = sfid.get("document_id", "") if isinstance(sfid, dict) else str(sfid)
-            raw_sources.add(sid)
-        # Also check results that are raw documents
-        for r in result.get("results", [])[:20]:
-            doc_id = r.get("document_id", "") or ""
-            if doc_id in expected_sources:
-                raw_sources.add(doc_id)
-        found_sources = raw_sources & expected_sources
-        # At least ONE of the two P1 source documents must be referenced
-        assert found_sources, (
-            f"P1 FAIL: neither source document is referenced. "
-            f"Expected one of {expected_sources}. "
-            f"Found in results: {raw_sources & expected_sources}. "
-            "Check that evidence-first load included the reschedule signals."
-        )
+            # Source document check
+            raw_sources: set[str] = set()
+            for sfid in reschedule_obs.get("source_fact_ids", []) or []:
+                sid = sfid.get("document_id", "") if isinstance(sfid, dict) else str(sfid)
+                raw_sources.add(sid)
+            for r in result.get("results", [])[:20]:
+                doc_id = r.get("document_id", "") or ""
+                if doc_id in expected_sources:
+                    raw_sources.add(doc_id)
+            found_sources = raw_sources & expected_sources
+            assert found_sources, (
+                f"P1 FAIL: neither source document is referenced. "
+                f"Expected one of {expected_sources}. "
+                "Check that evidence-first load included the reschedule signals."
+            )
 
-        # Correction #5: check observation history for D1 (original date)
-        if obs_id:
-            from olo.m3.hindsight.client import _request
-            try:
-                history = _request(
-                    hs_client._cfg, "GET",
-                    hs_client._bank_path(f"/memories/{obs_id}/history")
-                )
-                history_items = history if isinstance(history, list) else \
-                    history.get("history", history.get("items", []))
-
-                if len(history_items) >= 1:
-                    pass  # history exists — full P1 pass
-                else:
-                    # Single-version observation: verify history endpoint at least works
-                    # by checking ANY observation in the bank has history
-                    any_hist = any(
-                        len(
-                            (_request(hs_client._cfg, "GET",
-                                      hs_client._bank_path(f"/memories/{o.get('id','')}/history"))
-                             if o.get("id") and o.get("id") != obs_id else [])
-                            if isinstance(
-                                _request(hs_client._cfg, "GET",
-                                         hs_client._bank_path(f"/memories/{o.get('id','')}/history")),
-                                list)
-                            else
-                            _request(hs_client._cfg, "GET",
-                                     hs_client._bank_path(f"/memories/{o.get('id','')}/history")
-                                     ).get("history", [])
-                        ) >= 1
-                        for o in observations[:5]
-                        if o.get("id") and o.get("id") != obs_id
-                    ) if len(observations) > 1 else False
-
-                    if not any_hist:
-                        # Try a broader search
+            # Versioned history check
+            if obs_id:
+                from olo.m3.hindsight.client import _request
+                try:
+                    h = _request(
+                        hs_client._cfg, "GET",
+                        hs_client._bank_path(f"/memories/{obs_id}/history", p1_bank),
+                    )
+                    history_items = (
+                        h if isinstance(h, list)
+                        else h.get("history", h.get("items", []))
+                    )
+                    if isinstance(history_items, list) and len(history_items) >= 1:
+                        pass  # history on the specific observation — full pass
+                    else:
+                        # Fallback: any observation in top-5 must have history
+                        any_hist = False
                         for o in observations[:5]:
                             oid = o.get("id", "")
                             if not oid or oid == obs_id:
                                 continue
                             try:
-                                h = _request(hs_client._cfg, "GET",
-                                             hs_client._bank_path(f"/memories/{oid}/history"))
-                                hi = h if isinstance(h, list) else h.get("history", h.get("items", []))
-                                if len(hi) >= 1:
+                                h2 = _request(
+                                    hs_client._cfg, "GET",
+                                    hs_client._bank_path(
+                                        f"/memories/{oid}/history", p1_bank
+                                    ),
+                                )
+                                hi = (
+                                    h2 if isinstance(h2, list)
+                                    else h2.get("history", h2.get("items", []))
+                                )
+                                if isinstance(hi, list) and len(hi) >= 1:
                                     any_hist = True
                                     break
                             except HindsightAPIError:
                                 continue
-                    assert any_hist, (
-                        "P1 FAIL: no observation has versioned history. "
-                        "DeepSeek consolidation must produce history entries."
-                    )
-            except HindsightAPIError as e:
-                if e.status_code not in (400, 404):
-                    raise
+                        assert any_hist, (
+                            "P1 FAIL: no observation has versioned history. "
+                            "DeepSeek consolidation must produce history entries "
+                            "when correction evidence supersedes original evidence."
+                        )
+                except HindsightAPIError as e:
+                    if e.status_code not in (400, 404):
+                        raise
+
+        finally:
+            # Cleanup scratch bank — best-effort; connection resets are non-fatal
+            for _attempt in range(3):
+                try:
+                    hs_client.delete_bank(p1_bank)
+                    break
+                except HindsightAPIError as e:
+                    if e.status_code == 405:
+                        break
+                    if _attempt < 2:
+                        time.sleep(5)
+                        continue
+                    break
+                except HindsightUnavailable:
+                    if _attempt < 2:
+                        time.sleep(10)
+                        continue
+                    break
 
     def test_p1_negative_control(self, hs_client) -> None:
         """NC for P1: a non-rescheduling query should not return reschedule observations."""
