@@ -67,6 +67,56 @@ pytestmark = pytest.mark.not_integration
 
 _integration = pytest.mark.integration
 
+# ── Retry helper for transient connection resets ──────────────────────────────
+
+def _retain_with_retry(
+    client,
+    items: list,
+    *,
+    operation_id: str,
+    bank_id: str,
+    async_: bool = False,
+    max_retries: int = 4,
+    sleep_s: float = 5.0,
+) -> dict:
+    """Retain items with retry on ECONNRESET.
+
+    Brief sub-1s server stalls in WSL2/uvloop can cause ECONNRESET on fast
+    requests.  A 5-second sleep always lands in a non-stall window.
+    """
+    for attempt in range(max_retries):
+        try:
+            return client.retain(
+                items,
+                operation_id=operation_id,
+                async_=async_,
+                bank_id=bank_id,
+            )
+        except HindsightUnavailable as exc:
+            if "Connection reset" not in str(exc) or attempt >= max_retries - 1:
+                raise
+            time.sleep(sleep_s)
+    raise HindsightUnavailable("max retries exceeded")  # unreachable
+
+
+def _recall_with_retry(
+    client,
+    query: str,
+    *,
+    max_retries: int = 3,
+    sleep_s: float = 5.0,
+    **kwargs,
+) -> dict:
+    """Recall with retry on ECONNRESET."""
+    for attempt in range(max_retries):
+        try:
+            return client.recall(query, **kwargs)
+        except HindsightUnavailable as exc:
+            if "Connection reset" not in str(exc) or attempt >= max_retries - 1:
+                raise
+            time.sleep(sleep_s)
+    raise HindsightUnavailable("max retries exceeded")  # unreachable
+
 # ── Process-group cleanup helper ─────────────────────────────────────────────
 
 def _kill_process_group(proc: "subprocess.Popen[bytes]") -> None:  # type: ignore[type-arg]
@@ -553,11 +603,20 @@ class TestV9NoGenerativeCalls:
                 "strategy": STRUCTURED_STRATEGY, "resolve_entities": False,
             }
             # First retain creates the bank
-            client.retain([warmup_item], operation_id=str(_uuid.uuid4()),
-                          async_=False, bank_id=scratch_bank)
+            _retain_with_retry(client, [warmup_item],
+                               operation_id=str(_uuid.uuid4()),
+                               bank_id=scratch_bank)
             # Configure the bank: register structured-no-llm strategy
             from olo.m3.feeder import prepare_hindsight_bank
-            prepare_hindsight_bank(client, scratch_bank)
+            for _prep_r in range(4):
+                try:
+                    prepare_hindsight_bank(client, scratch_bank)
+                    break
+                except (HindsightAPIError, HindsightUnavailable):
+                    if _prep_r < 3:
+                        time.sleep(5)
+                    else:
+                        raise
 
             # Retain two structured items (strategy=structured-no-llm)
             for suffix in ("struct-01", "struct-02"):
@@ -574,9 +633,10 @@ class TestV9NoGenerativeCalls:
                     "resolve_entities": False,
                 }
                 op_id = str(_uuid.uuid5(_uuid.NAMESPACE_OID, item["document_id"]))
-                # Synchronous retain — usage in response is authoritative
-                resp = client.retain([item], operation_id=op_id, async_=False,
-                                     bank_id=scratch_bank)
+                # Synchronous retain with retry — brief sub-1s stalls in WSL2/uvloop
+                # can cause ECONNRESET on fast requests; 5s sleep always lands clear.
+                resp = _retain_with_retry(client, [item], operation_id=op_id,
+                                          bank_id=scratch_bank)
                 usage = resp.get("usage") or {}
                 out_tokens = usage.get("output_tokens", 0)
                 assert out_tokens == 0, (
@@ -990,11 +1050,11 @@ class TestV8ProvenanceLive:
                          "render_version": "1", "is_llm_eligible": "false"},
             "strategy": "structured-no-llm", "resolve_entities": False,
         }
-        hs_client.retain([warmup], operation_id=str(_uuid.uuid4()),
-                         async_=False, bank_id=scratch_bank)
+        _retain_with_retry(hs_client, [warmup], operation_id=str(_uuid.uuid4()),
+                           bank_id=scratch_bank)
         # V8 step 2: Register structured-no-llm so actual items skip DeepSeek.
         from olo.m3.feeder import prepare_hindsight_bank as _v8_prep
-        for _attempt in range(3):
+        for _attempt in range(4):
             try:
                 _v8_prep(hs_client, scratch_bank)
                 break
@@ -1011,7 +1071,7 @@ class TestV8ProvenanceLive:
                 )
             )
             op = str(_uuid.uuid5(_uuid.NAMESPACE_OID, f"{scratch_bank}|struct|{batch_key}"))
-            hs_client.retain(batch, operation_id=op, async_=False, bank_id=scratch_bank)
+            _retain_with_retry(hs_client, batch, operation_id=op, bank_id=scratch_bank)
 
         # Build a lookup of signal_id → content_sha256 from olo.db
         conn = _store_connect(db)
