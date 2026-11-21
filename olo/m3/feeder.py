@@ -42,6 +42,11 @@ PROSE_STRATEGY = "prose"  # falls back to bank default (concise + LLM)
 #: Source tags that identify prose signals (used for targeted consolidation).
 PROSE_SOURCES: frozenset = frozenset({"src:gmail_owner", "src:voice_fixture"})
 
+#: Strategies that are explicitly registered with prepare_hindsight_bank.
+#: Any other non-empty strategy string must be rejected before retain so it
+#: cannot silently fall back to default (DeepSeek) extraction.
+_KNOWN_STRATEGIES: frozenset = frozenset({STRUCTURED_STRATEGY, PROSE_STRATEGY})
+
 #: Bank config applied once after bank creation (PATCH /config).
 #: Sets up the ``structured-no-llm`` named strategy so structured signals get
 #: 0 LLM calls and are excluded from observation consolidation.
@@ -54,6 +59,24 @@ _BANK_CONFIG_OVERRIDES: dict = {
         }
     },
 }
+
+
+def validate_item_strategy(item: dict, bank_id: str) -> None:
+    """Raise FeedError if the item uses an unrecognised named strategy.
+
+    An unknown strategy name silently falls back to the bank default (DeepSeek
+    extraction) in Hindsight v1.2.1.  This guard makes the failure explicit
+    before any evidence is sent.  Empty strategy (bank default) is allowed.
+    """
+    strategy = item.get("strategy") or ""
+    if strategy and strategy not in _KNOWN_STRATEGIES:
+        raise FeedError(
+            f"Item {item.get('document_id', '?')!r} uses unrecognised strategy "
+            f"{strategy!r} (bank={bank_id!r}). "
+            f"Known strategies: {sorted(_KNOWN_STRATEGIES)}. "
+            "An unknown strategy falls back to default (DeepSeek) extraction "
+            "without warning — fix the item before retaining."
+        )
 
 
 # ── Entity metadata enrichment ────────────────────────────────────────────────
@@ -469,6 +492,11 @@ def batch_retain_to_hindsight(
 
     if not items:
         raise FeedError("batch_retain_to_hindsight: items list is empty")
+
+    # Reject unknown strategy names before sending anything — they silently
+    # fall back to DeepSeek extraction in Hindsight v1.2.1.
+    for item in items:
+        validate_item_strategy(item, bank_id)
 
     # Prepare bank config once (registers named strategy, disables auto-consolidation)
     if prepare_bank:

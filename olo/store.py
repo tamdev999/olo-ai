@@ -247,6 +247,7 @@ def migrate(conn: Optional[sqlite3.Connection] = None,
     """Create or upgrade schema; idempotent.
 
     v1 → v2: adds content_blobs table (M2b §2.1).
+    v2 → v3: adds hindsight_projection table (M3.0 §C2).
     Runs in one transaction. Opens a new connection if *conn* is None.
     """
     close_after = conn is None

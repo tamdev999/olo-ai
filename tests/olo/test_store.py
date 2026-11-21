@@ -17,6 +17,7 @@ from olo.store import (
     CheckpointMoved,
     LeaseLost,
     SourceBusy,
+    _SCHEMA_VERSION,
     acquire_run,
     connect,
     count_signals,
@@ -65,7 +66,7 @@ def test_migrate_idempotent_and_permissions(tmp_path: Path) -> None:
 
     row = conn.execute("SELECT version FROM schema_version").fetchall()
     assert len(row) == 1
-    assert row[0]["version"] == 2
+    assert row[0]["version"] == _SCHEMA_VERSION
 
     # Permissions (POSIX only; Windows chmod is a no-op)
     if os.name != "nt":

@@ -5,7 +5,7 @@
 # running it in the same session would time out unrelated tests.
 # Run it separately with __run_gate_v10.sh.
 #
-# Usage:
+# Usage: bash scripts/olo/m3/run_gate.sh
 #   HINDSIGHT_BANK_ID=main-v1-granite bash __run_gate_granite.sh
 #
 set -euo pipefail

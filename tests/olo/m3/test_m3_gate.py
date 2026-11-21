@@ -211,44 +211,6 @@ def _build_hindsight_items_from_olo_db(db_path: Path) -> list[dict]:
     from olo.m3.feeder import build_hindsight_items
     return build_hindsight_items(db_path, source="hindsight_gate")
 
-    items = []
-    for row in rows:
-        payload = json.loads(row["payload"])
-        sha256 = payload.get("content_sha256", "")
-        if not sha256:
-            continue
-
-        # Read the content from the stored blob — this is the authoritative text
-        raw = get_blob_raw("hindsight_gate", sha256, conn)
-        if raw is None:
-            continue  # blob missing; shouldn't happen in a correct olo.db
-        body_text = raw.decode("utf-8")
-
-        item: dict = {
-            "content": body_text,
-            "timestamp": row["occurred_at"],
-            "document_id": f"sig:{row['external_id']}",
-            "operation_id": f"olo-idx:gate:{row['external_id']}",
-            "entities": [{"text": payload.get("entity_id", ""), "type": "person"}],
-            "resolve_entities": False,
-            "tags": payload.get("tags", []),
-            "metadata": {
-                "signal_id": row["external_id"],
-                "source": payload.get("source", ""),
-                "kind": payload.get("kind", ""),
-                "content_sha256": sha256,
-                "render_version": "1",
-                "is_llm_eligible": str(payload.get("is_llm_eligible", False)),
-            },
-            "strategy": payload.get("strategy", "prose"),
-        }
-        if row["subject"]:
-            item["context"] = row["subject"]
-        items.append(item)
-
-    conn.close()
-    return items
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -783,8 +745,9 @@ class TestV9NoGenerativeCalls:
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
 
-        # Build a small set of STRUCTURED items to test budget guard wiring
-        # (avoid prose/LLM items that could cause memory pressure during V1 recall)
+        # Build a small set of STRUCTURED items to test budget guard wiring.
+        # Using structured-no-llm (not "structured") so the registered named
+        # strategy is used — avoids silent DeepSeek fallback on unknown strategy.
         prose_items = [
             {
                 "content": (
@@ -799,22 +762,25 @@ class TestV9NoGenerativeCalls:
                     "signal_id": f"p9budget{i:03d}",
                     "content_sha256": f"p9budget{i}",
                     "render_version": "1",
-                    "is_llm_eligible": "false",  # structured — no LLM, no memory pressure
+                    "is_llm_eligible": "false",
                 },
-                "strategy": "structured",
+                "strategy": "structured-no-llm",  # registered strategy, never DeepSeek
                 "resolve_entities": False,
             }
             for i in range(5)
         ]
 
-        # Test: with $0.01 limit, a UsageGuard on a live workload must call
-        # snapshot() and check() without raising StatsUnavailableError.
-        # Use a scratch bank so prose items don't contaminate the main bank.
-        # Stats are always checked against main-v1 (the global stats bank).
         scratch_bank = "p9-budget-scratch"
-        # UsageGuard monitors the main bank for LLM usage stats.
-        # Use main-v1-granite (the current gate bank); main-v1 is not guaranteed
-        # to exist after the Granite migration.
+        # Configure the bank BEFORE retaining — Hindsight v1.2.1 PATCH can
+        # create/configure a new bank without a prior retain call.
+        from olo.m3.feeder import prepare_hindsight_bank as _p9_prep
+        for _r in range(3):
+            try:
+                _p9_prep(client, scratch_bank)
+                break
+            except Exception:
+                time.sleep(5)
+
         gate_bank = os.environ.get("HINDSIGHT_BANK_ID", "main-v1-granite")
         guard = UsageGuard(client, bank_id=gate_bank, budget_usd=0.01)
         try:
@@ -824,9 +790,8 @@ class TestV9NoGenerativeCalls:
                 pytest.fail(f"P9/budget NC FAIL: UsageGuard.snapshot() raised: {exc}")
             pytest.skip(f"P9/budget NC: cannot snapshot stats: {exc}")
 
-        # Run the retain with a tiny budget guard
-        # With LLM provider=deepseek, prose items might trigger extraction
-        # With provider=none, no LLM calls → budget check passes silently
+        # Run the retain with a tiny budget guard. Bank is already configured so
+        # structured-no-llm items use chunks extraction — no inline DeepSeek.
         try:
             result = batch_retain_to_hindsight(
                 prose_items[:3],
@@ -834,9 +799,10 @@ class TestV9NoGenerativeCalls:
                 bank_id=scratch_bank,
                 batch_size=2,
                 budget_guard=guard,
-                async_=False,  # sync to avoid LLM async overlap with V1 recall
+                async_=False,
+                prepare_bank=False,  # already configured above
             )
-            # Passed without exceeding budget (expected with provider=none)
+            # Passed without exceeding budget (expected with structured-no-llm items)
             assert result["total"] > 0, "P9/budget: no items retained"
         except BudgetExceededError as exc:
             # With real DeepSeek and $0.01 limit, this is the expected outcome
@@ -1702,15 +1668,17 @@ class TestV5CrashRecovery:
             """
             env_list = [f"{k}={v}" for k, v in env_vars.items()]
             for _attempt in range(3):
-                # Kill any stale pg0 or hindsight-api processes from a previous
-                # V5 attempt that may have left pg0 running after Python exited.
-                # Only kill processes that contain the specific pg0_instance name
-                # so the main Hindsight server on port 18800 is not disturbed.
+                # Stop any stale pg0 instance using pg0's own CLI.
+                # PostgreSQL renames its process after startup, so pkill -f
+                # (name-pattern kill) is unreliable.  pg0 stop uses the state
+                # file it wrote during start — it always finds the right PID.
+                _pg0_bin = "/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/pg0/bin/pg0"
                 subprocess.run(
-                    ["sudo", "pkill", "-f", pg0_instance],
-                    check=False, capture_output=True, timeout=5,
+                    ["sudo", "-u", "olo_hs", "env", f"HOME={v5_home}",
+                     _pg0_bin, "stop", "--name", pg0_instance],
+                    check=False, capture_output=True, timeout=15,
                 )
-                time.sleep(1)  # give the stale process time to exit
+                time.sleep(2)  # let pg0 finish cleanup
                 # Clean only per-test directories; never touch /tmp global state.
                 subprocess.run(
                     ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_socket_dir)],
@@ -1931,28 +1899,16 @@ class TestV6Replay:
         ]
 
         # Reload into scratch bank (small batches to avoid HTTP timeout).
-        # Banks are created implicitly on first retain. Use a short warmup
-        # item to create the bank, then register structured-no-llm before
-        # retaining actual items — this prevents inline DeepSeek on the
-        # first batch.
+        # Configure the bank BEFORE the first retain — Hindsight v1.2.1
+        # PATCH /config can create/configure a new bank, so no dummy warmup
+        # document is needed.  Using a deterministic op_id ensures the
+        # document-ID set is identical on every load from the same evidence.
         def _load_to_bank(bank: str, items: list, configure_bank: bool = False) -> None:
             if configure_bank:
-                # Create bank with a short warmup item (fast/trivial LLM call)
-                wu = {
-                    "content": "V6 bank warmup", "timestamp": "2026-01-01T00:00:00Z",
-                    "document_id": f"sig:v6-wu-{_uuid.uuid4().hex[:6]}",
-                    "entities": [], "tags": ["src:v6_warmup"],
-                    "metadata": {"signal_id": "v6wu", "content_sha256": "v6wu",
-                                 "render_version": "1", "is_llm_eligible": "false"},
-                    "strategy": "structured-no-llm", "resolve_entities": False,
-                }
-                hs_client.retain([wu], operation_id=str(_uuid.uuid4()),
-                                  async_=False, bank_id=bank)
-                # Bank now exists — register strategy so actual items skip LLM
-                from olo.m3.feeder import prepare_hindsight_bank as _v6_prep_bank
+                from olo.m3.feeder import prepare_hindsight_bank as _v6_prep
                 for _r in range(3):
                     try:
-                        _v6_prep_bank(hs_client, bank)
+                        _v6_prep(hs_client, bank)
                         break
                     except (HindsightAPIError, HindsightUnavailable):
                         time.sleep(5)
@@ -2063,17 +2019,8 @@ class TestV6Replay:
 
         def _load_subset(items, bank, configure: bool = False):
             if configure:
-                # Create bank with short warmup item, then register strategy
-                wu2 = {
-                    "content": "V6 NC warmup", "timestamp": "2026-01-01T00:00:00Z",
-                    "document_id": f"sig:v6nc-wu-{_uuid.uuid4().hex[:6]}",
-                    "entities": [], "tags": ["src:v6nc_warmup"],
-                    "metadata": {"signal_id": "v6ncwu", "content_sha256": "v6ncwu",
-                                 "render_version": "1", "is_llm_eligible": "false"},
-                    "strategy": "structured-no-llm", "resolve_entities": False,
-                }
-                hs_client.retain([wu2], operation_id=str(_uuid.uuid4()),
-                                  async_=False, bank_id=bank)
+                # Configure BEFORE retaining (no warmup doc needed — PATCH creates bank).
+                from olo.m3.feeder import prepare_hindsight_bank as _prep_nc
                 for _r in range(3):
                     try:
                         _prep_nc(hs_client, bank)
