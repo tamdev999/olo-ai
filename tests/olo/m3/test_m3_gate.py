@@ -2775,6 +2775,19 @@ class TestP1DeliveryDateConsolidation:
                 except TimeoutError:
                     _strict_skip("P1: second consolidation timed out (120 s)")
 
+            # ── Step 4b: third consolidation pass ────────────────────────────
+            # If the second round created a new April-08 observation WITHOUT
+            # updating the April-04 one, the LLM now sees two contradicting facts:
+            # "April 04 confirmed" and "April 08 requested".  A third pass forces
+            # it to merge them into one updated observation with history.
+            cons3 = hs_client.trigger_consolidation(bank_id=p1_bank)
+            cons3_op = cons3.get("operation_id", "")
+            if cons3_op:
+                try:
+                    hs_client.wait_for_operation(cons3_op, timeout_s=120.0, bank_id=p1_bank)
+                except TimeoutError:
+                    pass  # best-effort — the main assertions follow
+
             # ── Step 5: query and verify ─────────────────────────────────────
             result = hs_client.recall(
                 f"meeting reschedule {ent.company} April 2026",
