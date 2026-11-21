@@ -1396,6 +1396,12 @@ class TestV3HistoryPreserved:
 
         # First retain (sync baseline)
         _retain(original_content, original_tags, async_=False)
+        # Brief pause to allow internal document state to settle before the async update.
+        # Required on banks with active consolidation (Granite migration): the fold
+        # mechanism can return 409 if the async retain arrives before the sync
+        # retain's internal lock fully releases.
+        import time as _time
+        _time.sleep(2)
         # Second retain — ASYNC so Hindsight creates a history event.
         # Audit C9: sync retains produce 0 history entries; async retains
         # produce history with facts_added/facts_removed counts.
