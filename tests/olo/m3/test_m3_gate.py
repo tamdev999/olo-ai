@@ -671,7 +671,7 @@ class TestV9NoGenerativeCalls:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running for P9 prose test")
 
@@ -740,7 +740,7 @@ class TestV9NoGenerativeCalls:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running for P9 NC test")
 
@@ -801,7 +801,7 @@ class TestV9NoGenerativeCalls:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
 
@@ -1018,7 +1018,7 @@ class TestV8ProvenanceLive:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running for V8 live test")
         yield client
@@ -1154,7 +1154,7 @@ class TestV1RecallQuality:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
         yield client
@@ -1332,7 +1332,7 @@ class TestV2CrossConnectorIdentity:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
         yield client
@@ -1389,7 +1389,7 @@ class TestV3HistoryPreserved:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
         yield client
@@ -1922,7 +1922,7 @@ class TestV6Replay:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
         yield client
@@ -2453,7 +2453,7 @@ class TestV10Footprint:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
         yield client
@@ -2679,7 +2679,7 @@ class TestP1DeliveryDateConsolidation:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
         yield client
@@ -2934,7 +2934,7 @@ class TestP2InvoiceDisputeRetrieval:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
         yield client
@@ -2986,7 +2986,7 @@ class TestP4ContradictionHistory:
         cfg = HindsightConfig.from_env()
         client = HindsightClient(cfg)
         try:
-            client.wait_until_ready(timeout_s=10.0)
+            client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
         yield client
