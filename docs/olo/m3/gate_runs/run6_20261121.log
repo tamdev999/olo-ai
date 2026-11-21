@@ -1,0 +1,32 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0 -- /root/olo_linux_venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /mnt/c/Users/twMatt/Music/OLO MVP/olo-ai
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, anyio-4.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 52 items / 27 deselected / 25 selected
+
+tests/olo/m3/test_m3_gate.py::TestV9NoGenerativeCalls::test_p9_structured_no_llm_calls PASSED [  4%]
+tests/olo/m3/test_m3_gate.py::TestV9NoGenerativeCalls::test_p9_prose_calls_detected PASSED [  8%]
+tests/olo/m3/test_m3_gate.py::TestV9NoGenerativeCalls::test_p9_prose_llm_calls_nc PASSED [ 12%]
+tests/olo/m3/test_m3_gate.py::TestV9NoGenerativeCalls::test_p9_budget_guard_wired_to_feeder FAILED [ 16%]
+tests/olo/m3/test_m3_gate.py::TestV8ProvenanceLive::test_live_recall_provenance FAILED [ 20%]
+tests/olo/m3/test_m3_gate.py::TestV8ProvenanceLive::test_v8_live_negative_control PASSED [ 24%]
+tests/olo/m3/test_m3_gate.py::TestV1RecallQuality::test_recall_at_10 FAILED [ 28%]
+tests/olo/m3/test_m3_gate.py::TestV1RecallQuality::test_v1_no_answer_leakage_nc FAILED [ 32%]
+tests/olo/m3/test_m3_gate.py::TestV1RecallQuality::test_recall_at_10_negative_control FAILED [ 36%]
+tests/olo/m3/test_m3_gate.py::TestV2CrossConnectorIdentity::test_all_five_connectors_per_entity ERROR [ 40%]
+tests/olo/m3/test_m3_gate.py::TestV2CrossConnectorIdentity::test_cross_connector_negative_control ERROR [ 44%]
+tests/olo/m3/test_m3_gate.py::TestV3HistoryPreserved::test_re_retain_same_document_id_preserves_history FAILED [ 48%]
+tests/olo/m3/test_m3_gate.py::TestV3HistoryPreserved::test_v3_negative_control FAILED [ 52%]
+tests/olo/m3/test_m3_gate.py::TestV4HotWithoutHindsight::test_v4_hot_context SKIPPED [ 56%]
+tests/olo/m3/test_m3_gate.py::TestV5CrashRecovery::test_crash_during_retain_no_loss_or_duplicate FAILED [ 60%]
+tests/olo/m3/test_m3_gate.py::TestV6Replay::test_rebuild_gives_identical_document_ids FAILED [ 64%]
+tests/olo/m3/test_m3_gate.py::TestV6Replay::test_v6_negative_control PASSED [ 68%]
+tests/olo/m3/test_m3_gate.py::TestV7IsolationIntegration::test_separate_pg0_instances_no_cross_results FAILED [ 72%]
+tests/olo/m3/test_m3_gate.py::TestV10Footprint::test_idle_rss_under_600mb XFAIL [ 76%]
+tests/olo/m3/test_m3_gate.py::TestV10Footprint::test_v10_negative_control PASSED [ 80%]
+tests/olo/m3/test_m3_gate.py::TestP1DeliveryDateConsolidation::test_new_date_in_observation_old_date_in_history ERROR [ 84%]
+tests/olo/m3/test_m3_gate.py::TestP1DeliveryDateConsolidation::test_p1_negative_control ERROR [ 88%]
+tests/olo/m3/test_m3_gate.py::TestP2InvoiceDisputeRetrieval::test_all_three_sources_in_recall 

@@ -1,0 +1,764 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="10" failures="10" skipped="2" tests="25" time="1829.580" timestamp="2026-11-21T03:59:35.206299-05:00" hostname="twPC"><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_structured_no_llm_calls" time="23.886"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:560: in test_p9_structured_no_llm_calls
+    prepare_hindsight_bank(client, scratch_bank)
+olo/m3/feeder.py:429: in prepare_hindsight_bank
+    client.patch_bank_config(_BANK_CONFIG_OVERRIDES, bank_id=bank_id)
+olo/m3/hindsight/client.py:549: in patch_bank_config
+    return _request(self._cfg, "PATCH", path, {"updates": updates})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:594: in test_p9_structured_no_llm_calls
+    client.delete_bank(scratch_bank)
+olo/m3/hindsight/client.py:523: in delete_bank
+    return _request(
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_prose_calls_detected" time="21.337" /><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_prose_llm_calls_nc" time="21.780"><failure message="Failed: [STRICT] gate test must not skip: Hindsight server not running for P9 NC test">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+olo/m3/hindsight/client.py:303: in wait_until_ready
+    self.health_check()
+olo/m3/hindsight/client.py:295: in health_check
+    return _request(self._cfg, "GET", "/health")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:683: in test_p9_prose_llm_calls_nc
+    client.wait_until_ready(timeout_s=10.0)
+olo/m3/hindsight/client.py:317: in wait_until_ready
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not ready after 10.0s
+
+During handling of the above exception, another exception occurred:
+tests/olo/m3/test_m3_gate.py:685: in test_p9_prose_llm_calls_nc
+    _strict_skip("Hindsight server not running for P9 NC test")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Hindsight server not running for P9 NC test</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_budget_guard_wired_to_feeder" time="21.601"><failure message="Failed: [STRICT] gate test must not skip: Hindsight server not running">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+olo/m3/hindsight/client.py:303: in wait_until_ready
+    self.health_check()
+olo/m3/hindsight/client.py:295: in health_check
+    return _request(self._cfg, "GET", "/health")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:744: in test_p9_budget_guard_wired_to_feeder
+    client.wait_until_ready(timeout_s=10.0)
+olo/m3/hindsight/client.py:317: in wait_until_ready
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not ready after 10.0s
+
+During handling of the above exception, another exception occurred:
+tests/olo/m3/test_m3_gate.py:746: in test_p9_budget_guard_wired_to_feeder
+    _strict_skip("Hindsight server not running")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Hindsight server not running</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV8ProvenanceLive" name="test_live_recall_provenance" time="127.077"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:993: in test_live_recall_provenance
+    hs_client.retain([warmup], operation_id=str(_uuid.uuid4()),
+olo/m3/hindsight/client.py:348: in retain
+    return _request(self._cfg, "POST", self._bank_path("/memories", bank_id), payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV8ProvenanceLive" name="test_v8_live_negative_control" time="0.048" /><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_recall_at_10" time="27.491"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: Hindsight server not running&quot;">/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1333: in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1386: in request
+    self._send_request(method, url, body, headers, encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1432: in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1381: in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1141: in _send_output
+    self.send(msg)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1085: in send
+    self.connect()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1051: in connect
+    self.sock = self._create_connection(
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:874: in create_connection
+    raise exceptions[0]
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:859: in create_connection
+    sock.connect(sa)
+E   ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1336: in do_open
+    raise URLError(err)
+E   urllib.error.URLError: &lt;urlopen error [Errno 111] Connection refused&gt;
+
+The above exception was the direct cause of the following exception:
+olo/m3/hindsight/client.py:303: in wait_until_ready
+    self.health_check()
+olo/m3/hindsight/client.py:295: in health_check
+    return _request(self._cfg, "GET", "/health")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: &lt;urlopen error [Errno 111] Connection refused&gt;
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1097: in hs_client
+    client.wait_until_ready(timeout_s=10.0)
+olo/m3/hindsight/client.py:317: in wait_until_ready
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not ready after 10.0s
+
+During handling of the above exception, another exception occurred:
+tests/olo/m3/test_m3_gate.py:1099: in hs_client
+    _strict_skip("Hindsight server not running")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Hindsight server not running</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_v1_no_answer_leakage_nc" time="0.000"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: Hindsight server not running&quot;">/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1333: in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1386: in request
+    self._send_request(method, url, body, headers, encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1432: in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1381: in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1141: in _send_output
+    self.send(msg)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1085: in send
+    self.connect()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1051: in connect
+    self.sock = self._create_connection(
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:874: in create_connection
+    raise exceptions[0]
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:859: in create_connection
+    sock.connect(sa)
+E   ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1336: in do_open
+    raise URLError(err)
+E   urllib.error.URLError: &lt;urlopen error [Errno 111] Connection refused&gt;
+
+The above exception was the direct cause of the following exception:
+olo/m3/hindsight/client.py:303: in wait_until_ready
+    self.health_check()
+olo/m3/hindsight/client.py:295: in health_check
+    return _request(self._cfg, "GET", "/health")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: &lt;urlopen error [Errno 111] Connection refused&gt;
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1097: in hs_client
+    client.wait_until_ready(timeout_s=10.0)
+olo/m3/hindsight/client.py:317: in wait_until_ready
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not ready after 10.0s
+
+During handling of the above exception, another exception occurred:
+tests/olo/m3/test_m3_gate.py:1099: in hs_client
+    _strict_skip("Hindsight server not running")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Hindsight server not running</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_recall_at_10_negative_control" time="0.000"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: Hindsight server not running&quot;">/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1333: in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1386: in request
+    self._send_request(method, url, body, headers, encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1432: in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1381: in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1141: in _send_output
+    self.send(msg)
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1085: in send
+    self.connect()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1051: in connect
+    self.sock = self._create_connection(
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:874: in create_connection
+    raise exceptions[0]
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:859: in create_connection
+    sock.connect(sa)
+E   ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1336: in do_open
+    raise URLError(err)
+E   urllib.error.URLError: &lt;urlopen error [Errno 111] Connection refused&gt;
+
+The above exception was the direct cause of the following exception:
+olo/m3/hindsight/client.py:303: in wait_until_ready
+    self.health_check()
+olo/m3/hindsight/client.py:295: in health_check
+    return _request(self._cfg, "GET", "/health")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: &lt;urlopen error [Errno 111] Connection refused&gt;
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1097: in hs_client
+    client.wait_until_ready(timeout_s=10.0)
+olo/m3/hindsight/client.py:317: in wait_until_ready
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not ready after 10.0s
+
+During handling of the above exception, another exception occurred:
+tests/olo/m3/test_m3_gate.py:1099: in hs_client
+    _strict_skip("Hindsight server not running")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Hindsight server not running</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV2CrossConnectorIdentity" name="test_all_five_connectors_per_entity" time="56.908"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1294: in test_all_five_connectors_per_entity
+    docs = hs_client.list_all_documents_with_tags([ent_tag])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:480: in list_all_documents_with_tags
+    resp = self.list_documents(limit=page_size, offset=offset, bank_id=bank_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:463: in list_documents
+    return _request(self._cfg, "GET", self._bank_path("/documents", bank_id), params=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV2CrossConnectorIdentity" name="test_cross_connector_negative_control" time="21.174"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1310: in test_cross_connector_negative_control
+    result = hs_client.recall(
+olo/m3/hindsight/client.py:426: in recall
+    return _request(self._cfg, "POST", self._bank_path("/memories/recall", bank_id), payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV3HistoryPreserved" name="test_re_retain_same_document_id_preserves_history" time="53.641"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: Hindsight server not running&quot;">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+olo/m3/hindsight/client.py:303: in wait_until_ready
+    self.health_check()
+olo/m3/hindsight/client.py:295: in health_check
+    return _request(self._cfg, "GET", "/health")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1332: in hs_client
+    client.wait_until_ready(timeout_s=10.0)
+olo/m3/hindsight/client.py:317: in wait_until_ready
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not ready after 10.0s
+
+During handling of the above exception, another exception occurred:
+tests/olo/m3/test_m3_gate.py:1334: in hs_client
+    _strict_skip("Hindsight server not running")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Hindsight server not running</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV3HistoryPreserved" name="test_v3_negative_control" time="0.000"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: Hindsight server not running&quot;">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+olo/m3/hindsight/client.py:303: in wait_until_ready
+    self.health_check()
+olo/m3/hindsight/client.py:295: in health_check
+    return _request(self._cfg, "GET", "/health")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1332: in hs_client
+    client.wait_until_ready(timeout_s=10.0)
+olo/m3/hindsight/client.py:317: in wait_until_ready
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not ready after 10.0s
+
+During handling of the above exception, another exception occurred:
+tests/olo/m3/test_m3_gate.py:1334: in hs_client
+    _strict_skip("Hindsight server not running")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Hindsight server not running</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV4HotWithoutHindsight" name="test_v4_hot_context" time="110.768"><skipped type="pytest.skip" message="V4 NOT RUN — M3.3: Context Builder (hot-context assembly from olo.db + Hindsight) is not implemented in M3.0. This test will be enabled when M3.3 is delivered.">/mnt/c/Users/twMatt/Music/OLO MVP/olo-ai/tests/olo/m3/test_m3_gate.py:1563: V4 NOT RUN — M3.3: Context Builder (hot-context assembly from olo.db + Hindsight) is not implemented in M3.0. This test will be enabled when M3.3 is delivered.</skipped></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV5CrashRecovery" name="test_crash_during_retain_no_loss_or_duplicate" time="413.071"><failure message="Failed: [STRICT] gate test must not skip: Could not start Hindsight for V5 test after 3 attempts. Log: 'ges/hindsight_api/engine/memory_engine.py&quot;, line 6359, in start_pg0\n    self.db_url = await pg0.ensure_running()\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File &quot;/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/hindsight_api/pg0.py&quot;, line 138, in ensure_running\n    return await self.start()\n           ^^^^^^^^^^^^^^^^^^\n  File &quot;/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/hindsight_api/pg0.py&quot;, line 99, in start\n    raise RuntimeError(\n        f&quot;Failed to start embedded PostgreSQL after {max_retries} attempts. Last error: {last_error}&quot;\n    )\nRuntimeError: Failed to start embedded PostgreSQL after 5 attempts. Last error: Error: PostgreSQL error: error communicating with database: Connection reset by peer (os error 104)\n\nERROR:    Application startup failed. Exiting.\n'">tests/olo/m3/test_m3_gate.py:1726: in test_crash_during_retain_no_loss_or_duplicate
+    proc = _start_as_olo_hs()
+           ^^^^^^^^^^^^^^^^^^
+tests/olo/m3/test_m3_gate.py:1717: in _start_as_olo_hs
+    _strict_skip(
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Could not start Hindsight for V5 test after 3 attempts. Log: 'ges/hindsight_api/engine/memory_engine.py", line 6359, in start_pg0\n    self.db_url = await pg0.ensure_running()\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/hindsight_api/pg0.py", line 138, in ensure_running\n    return await self.start()\n           ^^^^^^^^^^^^^^^^^^\n  File "/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/hindsight_api/pg0.py", line 99, in start\n    raise RuntimeError(\n        f"Failed to start embedded PostgreSQL after {max_retries} attempts. Last error: {last_error}"\n    )\nRuntimeError: Failed to start embedded PostgreSQL after 5 attempts. Last error: Error: PostgreSQL error: error communicating with database: Connection reset by peer (os error 104)\n\nERROR:    Application startup failed. Exiting.\n'</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV6Replay" name="test_rebuild_gives_identical_document_ids" time="254.789"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1971: in test_rebuild_gives_identical_document_ids
+    _load_to_bank(scratch_bank, v6_items, configure_bank=True)
+tests/olo/m3/test_m3_gate.py:1921: in _load_to_bank
+    hs_client.retain(batch, operation_id=op_id,
+olo/m3/hindsight/client.py:348: in retain
+    return _request(self._cfg, "POST", self._bank_path("/memories", bank_id), payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV6Replay" name="test_v6_negative_control" time="53.432"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:2039: in test_v6_negative_control
+    _load_subset(v6_nc_items, scratch, configure=True)
+tests/olo/m3/test_m3_gate.py:2035: in _load_subset
+    hs_client.retain(batch, operation_id=op_id,
+olo/m3/hindsight/client.py:348: in retain
+    return _request(self._cfg, "POST", self._bank_path("/memories", bank_id), payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV7IsolationIntegration" name="test_separate_pg0_instances_no_cross_results" time="462.024"><failure message="Failed: [STRICT] gate test must not skip: Could not start business A: V7 business v7-biz-aa not ready after 3 attempts">tests/olo/m3/test_m3_gate.py:2275: in test_separate_pg0_instances_no_cross_results
+    proc_a = _start_biz(hermes_home_a, biz_a, port_a)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/olo/m3/test_m3_gate.py:2272: in _start_biz
+    raise HindsightUnavailable(f"V7 business {biz_id} not ready after 3 attempts")
+E   olo.m3.hindsight.client.HindsightUnavailable: V7 business v7-biz-aa not ready after 3 attempts
+
+During handling of the above exception, another exception occurred:
+tests/olo/m3/test_m3_gate.py:2277: in test_separate_pg0_instances_no_cross_results
+    _strict_skip(f"Could not start business A: {e}")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: Could not start business A: V7 business v7-biz-aa not ready after 3 attempts</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV10Footprint" name="test_idle_rss_under_600mb" time="48.470"><skipped type="pytest.xfail" message="V10: Hindsight PSS 1841 MB &gt; 600 MB planning target (not hard requirement). RSS=1851 MB, peak=6053 MB, PostgreSQL=1037 MB (separate). BBC decides on memory budget; retrieval quality takes priority." /></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV10Footprint" name="test_v10_negative_control" time="0.005" /><testcase classname="tests.olo.m3.test_m3_gate.TestP1DeliveryDateConsolidation" name="test_new_date_in_observation_old_date_in_history" time="26.942"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured&quot;">tests/olo/m3/test_m3_gate.py:2618: in hs_client
+    _require_llm_key()  # D3 fix: strict mode fails if key missing
+    ^^^^^^^^^^^^^^^^^^
+tests/olo/m3/test_m3_gate.py:127: in _require_llm_key
+    _strict_skip("DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestP1DeliveryDateConsolidation" name="test_p1_negative_control" time="0.000"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured&quot;">tests/olo/m3/test_m3_gate.py:2618: in hs_client
+    _require_llm_key()  # D3 fix: strict mode fails if key missing
+    ^^^^^^^^^^^^^^^^^^
+tests/olo/m3/test_m3_gate.py:127: in _require_llm_key
+    _strict_skip("DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestP2InvoiceDisputeRetrieval" name="test_all_three_sources_in_recall" time="66.068"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured&quot;">tests/olo/m3/test_m3_gate.py:2873: in hs_client
+    _require_llm_key()  # D3 fix
+    ^^^^^^^^^^^^^^^^^^
+tests/olo/m3/test_m3_gate.py:127: in _require_llm_key
+    _strict_skip("DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestP4ContradictionHistory" name="test_five_contradictions_current_correct_history_retrievable" time="13.914"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured&quot;">tests/olo/m3/test_m3_gate.py:2925: in hs_client
+    _require_llm_key()
+tests/olo/m3/test_m3_gate.py:127: in _require_llm_key
+    _strict_skip("DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured</error></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestP4ContradictionHistory" name="test_p4_negative_control" time="0.000"><error message="failed on setup with &quot;Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured&quot;">tests/olo/m3/test_m3_gate.py:2925: in hs_client
+    _require_llm_key()
+tests/olo/m3/test_m3_gate.py:127: in _require_llm_key
+    _strict_skip("DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured")
+tests/olo/m3/test_m3_gate.py:115: in _strict_skip
+    pytest.fail(f"[STRICT] gate test must not skip: {msg}")
+E   Failed: [STRICT] gate test must not skip: DeepSeek API key (HINDSIGHT_API_LLM_API_KEY) not configured</error></testcase></testsuite></testsuites>
