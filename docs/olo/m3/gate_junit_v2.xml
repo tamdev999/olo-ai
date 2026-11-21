@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="3" tests="26" time="1108.927" timestamp="2026-11-20T15:42:45.454955-05:00" hostname="twPC"><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_structured_no_llm_calls" time="5.202"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:632: in test_p9_structured_no_llm_calls
+    client.delete_bank(scratch_bank)
+olo/m3/hindsight/client.py:523: in delete_bank
+    return _request(
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_prose_calls_detected" time="0.356" /><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_prose_llm_calls_nc" time="0.064" /><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_budget_guard_wired_to_feeder" time="3.206"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:851: in test_p9_budget_guard_wired_to_feeder
+    client.delete_bank(scratch_bank)
+olo/m3/hindsight/client.py:523: in delete_bank
+    return _request(
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV8ProvenanceLive" name="test_live_recall_provenance" time="28.226" /><testcase classname="tests.olo.m3.test_m3_gate.TestV8ProvenanceLive" name="test_v8_live_negative_control" time="0.046" /><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_recall_at_10" time="63.636" /><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_v1_no_answer_leakage_nc" time="1.419" /><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_recall_at_10_negative_control" time="0.047" /><testcase classname="tests.olo.m3.test_m3_gate.TestV2CrossConnectorIdentity" name="test_all_five_connectors_per_entity" time="20.745" /><testcase classname="tests.olo.m3.test_m3_gate.TestV2CrossConnectorIdentity" name="test_cross_connector_negative_control" time="0.054" /><testcase classname="tests.olo.m3.test_m3_gate.TestV3HistoryPreserved" name="test_re_retain_same_document_id_preserves_history" time="4.165" /><testcase classname="tests.olo.m3.test_m3_gate.TestV3HistoryPreserved" name="test_v3_negative_control" time="0.997" /><testcase classname="tests.olo.m3.test_m3_gate.TestV4HotWithoutHindsight" name="test_v4_hot_context" time="2.979"><skipped type="pytest.skip" message="V4 NOT RUN — M3.3: Context Builder (hot-context assembly from olo.db + Hindsight) is not implemented in M3.0. This test will be enabled when M3.3 is delivered.">/mnt/c/Users/twMatt/Music/OLO MVP/olo-ai/tests/olo/m3/test_m3_gate.py:1554: V4 NOT RUN — M3.3: Context Builder (hot-context assembly from olo.db + Hindsight) is not implemented in M3.0. This test will be enabled when M3.3 is delivered.</skipped></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV5CrashRecovery" name="test_crash_during_retain_no_loss_or_duplicate" time="108.660" /><testcase classname="tests.olo.m3.test_m3_gate.TestV6Replay" name="test_rebuild_gives_identical_document_ids" time="100.320" /><testcase classname="tests.olo.m3.test_m3_gate.TestV6Replay" name="test_v6_negative_control" time="35.271" /><testcase classname="tests.olo.m3.test_m3_gate.TestV7IsolationIntegration" name="test_separate_pg0_instances_no_cross_results" time="94.853" /><testcase classname="tests.olo.m3.test_m3_gate.TestV10Footprint" name="test_idle_rss_under_600mb" time="3.129"><skipped type="pytest.xfail" message="V10: Hindsight PSS 2450 MB &gt; 600 MB planning target (not hard requirement). RSS=2460 MB, peak=6613 MB, PostgreSQL=1125 MB (separate). BBC decides on memory budget; retrieval quality takes priority." /></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV10Footprint" name="test_v10_negative_control" time="0.005" /><testcase classname="tests.olo.m3.test_m3_gate.TestV10Footprint" name="test_embedding_model_comparison" time="615.459"><skipped type="pytest.xfail" message="V10: best embedding-only model 'multilingual-E5-small fp32' achieves 68.8% recall@10 (RRF, no reranker). ≥90% recall requires hs-rerank-1 ONNX reranker (Arm B config); see matrix_results.json and V1 live gate ≥90% confirmation." /></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestP1DeliveryDateConsolidation" name="test_new_date_in_observation_old_date_in_history" time="3.695" /><testcase classname="tests.olo.m3.test_m3_gate.TestP1DeliveryDateConsolidation" name="test_p1_negative_control" time="1.037" /><testcase classname="tests.olo.m3.test_m3_gate.TestP2InvoiceDisputeRetrieval" name="test_all_three_sources_in_recall" time="5.504" /><testcase classname="tests.olo.m3.test_m3_gate.TestP4ContradictionHistory" name="test_five_contradictions_current_correct_history_retrievable" time="7.433" /><testcase classname="tests.olo.m3.test_m3_gate.TestP4ContradictionHistory" name="test_p4_negative_control" time="0.007" /></testsuite></testsuites>

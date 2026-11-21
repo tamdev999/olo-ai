@@ -1978,8 +1978,7 @@ class TestV6Replay:
                     _uuid.NAMESPACE_OID,
                     f"v6-{bank}-{start}"
                 ))
-                hs_client.retain(batch, operation_id=op_id,
-                                 async_=False, bank_id=bank)
+                _retain_with_retry(hs_client, batch, operation_id=op_id, bank_id=bank)
 
         # First load (configure bank on first batch)
         _load_to_bank(scratch_bank, v6_items, configure_bank=True)
@@ -2757,6 +2756,14 @@ class TestP1DeliveryDateConsolidation:
                 [reschedule_item], operation_id=op_reschedule,
                 async_=True, bank_id=p1_bank,
             )
+            # Wait for the async retain to complete BEFORE triggering consolidation.
+            # Without this, trigger_consolidation may run before the reschedule
+            # email's extraction is finished, causing the second consolidation to
+            # miss the April 08 rescheduling entirely.
+            try:
+                hs_client.wait_for_operation(op_reschedule, timeout_s=90.0, bank_id=p1_bank)
+            except TimeoutError:
+                _strict_skip("P1: async reschedule retain timed out before consolidation")
 
             # ── Step 4: consolidate — LLM detects contradiction, updates ──────
             # observation to "April 08" with history showing "April 04".
