@@ -1780,27 +1780,33 @@ class TestV5CrashRecovery:
                 # (name-pattern kill) is unreliable.  pg0 stop uses the state
                 # file it wrote during start — it always finds the right PID.
                 _pg0_bin = "/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/pg0/bin/pg0"
-                subprocess.run(
-                    ["sudo", "-u", "olo_hs", "env", f"HOME={v5_home}",
-                     _pg0_bin, "stop", "--name", pg0_instance],
-                    check=False, capture_output=True, timeout=15,
+                # Use verified stop-and-clean to prevent live-database deletion.
+                # pg0_stop() now verifies postmaster exit via pidfile + /proc polling.
+                from tests.olo.m3._pg0_lifecycle import (
+                    pg0_stop_and_clean, pg0_stop, Pg0StillRunningError
                 )
-                time.sleep(2)  # let pg0 finish cleanup
-                # Clean only per-test directories; never touch /tmp global state.
-                subprocess.run(
-                    ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_socket_dir)],
-                    check=False, capture_output=True,
-                )
+                if not preserve_pg0_data:
+                    try:
+                        pg0_stop_and_clean(
+                            instance_name=pg0_instance,
+                            home_dir=v5_home,
+                            data_dir=v5_home / ".pg0" / pg0_instance / "data",
+                            socket_dir=v5_socket_dir,
+                        )
+                    except Pg0StillRunningError as _e:
+                        _strict_skip(f"V5: pg0 instance still running after stop: {_e}")
+                else:
+                    # preserve_pg0_data=True: stop but keep data (crash recovery test)
+                    pg0_stop(instance_name=pg0_instance, home_dir=v5_home)
+                    # Only clean socket dir so a fresh socket path is available
+                    subprocess.run(
+                        ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_socket_dir)],
+                        check=False, capture_output=True,
+                    )
                 subprocess.run(
                     ["sudo", "-u", "olo_hs", "mkdir", "-p", str(v5_socket_dir)],
                     check=False, capture_output=True,
                 )
-                if not preserve_pg0_data:
-                    # Fresh start: wipe pg0 data so we begin from a clean state
-                    subprocess.run(
-                        ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_home / ".pg0")],
-                        check=False, capture_output=True,
-                    )
                 with open(str(v5_log), "w") as log_f:
                     proc = subprocess.Popen(
                         ["sudo", "-u", "olo_hs", "env"] + env_list + [hindsight_bin],
@@ -1950,14 +1956,25 @@ class TestV5CrashRecovery:
                 )
 
         finally:
-            # Kill only the processes this test started, using their process groups.
+            # Kill only the processes this test started.
             for _p in _procs_started:
                 _kill_process_group(_p)
-            # Remove the per-test directory (includes pg0 data and sockets).
-            subprocess.run(
-                ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_home)],
-                check=False, capture_output=True,
-            )
+            # Stop pg0 with verified exit before deleting the home directory.
+            # This prevents the live-database deletion bug reproduced by Opus T1/T2.
+            from tests.olo.m3._pg0_lifecycle import pg0_stop, Pg0StillRunningError
+            _v5_stopped = pg0_stop(instance_name=pg0_instance, home_dir=v5_home)
+            if not _v5_stopped:
+                # pg0 not confirmed stopped — only delete socket dir, not data
+                subprocess.run(
+                    ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_socket_dir)],
+                    check=False, capture_output=True,
+                )
+            else:
+                # Postmaster confirmed gone — safe to remove the full test directory
+                subprocess.run(
+                    ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_home)],
+                    check=False, capture_output=True,
+                )
 
 
 @_integration
@@ -2340,24 +2357,35 @@ class TestV7IsolationIntegration:
                 if _db_url.startswith("pg0://"):
                     _pg0_inst = _db_url[6:].split("?")[0].split("/")[0]
                     if _pg0_inst:
-                        subprocess.run(
-                            ["sudo", "-u", "olo_hs", "env",
-                             f"HOME={biz_home}",
-                             _pg0_bin, "stop", "--name", _pg0_inst],
-                            check=False, capture_output=True, timeout=15,
+                        # Use verified stop-and-clean to prevent live-database deletion.
+                        from tests.olo.m3._pg0_lifecycle import (
+                            pg0_stop_and_clean, Pg0StillRunningError
                         )
-                        time.sleep(2)
-                # Clean only the per-business socket and pg0 data directories.
-                subprocess.run(
-                    ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
-                    check=False, capture_output=True,
-                )
+                        try:
+                            pg0_stop_and_clean(
+                                instance_name=_pg0_inst,
+                                home_dir=biz_home,
+                                data_dir=biz_home / ".pg0" / _pg0_inst / "data",
+                                socket_dir=Path(socket_dir),
+                            )
+                        except Pg0StillRunningError as _e:
+                            # pg0 not stopped — only clean socket, not data
+                            subprocess.run(
+                                ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
+                                check=False, capture_output=True,
+                            )
+                    else:
+                        subprocess.run(
+                            ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
+                            check=False, capture_output=True,
+                        )
+                else:
+                    subprocess.run(
+                        ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
+                        check=False, capture_output=True,
+                    )
                 subprocess.run(
                     ["sudo", "-u", "olo_hs", "mkdir", "-p", socket_dir],
-                    check=False, capture_output=True,
-                )
-                subprocess.run(
-                    ["sudo", "-u", "olo_hs", "rm", "-rf", str(biz_home / ".pg0")],
                     check=False, capture_output=True,
                 )
                 proc = subprocess.Popen(

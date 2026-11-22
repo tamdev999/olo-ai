@@ -212,34 +212,42 @@ class UsageGuard:
         return max(0.0, self._budget_usd - spent)
 
     def _require_tracing(self) -> None:
-        """Verify the stats endpoint is accessible before starting guarded work.
+        """Verify server-side LLM tracing is enabled before guarded work.
 
-        Call this once at the start of a deployment or feeder run to confirm
-        that LLM tracing is on and the stats endpoint responds.  If tracing is
-        disabled (``HINDSIGHT_API_LLM_TRACE_ENABLED=false``) the endpoint will
-        still respond but always return 0 tokens, making the guard ineffective.
-        This method raises immediately so callers discover the problem before
-        spending money.
+        Calls the server's GET /version endpoint and inspects
+        ``features.llm_trace`` in the response.  This is a server-side check
+        rather than a client-side environment-variable check, so it reflects
+        the actual running configuration.
 
         Raises
         ------
         StatsUnavailableError
-            If the stats endpoint is unreachable or returns a malformed response.
-            Callers must treat this as a hard failure — an unavailable stats
-            endpoint means spending is unmonitored and the guard is non-functional.
-
-        Returns
-        -------
-        TokenSnapshot
-            The current cumulative snapshot; can be used directly as a baseline.
+            If /version is unreachable, returns invalid data, or reports
+            ``features.llm_trace == False``.  Callers must treat this as a
+            hard failure — disabled tracing means spending is unmonitored.
         """
-        import os
-        trace_env = os.environ.get("HINDSIGHT_API_LLM_TRACE_ENABLED", "true").lower()
-        if trace_env in ("false", "0", "no"):
+        from olo.m3.hindsight.client import _request, HindsightAPIError, HindsightUnavailable
+        try:
+            version_info = _request(self._client._cfg, "GET", "/version")
+        except (HindsightAPIError, HindsightUnavailable) as exc:
             raise StatsUnavailableError(
-                "HINDSIGHT_API_LLM_TRACE_ENABLED is set to false. "
-                "LLM usage will not be tracked, making the budget guard non-functional. "
-                "Set HINDSIGHT_API_LLM_TRACE_ENABLED=true before starting guarded work."
+                f"/version endpoint unreachable: {exc}. "
+                "Cannot verify LLM tracing is active."
+            ) from exc
+
+        features = version_info.get("features") if isinstance(version_info, dict) else None
+        if not isinstance(features, dict):
+            raise StatsUnavailableError(
+                f"/version response missing 'features' dict: {version_info!r}. "
+                "Cannot verify LLM tracing."
             )
-        # Env var check passed. The _get_stats() call in snapshot() verifies
-        # endpoint reachability. No separate stats call needed here.
+
+        llm_trace = features.get("llm_trace")
+        if llm_trace is not True:
+            raise StatsUnavailableError(
+                f"Server reports features.llm_trace={llm_trace!r}. "
+                "LLM usage tracing is not active on this server — the budget "
+                "guard cannot enforce spending limits without trace data. "
+                "Set HINDSIGHT_API_LLM_TRACE_ENABLED=true and restart the server."
+            )
+        # Server confirms tracing is active.

@@ -80,27 +80,54 @@ def validate_item_strategy(item: dict, bank_id: str) -> None:
 
 
 # ── Entity metadata enrichment ────────────────────────────────────────────────
-# Cache populated once per process from the synthetic entity registry.
-# This powers context enrichment for voice transcripts and structured docs.
-# In production, replace with a lookup against the OLO entity registry.
+# Cache populated from the OLO entity registry table in the source DB.
+# In production, this is populated from authoritative Olo entity records.
+# Never imports from olo.m3.synthetic.generator — that module must not be
+# a dependency of the production feeder.
 _ENTITY_META_CACHE: dict[str, tuple[str, str]] = {}  # entity_id → (display_name, company)
+_ENTITY_META_LOADED = False  # True once the cache has been populated
+
+
+def _load_entity_meta_from_db(db_conn: "sqlite3.Connection") -> None:
+    """Populate _ENTITY_META_CACHE from the entity_metadata table in the source DB.
+
+    The entity_metadata table (created by the DB generation script) maps
+    entity_id → (display_name, company).  It is populated during ingestion
+    from authoritative OLO entity records.
+
+    If the table does not exist or has no rows, the cache is left empty —
+    _get_entity_meta() will return ("", "") for all lookups, which is safe
+    (context enrichment simply omits the contact/company fields).
+
+    This function is idempotent and thread-safe for single-threaded callers.
+    """
+    global _ENTITY_META_CACHE, _ENTITY_META_LOADED
+    if _ENTITY_META_LOADED:
+        return
+    import sqlite3
+    try:
+        rows = db_conn.execute(
+            "SELECT entity_id, display_name, company FROM entity_metadata"
+        ).fetchall()
+        for entity_id, display_name, company in rows:
+            _ENTITY_META_CACHE[entity_id] = (display_name or "", company or "")
+    except (sqlite3.OperationalError, Exception):
+        # Table does not exist (old DB without entity_metadata) or query failed.
+        # Safe to proceed — context enrichment simply omits contact/company.
+        pass
+    finally:
+        _ENTITY_META_LOADED = True
 
 
 def _get_entity_meta(entity_id: str) -> tuple[str, str]:
     """Return (display_name, company) for a given entity_id.
 
-    Falls back to the synthetic ENTITIES registry for gate tests.
-    Returns ("", "") when the entity_id is not found or the import fails.
-    This is safe to call repeatedly — lookup is cached after the first call.
+    Returns ("", "") when the entity_id is not found (new business, missing
+    metadata, or entity_metadata table not populated).  Never fabricates names.
+
+    Call _load_entity_meta_from_db() once before the per-signal loop to
+    populate the cache from the authoritative source DB.
     """
-    global _ENTITY_META_CACHE
-    if not _ENTITY_META_CACHE:
-        try:
-            # Synthetic gate tests only — production should use the entity registry
-            from olo.m3.synthetic.generator import ENTITIES as _SE  # type: ignore
-            _ENTITY_META_CACHE = {e.entity_id: (e.display_name, e.company) for e in _SE}
-        except ImportError:
-            _ENTITY_META_CACHE = {"__loaded__": ("", "")}  # mark as attempted
     return _ENTITY_META_CACHE.get(entity_id, ("", ""))
 
 
@@ -141,6 +168,9 @@ def build_hindsight_items(
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    # Load entity metadata from the authoritative DB before processing signals.
+    # This avoids any dependency on synthetic test data generators.
+    _load_entity_meta_from_db(conn)
 
     # Read all signals for this source
     rows = conn.execute(

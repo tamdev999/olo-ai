@@ -141,6 +141,9 @@ class _FakeGuard(UsageGuard):
         self._budget_usd = budget_usd
         self._response_iter = iter(stats_responses)
 
+    def _require_tracing(self) -> None:  # type: ignore[override]
+        """No-op: _FakeGuard bypasses server-side tracing checks."""
+        pass
     def _get_stats(self) -> TokenSnapshot:  # type: ignore[override]
         """Return next canned response."""
         resp = next(self._response_iter)

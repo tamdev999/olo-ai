@@ -108,11 +108,18 @@ class CorpusMismatchError(Exception):
 
 
 def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
-    """Verify the bank contains the expected source signals before scoring.
+    """Verify the bank contains ALL expected source documents with correct content.
 
-    Raises CorpusMismatchError if any expected signal is missing.
+    Per Opus release audit: spot-checking 6 document IDs is insufficient.
+    This check: (a) verifies corpus fingerprint, (b) lists every bank document
+    and checks its content_sha256, (c) rejects missing, extra and stale content.
+
+    A bank containing stale content fails before any scores are calculated.
+
+    Raises CorpusMismatchError before any question is scored.
     """
-    from olo.m3.synthetic.generator import generate_timeline, corpus_fingerprint, _sig_id, ENTITIES
+    import hashlib
+    from olo.m3.synthetic.generator import generate_timeline, corpus_fingerprint
 
     tl = generate_timeline()
     actual_fp = corpus_fingerprint(tl)
@@ -124,30 +131,66 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
             f"different corpus than the current generator produces."
         )
 
-    # Spot-check: verify a sample of signals exist in the bank
-    # Check all meeting transcript signals (newly added, most likely to be missing)
-    critical_signals = []
-    for ent in ENTITIES:
-        critical_signals.append(_sig_id(f"transcript_meeting_reschedule_{ent.entity_id}"))
-        critical_signals.append(_sig_id(f"email_reschedule_{ent.entity_id}"))
+    # Build expected manifest: sig_id -> expected content_sha256
+    expected_hashes: dict[str, str] = {}
+    for sig in tl:
+        sig_id = f"sig:{sig.signal_id}"
+        body_sha = hashlib.sha256(sig.body_text.encode("utf-8")).hexdigest()
+        expected_hashes[sig_id] = body_sha
 
-    missing = []
-    for sid in critical_signals:
-        full_id = f"sig:{sid}"
+    # List all documents in the bank and verify content hashes
+    actual_ids: set[str] = set()
+    stale: list[str] = []
+    offset = 0
+    page_size = 200
+    while True:
         try:
-            client.get_document(full_id, bank_id=BANK_ID)
-        except Exception:
-            missing.append(full_id)
+            resp = client.list_documents(limit=page_size, offset=offset, bank_id=BANK_ID)
+        except Exception as exc:
+            raise CorpusMismatchError(f"Cannot list bank documents: {exc}") from exc
+        docs = resp.get("items", [])
+        if not docs:
+            break
+        for doc in docs:
+            doc_id = (doc.get("document_id") or doc.get("id") or "")
+            if not doc_id.startswith("sig:"):
+                continue
+            actual_ids.add(doc_id)
+            meta = doc.get("metadata") or {}
+            bank_sha = meta.get("content_sha256", "")
+            expected_sha = expected_hashes.get(doc_id, "")
+            if expected_sha and bank_sha and bank_sha != expected_sha:
+                stale.append(doc_id)
+        if len(docs) < page_size:
+            break
+        offset += page_size
 
+    missing = [sid for sid in expected_hashes if sid not in actual_ids]
+
+    errors = []
     if missing:
-        raise CorpusMismatchError(
-            f"Bank is missing {len(missing)} expected source signals. "
-            f"The bank was likely built before the current corpus was generated. "
-            f"Rebuild the bank from the current source evidence. "
-            f"Missing: {missing[:3]}"
+        errors.append(
+            f"{len(missing)} expected signals missing from bank "
+            f"(first 3: {missing[:3]}). Rebuild the bank."
+        )
+    if stale:
+        errors.append(
+            f"{len(stale)} bank documents have stale content "
+            f"(first 3: {stale[:3]}). Bank built from older corpus. Rebuild."
         )
 
-    print(f"Corpus verified: {len(tl)} signals, fingerprint {actual_fp[:16]}...")
+    if errors:
+        raise CorpusMismatchError(
+            "Bank content does not match expected corpus:\n" +
+            "\n".join(f"  {e}" for e in errors)
+        )
+
+    extra = [d for d in actual_ids if d not in expected_hashes]
+    if extra:
+        print(f"  Note: {len(extra)} extra signal(s) in bank (from gate tests etc.)")
+
+    print(f"Corpus verified: {len(tl)} signals, {len(actual_ids)} in bank, "
+          f"fingerprint {actual_fp[:16]}...")
 
 
 def run_benchmark() -> dict:
