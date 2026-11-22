@@ -1,0 +1,623 @@
+{
+  "benchmark_hash": "d76e0fa13b859593f2ee44657332aad36229fb9ac53182794d219142176b85de",
+  "question_count": 50,
+  "note": "FROZEN BEFORE RETRIEVAL - DO NOT MODIFY AFTER FIRST RETRIEVAL RUN",
+  "questions": [
+    {
+      "id": "v3_inv_01",
+      "query": "Show the email from Delta Finance reporting a billing discrepancy.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "P2: Invoice dispute email (email channel only)",
+      "expected_signal_ids": [
+        "sig_4c2cd840054ca4f63cd5ccdf"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_inv_02",
+      "query": "What was the dispute on invoice INV-DELT-2026-001?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "P2: Invoice dispute — email + transcript (multi-label)",
+      "expected_signal_ids": [
+        "sig_3ac897973adcabe9d80fe1af",
+        "sig_4c2cd840054ca4f63cd5ccdf"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_inv_03",
+      "query": "Show the Stripe record for invoice INV-DELT-2026-001.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "P2: Stripe invoice record (structured)",
+      "expected_signal_ids": [
+        "sig_69640da8bfbfbb7e3afdd33b"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_inv_04",
+      "query": "Show the QuickBooks record for invoice INV-DELT-2026-001.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "P2: QBO invoice record (structured)",
+      "expected_signal_ids": [
+        "sig_5eb5c332e47fd1425eef3ae7"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_inv_05",
+      "query": "Show both Stripe and QuickBooks records for Delta Finance invoice INV-DELT-2026-001.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "P2: Cross-system billing records (multi-label)",
+      "expected_signal_ids": [
+        "sig_5eb5c332e47fd1425eef3ae7",
+        "sig_69640da8bfbfbb7e3afdd33b"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_inv_06",
+      "query": "Show the payment confirmation email for invoice INV-DELT-2026-002 from Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "Payment confirmation email for INV-DELT-2026-002",
+      "expected_signal_ids": [
+        "sig_7acfeb48f02160fe5f3c0c64"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_inv_07",
+      "query": "Show the Stripe record for the paid invoice INV-DELT-2026-002.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "Stripe paid invoice record for INV-DELT-2026-002",
+      "expected_signal_ids": [
+        "sig_28c2a4255443c8f289b075a6"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_inv_08",
+      "query": "Show the QuickBooks record for invoice INV-DELT-2026-003 for Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "QBO record for quarterly reconciliation INV-DELT-2026-003",
+      "expected_signal_ids": [
+        "sig_e2525999d3a831fbc0fbd85d"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_inv_09",
+      "query": "Did Diana Patel ever query an invoice amount on a voice call?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "Voice call QBO balance inquiry",
+      "expected_signal_ids": [
+        "sig_6eda5ec9286f3a06b3b3be9f"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_inv_10",
+      "query": "What billing records exist across all systems for Delta Finance?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "invoice",
+      "description": "Cross-system billing overview (multi-label)",
+      "expected_signal_ids": [
+        "sig_28c2a4255443c8f289b075a6",
+        "sig_5eb5c332e47fd1425eef3ae7",
+        "sig_69640da8bfbfbb7e3afdd33b",
+        "sig_e2525999d3a831fbc0fbd85d"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_del_01",
+      "query": "Show the email where Delta Finance asked to reschedule their delivery.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "delivery",
+      "description": "P1: Delivery reschedule request email",
+      "expected_signal_ids": [
+        "sig_ce3cb4e180253a3b10be7883"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_del_02",
+      "query": "Show the voice transcript confirming the delivery reschedule for Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "delivery",
+      "description": "P1: Delivery reschedule confirmation transcript",
+      "expected_signal_ids": [
+        "sig_fe39b6dd98785a56338cadc0"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_del_03",
+      "query": "Show all evidence of the delivery reschedule for Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "delivery",
+      "description": "P1: Delivery reschedule — email + transcript (multi-label)",
+      "expected_signal_ids": [
+        "sig_ce3cb4e180253a3b10be7883",
+        "sig_fe39b6dd98785a56338cadc0"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_del_04",
+      "query": "Show the original delivery confirmation email we sent to Diana Patel.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "delivery",
+      "description": "P4: Original delivery commitment email",
+      "expected_signal_ids": [
+        "sig_8f04a0a4bfcf66abafc625b2"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_del_05",
+      "query": "Show the revised delivery date email sent to Diana Patel.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "delivery",
+      "description": "P4: Corrected delivery date email",
+      "expected_signal_ids": [
+        "sig_502f0e09c2445d4ec0cc6bb2"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_del_06",
+      "query": "Show all delivery timeline communications with Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "delivery",
+      "description": "P4: Both delivery timeline emails (multi-label)",
+      "expected_signal_ids": [
+        "sig_502f0e09c2445d4ec0cc6bb2",
+        "sig_8f04a0a4bfcf66abafc625b2"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_del_07",
+      "query": "Show the email confirming that Delta Finance delivery was still on the original date.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "delivery",
+      "description": "P4-contradiction: Original-schedule confirmation email",
+      "expected_signal_ids": [
+        "sig_e2ba09a3c923a260886aa4c9"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_del_08",
+      "query": "Did Delta Finance request any delivery changes by phone?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "delivery",
+      "description": "P1: Delivery reschedule confirmed via voice",
+      "expected_signal_ids": [
+        "sig_fe39b6dd98785a56338cadc0"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_mtg_01",
+      "query": "Did Diana Patel discuss rescheduling a meeting on a voice call?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "meeting",
+      "description": "Meeting reschedule voice transcript",
+      "expected_signal_ids": [
+        "sig_cf536a27394ae2d89cabbc12"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_mtg_02",
+      "query": "Show the original meeting date email from Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "meeting",
+      "description": "P4: Original meeting date confirmation email",
+      "expected_signal_ids": [
+        "sig_3216709c0cd0538a45820c44"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_mtg_03",
+      "query": "Show the correction email where Diana Patel updated the meeting date.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "meeting",
+      "description": "P4: Meeting date correction email",
+      "expected_signal_ids": [
+        "sig_87978a0090e04357c24b2078"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_mtg_04",
+      "query": "Show all meeting date change communications from Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "meeting",
+      "description": "P4: Both meeting date emails (multi-label)",
+      "expected_signal_ids": [
+        "sig_3216709c0cd0538a45820c44",
+        "sig_87978a0090e04357c24b2078"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_mtg_05",
+      "query": "What is the most recent meeting scheduling email from Diana Patel?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "meeting",
+      "description": "P4: Correction is the most recent/authoritative meeting record",
+      "expected_signal_ids": [
+        "sig_87978a0090e04357c24b2078"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_mtg_06",
+      "query": "Show the voice call where Delta Finance asked to move a scheduled meeting.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "meeting",
+      "description": "Meeting reschedule voice transcript (channel-specific)",
+      "expected_signal_ids": [
+        "sig_cf536a27394ae2d89cabbc12"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_mtg_07",
+      "query": "Show all rescheduling communications (email and voice) for Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "meeting",
+      "description": "All reschedule signals (email + 2 voice transcripts)",
+      "expected_signal_ids": [
+        "sig_ce3cb4e180253a3b10be7883",
+        "sig_cf536a27394ae2d89cabbc12",
+        "sig_fe39b6dd98785a56338cadc0"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_mtg_08",
+      "query": "Show the email from Delta Finance with CORRECTION in the subject about the meeting.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "meeting",
+      "description": "P4: Correction email identified by subject keyword",
+      "expected_signal_ids": [
+        "sig_87978a0090e04357c24b2078"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_01",
+      "query": "Show the support issue resolution commitment we sent to Delta Finance July 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: support commitment email July 2026",
+      "expected_signal_ids": [
+        "sig_79f282abfbcca8b580dd4a85"
+      ],
+      "temporal_ym": "ym:2026-07",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_02",
+      "query": "Show the payment acknowledgement received from Delta Finance July 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: payment acknowledgement July 2026",
+      "expected_signal_ids": [
+        "sig_f823bbcccef3c5300a276ca7"
+      ],
+      "temporal_ym": "ym:2026-07",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_03",
+      "query": "Show the new service request email from Delta Finance August 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: new service engagement request August 2026",
+      "expected_signal_ids": [
+        "sig_a21975cb55e602a829e44bda"
+      ],
+      "temporal_ym": "ym:2026-08",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_04",
+      "query": "Show the formal complaint Delta Finance filed with us August 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: formal complaint August 2026",
+      "expected_signal_ids": [
+        "sig_2da299ca263b7b6c7ddc04bf"
+      ],
+      "temporal_ym": "ym:2026-08",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_05",
+      "query": "Show the issue resolution confirmation we sent to Delta Finance September 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: issue resolved notification September 2026",
+      "expected_signal_ids": [
+        "sig_ef6e2f60a23d250ffb23b6e1"
+      ],
+      "temporal_ym": "ym:2026-09",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_06",
+      "query": "Show the contract renewal discussion with Delta Finance October 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: contract renewal October 2026",
+      "expected_signal_ids": [
+        "sig_c72529630314aa4861fe40ad"
+      ],
+      "temporal_ym": "ym:2026-10",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_07",
+      "query": "Show the invoice amount query Delta Finance sent us October 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: invoice query October 2026",
+      "expected_signal_ids": [
+        "sig_0f7a9f044b4605fe52600ac2"
+      ],
+      "temporal_ym": "ym:2026-10",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_08",
+      "query": "Show the quarterly account review we sent to Delta Finance November 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: quarterly account review November 2026",
+      "expected_signal_ids": [
+        "sig_2cd897dbc49fb1cec62094c7"
+      ],
+      "temporal_ym": "ym:2026-11",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_09",
+      "query": "Show the appreciation note Diana Patel sent us November 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: customer appreciation November 2026",
+      "expected_signal_ids": [
+        "sig_da439600b905f113dd629836"
+      ],
+      "temporal_ym": "ym:2026-11",
+      "is_specific": true
+    },
+    {
+      "id": "v3_hist_10",
+      "query": "Show the new purchase order request from Delta Finance November 2026.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "historical",
+      "description": "Old-evidence: new order request November 2026",
+      "expected_signal_ids": [
+        "sig_10e463fe77adbb47d51c6ba6"
+      ],
+      "temporal_ym": "ym:2026-11",
+      "is_specific": true
+    },
+    {
+      "id": "v3_rel_01",
+      "query": "Show the owner's written commitment to resolve a support issue for Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "relationship",
+      "description": "Relationship: owner commitment email",
+      "expected_signal_ids": [
+        "sig_79f282abfbcca8b580dd4a85"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_rel_02",
+      "query": "Show all complaint-related emails involving Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "relationship",
+      "description": "Relationship: formal complaint email",
+      "expected_signal_ids": [
+        "sig_2da299ca263b7b6c7ddc04bf"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_rel_03",
+      "query": "Did Delta Finance express positive feedback or appreciation?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "relationship",
+      "description": "Relationship: customer appreciation note",
+      "expected_signal_ids": [
+        "sig_da439600b905f113dd629836"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_rel_04",
+      "query": "Show emails about contract or account renewal with Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "relationship",
+      "description": "Relationship: contract renewal discussion",
+      "expected_signal_ids": [
+        "sig_c72529630314aa4861fe40ad"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_rel_05",
+      "query": "Show emails where Delta Finance placed a new service or product order.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "relationship",
+      "description": "Relationship: new service and new order requests (multi-label)",
+      "expected_signal_ids": [
+        "sig_10e463fe77adbb47d51c6ba6",
+        "sig_a21975cb55e602a829e44bda"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_rel_06",
+      "query": "Show the quarterly business review summary sent to Diana Patel.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "relationship",
+      "description": "Relationship: quarterly account review",
+      "expected_signal_ids": [
+        "sig_2cd897dbc49fb1cec62094c7"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_rel_07",
+      "query": "What evidence exists of billing disputes or payment issues for Delta Finance?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "relationship",
+      "description": "Relationship: all P2 dispute signals (multi-label)",
+      "expected_signal_ids": [
+        "sig_3ac897973adcabe9d80fe1af",
+        "sig_4c2cd840054ca4f63cd5ccdf",
+        "sig_5eb5c332e47fd1425eef3ae7",
+        "sig_69640da8bfbfbb7e3afdd33b"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_rel_08",
+      "query": "Show the issue resolution email confirming a problem was fixed for Delta Finance.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "relationship",
+      "description": "Relationship: issue resolved confirmation",
+      "expected_signal_ids": [
+        "sig_ef6e2f60a23d250ffb23b6e1"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_dis_01",
+      "query": "Show only the email (not voice) where Delta Finance reported the billing discrepancy.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "disambiguation",
+      "description": "Channel-dis: email channel for billing dispute (not voice)",
+      "expected_signal_ids": [
+        "sig_4c2cd840054ca4f63cd5ccdf"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_dis_02",
+      "query": "Show only the voice call where Delta Finance raised the billing issue.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "disambiguation",
+      "description": "Channel-dis: voice calls for billing (dispute transcript + QBO inquiry)",
+      "expected_signal_ids": [
+        "sig_3ac897973adcabe9d80fe1af",
+        "sig_6eda5ec9286f3a06b3b3be9f"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_dis_03",
+      "query": "Show the payment acknowledgement email from Delta Finance in our records.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "disambiguation",
+      "description": "Hist-dis: payment acknowledgement email (archival, specific)",
+      "expected_signal_ids": [
+        "sig_f823bbcccef3c5300a276ca7"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_dis_04",
+      "query": "Show the invoice query or question that Delta Finance sent us.",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "disambiguation",
+      "description": "Hist-dis: invoice query email (archival, specific)",
+      "expected_signal_ids": [
+        "sig_0f7a9f044b4605fe52600ac2"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    },
+    {
+      "id": "v3_dis_05",
+      "query": "What billing data exists for Delta Finance in both Stripe and QuickBooks for invoice INV-DELT-2026-001?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "disambiguation",
+      "description": "Cross-source: Stripe + QBO for INV-DELT-2026-001 (multi-label)",
+      "expected_signal_ids": [
+        "sig_5eb5c332e47fd1425eef3ae7",
+        "sig_69640da8bfbfbb7e3afdd33b"
+      ],
+      "temporal_ym": null,
+      "is_specific": false
+    },
+    {
+      "id": "v3_dis_06",
+      "query": "Was the corrected delivery date communicated by email or phone to Diana Patel?",
+      "entity_id": "ent_01DELT000000000000000000",
+      "category": "disambiguation",
+      "description": "Delivery correction: revised email is the correction channel",
+      "expected_signal_ids": [
+        "sig_502f0e09c2445d4ec0cc6bb2"
+      ],
+      "temporal_ym": null,
+      "is_specific": true
+    }
+  ]
+}

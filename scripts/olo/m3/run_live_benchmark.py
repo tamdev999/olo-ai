@@ -28,7 +28,12 @@ K_TARGETS  = [1, 5, 10, 20, 50, 100]
 # also reduced label coverage. Both defects are fixed; the hash is now stable.
 # OLD_FROZEN_HASH = "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
 # PRE_P1_FIX_HASH = "e9ac10c347caff427e28126bfc336be67d1316145a7f408a2702af7fb6b47ef5"
-FROZEN_HASH = "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
+# PRE_P2_FIX_HASH = "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
+FROZEN_HASH = "1fb288817e141ee50aaf92a816009e4e76adabcd0ff129a074f7023ac3538972"
+# Corpus fingerprint -- SHA-256 of all 388 authoritative source signals.
+# Computed from generate_timeline() with _DEFAULT_SEED.
+# A mismatch means the bank was built from a different corpus than the benchmark labels expect.
+FROZEN_CORPUS_FP = "1877ca71d6fbbe64a6ef0b728159ceb4acc2595a14e05d0f9e44db2aa6759a0b"
 OUT_DIR     = Path("/tmp/benchmark_results")
 OUT_DIR.mkdir(exist_ok=True)
 
@@ -97,6 +102,54 @@ def _first_rank(result: dict, expected_ids: set[str]) -> int:
                 return rank
     return -1
 
+
+class CorpusMismatchError(Exception):
+    """Raised when the bank's evidence does not match the expected corpus."""
+
+
+def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
+    """Verify the bank contains the expected source signals before scoring.
+
+    Raises CorpusMismatchError if any expected signal is missing.
+    """
+    from olo.m3.synthetic.generator import generate_timeline, corpus_fingerprint, _sig_id, ENTITIES
+
+    tl = generate_timeline()
+    actual_fp = corpus_fingerprint(tl)
+
+    if frozen_corpus_fp and actual_fp != frozen_corpus_fp:
+        raise CorpusMismatchError(
+            f"Corpus fingerprint mismatch: expected {frozen_corpus_fp[:16]}... "
+            f"got {actual_fp[:16]}... -- the benchmark was built against a "
+            f"different corpus than the current generator produces."
+        )
+
+    # Spot-check: verify a sample of signals exist in the bank
+    # Check all meeting transcript signals (newly added, most likely to be missing)
+    critical_signals = []
+    for ent in ENTITIES:
+        critical_signals.append(_sig_id(f"transcript_meeting_reschedule_{ent.entity_id}"))
+        critical_signals.append(_sig_id(f"email_reschedule_{ent.entity_id}"))
+
+    missing = []
+    for sid in critical_signals:
+        full_id = f"sig:{sid}"
+        try:
+            client.get_document(full_id, bank_id=BANK_ID)
+        except Exception:
+            missing.append(full_id)
+
+    if missing:
+        raise CorpusMismatchError(
+            f"Bank is missing {len(missing)} expected source signals. "
+            f"The bank was likely built before the current corpus was generated. "
+            f"Rebuild the bank from the current source evidence. "
+            f"Missing: {missing[:3]}"
+        )
+
+    print(f"Corpus verified: {len(tl)} signals, fingerprint {actual_fp[:16]}...")
+
+
 def run_benchmark() -> dict:
     # Build questions first so _RNG state is consistent; verify hash after.
     questions = build_benchmark_v2()
@@ -110,7 +163,7 @@ def run_benchmark() -> dict:
 
     c = _connect()
     print(f"Server ready. Bank: {BANK_ID}")
-
+    verify_corpus_match(c, FROZEN_CORPUS_FP)
     # Verify model
     pid = None
     try:

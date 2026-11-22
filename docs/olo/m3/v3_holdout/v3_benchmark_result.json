@@ -1,0 +1,36 @@
+{
+  "v3_hash": "d76e0fa13b859593f2ee44657332aad36229fb9ac53182794d219142176b85de",
+  "total_questions": 50,
+  "errors": 0,
+  "formal_score": {
+    "recall_at_10": {
+      "hits": 0,
+      "total": 50,
+      "note": "Delta Finance not in bank"
+    },
+    "note": "v3 holdout cannot be evaluated on the current bank (built for AC/BE/GA entities). A formal v3 evaluation requires a bank that includes Delta Finance signals. Questions and labels are frozen; the holdout is preserved for future evaluation."
+  },
+  "bank_note": "main-v1-granite contains Acme Corp, Beta Tech, Gamma Retail (ent_01AC/BE/GA). Delta Finance (ent_01DELT) is not in this bank.",
+  "sample_queries": [
+    {
+      "id": "v3_inv_01",
+      "query": "Show the email from Delta Finance reporting a billing discrepancy."
+    },
+    {
+      "id": "v3_inv_02",
+      "query": "What was the dispute on invoice INV-DELT-2026-001?"
+    },
+    {
+      "id": "v3_inv_03",
+      "query": "Show the Stripe record for invoice INV-DELT-2026-001."
+    },
+    {
+      "id": "v3_inv_04",
+      "query": "Show the QuickBooks record for invoice INV-DELT-2026-001."
+    },
+    {
+      "id": "v3_inv_05",
+      "query": "Show both Stripe and QuickBooks records for Delta Finance invoice INV-DELT-2026-001."
+    }
+  ]
+}

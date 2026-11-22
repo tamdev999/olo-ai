@@ -1,0 +1,32 @@
+{
+  "version": "v3",
+  "created": "2026-11-22",
+  "seed": "0xB2E5_D3CC",
+  "entity": {
+    "entity_id": "ent_01DELT000000000000000000",
+    "display_name": "Diana Patel",
+    "company": "Delta Finance",
+    "email": "diana.patel@delta-finance.example",
+    "company_email": "billing@delta-finance.example",
+    "stripe_customer_id": "stripe:cus_delta_004",
+    "qbo_customer_id": "qbo:realm123:cust_004"
+  },
+  "corpus": {
+    "signal_count": 139,
+    "corpus_fingerprint": "af8db32e5b8eacc9fcd77dd51300d122808fc992b6cc19cac562ef23227f8554",
+    "kinds": {
+      "calendar.event.created": 50,
+      "call.transcript": 4,
+      "email.received": 44,
+      "email.sent": 37,
+      "invoice.created": 3,
+      "invoice.paid": 1
+    }
+  },
+  "benchmark": {
+    "question_count": 50,
+    "benchmark_hash": "d76e0fa13b859593f2ee44657332aad36229fb9ac53182794d219142176b85de",
+    "note": "FROZEN BEFORE RETRIEVAL - DO NOT MODIFY AFTER FIRST RETRIEVAL RUN"
+  },
+  "status": "FROZEN_PRE_RETRIEVAL"
+}

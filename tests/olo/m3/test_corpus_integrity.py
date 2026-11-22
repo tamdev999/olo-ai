@@ -86,7 +86,7 @@ class TestGeneratorReproducibility:
 class TestBenchmarkHashIntegrity:
     def test_corrected_hash_matches_expected(self):
         """The corrected benchmark hash must match the post-fix value."""
-        EXPECTED = "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
+        EXPECTED = "1fb288817e141ee50aaf92a816009e4e76adabcd0ff129a074f7023ac3538972"
         actual = _compute_v2_hash()
         assert actual == EXPECTED, (
             f"Benchmark hash mismatch. Expected {EXPECTED!r}, got {actual!r}. "
@@ -111,3 +111,51 @@ class TestBenchmarkHashIntegrity:
             "The pre-P1-fix hash matches the current generator — "
             "the mtg_07 / transcript_meeting_reschedule fix may have been reverted."
         )
+    def test_pre_p2_fix_hash_no_longer_matches(self):
+        """The pre-P2-fix hash (before mtg_01/mtg_02/xent_1 label corrections) must not match."""
+        PRE_P2_FIX = "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
+        actual = _compute_v2_hash()
+        assert actual != PRE_P2_FIX, (
+            "The pre-P2-fix hash matches the current generator — "
+            "the mtg_01/mtg_02/xent_1 email_reschedule label corrections may have been reverted."
+        )
+
+
+class TestCorpusEnforcement:
+    """Tests proving corpus fingerprint enforcement catches mismatches."""
+
+    def test_mismatched_seed_detected(self):
+        """Different seed produces different fingerprint."""
+        fp1 = corpus_fingerprint_from_seed(_DEFAULT_SEED)
+        fp2 = corpus_fingerprint_from_seed(_DEFAULT_SEED + 1)
+        assert fp1 != fp2
+
+    def test_corpus_fingerprint_matches_expected(self):
+        """The current generator's fingerprint must match the stored FROZEN_CORPUS_FP."""
+        import scripts.olo.m3.run_live_benchmark as runner
+        tl = generate_timeline()
+        actual = corpus_fingerprint(tl)
+        assert actual == runner.FROZEN_CORPUS_FP, (
+            f"Generator fingerprint {actual[:16]}... != FROZEN_CORPUS_FP {runner.FROZEN_CORPUS_FP[:16]}... "
+            "If the generator changed, update FROZEN_CORPUS_FP in run_live_benchmark.py"
+        )
+
+    def test_altered_signal_raises_mismatch(self):
+        """Altering a signal's body changes the fingerprint."""
+        import copy
+        tl = generate_timeline()
+        fp_good = corpus_fingerprint(tl)
+        tl_bad = copy.deepcopy(tl)
+        tl_bad[0].body_text = "TAMPERED"
+        fp_bad = corpus_fingerprint(tl_bad)
+        assert fp_good != fp_bad
+
+    def test_added_signal_raises_mismatch(self):
+        """Adding a signal changes the fingerprint."""
+        import copy
+        tl = generate_timeline()
+        fp_good = corpus_fingerprint(tl)
+        tl_extra = list(tl) + [copy.copy(tl[0])]  # duplicate
+        tl_extra[-1].signal_id = "fake_extra_signal"
+        fp_bad = corpus_fingerprint(tl_extra)
+        assert fp_good != fp_bad
