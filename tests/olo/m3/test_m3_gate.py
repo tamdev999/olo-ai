@@ -3029,7 +3029,10 @@ class TestP1DeliveryDateConsolidation:
                     hs_client.wait_for_operation(cons1_op, timeout_s=90.0,
                                                   bank_id=p1_proposed_bank)
                 except TimeoutError:
-                    pass
+                    pytest.fail(
+                        "P1-PROPOSED: timed out waiting for consolidation-1 "
+                        f"(op={cons1_op!r}) -- consolidation must complete within 90s"
+                    )
 
             # Step 2: retain ONLY the request email (no transcript, no acceptance)
             op2 = str(_uuid.uuid5(_uuid.NAMESPACE_OID, f"p1p-reschedule-{p1_proposed_bank}"))
@@ -3039,7 +3042,10 @@ class TestP1DeliveryDateConsolidation:
                 hs_client.wait_for_operation(op2, timeout_s=90.0,
                                               bank_id=p1_proposed_bank)
             except TimeoutError:
-                pass
+                pytest.fail(
+                    "P1-PROPOSED: timed out waiting for retain op2 "
+                    f"(op={op2!r}) -- retain must complete within 90s"
+                )
             cons2 = hs_client.trigger_consolidation(bank_id=p1_proposed_bank)
             cons2_op = cons2.get("operation_id", "")
             if cons2_op:
@@ -3047,7 +3053,10 @@ class TestP1DeliveryDateConsolidation:
                     hs_client.wait_for_operation(cons2_op, timeout_s=90.0,
                                                   bank_id=p1_proposed_bank)
                 except TimeoutError:
-                    pass
+                    pytest.fail(
+                        "P1-PROPOSED: timed out waiting for consolidation-2 "
+                        f"(op={cons2_op!r}) -- consolidation must complete within 90s"
+                    )
 
             # Verify: April 04 is still the accessible confirmed date.
             # The original confirm email must be retrievable.
@@ -3073,6 +3082,23 @@ class TestP1DeliveryDateConsolidation:
                 f"after request-only evidence was added. "
                 f"First 200 chars: {all_texts[:200]!r}"
             )
+            observations = [r for r in result.get("results", []) if r.get("type") == "observation"]
+            # Assert that NO observation falsely claims April 08 is confirmed
+            # A request alone (without the confirmation transcript) must NOT
+            # update the confirmed date from April 04 to April 08.
+            for obs in observations:
+                obs_text_lower = (obs.get("text") or "").lower()
+                # The observation must not say April 08 is "confirmed" or "current"
+                if any(kw in obs_text_lower for kw in (date_new.lower(), "april 08", "april 8")):
+                    # April 08 may appear in context -- but only as a PROPOSAL, never as confirmed
+                    assert not any(
+                        confirmed_kw in obs_text_lower
+                        for confirmed_kw in ("confirmed", "current date", "new date is", "rescheduled to")
+                    ), (
+                        f"P1-PROPOSED FAIL: observation falsely states April 08 as confirmed. "
+                        f"A request email alone must not update the confirmed date. "
+                        f"obs={obs.get('text','')[:200]!r}"
+                    )
         finally:
             for _attempt in range(3):
                 try:

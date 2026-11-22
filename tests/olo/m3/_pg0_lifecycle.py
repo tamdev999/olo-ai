@@ -47,9 +47,30 @@ def pg0_stop(
     )
     if settle_s > 0:
         time.sleep(settle_s)
-    # Success: returncode 0 OR stderr says not running
     stderr_lower = (result.stderr or b"").lower()
-    return result.returncode == 0 or b"not running" in stderr_lower or b"no running" in stderr_lower
+
+    # "not running" or similar means pg0 didn't find a state file at this HOME.
+    # This is NOT sufficient to prove the postmaster is gone -- it only proves
+    # pg0 can't locate it at the given HOME. A wrong-HOME stop would say
+    # "No running instance found" while the postmaster lives under a different HOME.
+    reported_not_running = (
+        b"not running" in stderr_lower or b"no running" in stderr_lower
+    )
+
+    if result.returncode == 0:
+        # pg0 claims success (found and stopped the instance)
+        return True
+
+    if reported_not_running:
+        # pg0 didn't find a state file at this HOME.
+        # We CANNOT confirm the postmaster is gone -- we can only confirm
+        # pg0 has no record of it at this specific HOME directory.
+        # Return False to indicate "stop was not verified" rather than
+        # falsely claiming success.
+        return False
+
+    # Other failure
+    return False
 
 
 class Pg0StillRunningError(RuntimeError):

@@ -32,7 +32,7 @@ exec sudo -u olo_hs env \
   HINDSIGHT_API_RERANKER_ONNX_MODEL_ID=hindsight-ai/hs-rerank-1 \
   HINDSIGHT_API_RERANKER_ONNX_MODEL_PATH=/var/cache/huggingface/hub/models--hindsight-ai--hs-rerank-1/snapshots/927f5be31280298a51cf29af8a29cb111ed812c5/onnx/model.onnx \
   HINDSIGHT_API_RERANKER_ONNX_TOKENIZER_NAME_OR_PATH=/var/cache/huggingface/hub/models--hindsight-ai--hs-rerank-1/snapshots/927f5be31280298a51cf29af8a29cb111ed812c5 \
-  HINDSIGHT_API_RERANKER_MAX_CANDIDATES=400 \
+  HINDSIGHT_API_RERANKER_MAX_CANDIDATES=200 \
   HINDSIGHT_API_RECENCY_DECAY_FUNCTION=none \
   HINDSIGHT_API_DECISION_MODEL_PROVIDER=none \
   HINDSIGHT_API_TELEMETRY_ENABLED=false \

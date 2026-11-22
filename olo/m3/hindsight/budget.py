@@ -178,10 +178,10 @@ class UsageGuard:
     def snapshot(self) -> TokenSnapshot:
         """Record the current cumulative token counts as a baseline.
 
-        Call this once before starting a workload.  Raises
-        ``StatsUnavailableError`` if the endpoint is unavailable — the caller
-        must treat this as a hard failure in strict mode.
+        Also verifies that the stats endpoint is reachable, failing closed if not.
+        Call this once before starting a workload.
         """
+        self._require_tracing()  # fail closed if stats unavailable
         return self._get_stats()
 
     def check(self, baseline: TokenSnapshot) -> TokenSnapshot:
@@ -211,7 +211,7 @@ class UsageGuard:
         spent = current.delta(baseline).cost_usd()
         return max(0.0, self._budget_usd - spent)
 
-    def _require_tracing(self) -> TokenSnapshot:
+    def _require_tracing(self) -> None:
         """Verify the stats endpoint is accessible before starting guarded work.
 
         Call this once at the start of a deployment or feeder run to confirm
@@ -233,11 +233,13 @@ class UsageGuard:
         TokenSnapshot
             The current cumulative snapshot; can be used directly as a baseline.
         """
-        try:
-            snapshot = self._get_stats()
-        except StatsUnavailableError:
-            raise  # caller decides whether to abort or proceed unguarded
-        # snapshot() succeeded — tracing endpoint is reachable.
-        # Callers should verify that the returned token count is plausible
-        # (non-zero) after any warm-up work, to detect silent zero-reporting.
-        return snapshot
+        import os
+        trace_env = os.environ.get("HINDSIGHT_API_LLM_TRACE_ENABLED", "true").lower()
+        if trace_env in ("false", "0", "no"):
+            raise StatsUnavailableError(
+                "HINDSIGHT_API_LLM_TRACE_ENABLED is set to false. "
+                "LLM usage will not be tracked, making the budget guard non-functional. "
+                "Set HINDSIGHT_API_LLM_TRACE_ENABLED=true before starting guarded work."
+            )
+        # Env var check passed. The _get_stats() call in snapshot() verifies
+        # endpoint reachability. No separate stats call needed here.

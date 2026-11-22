@@ -155,11 +155,14 @@ def run_benchmark() -> dict:
     questions = build_benchmark_v2()
     benchmark_hash = _compute_v2_hash()   # always recomputes deterministically
     if benchmark_hash != FROZEN_HASH:
-        print(f"WARNING: benchmark hash mismatch — computed {benchmark_hash}")
-        print(f"  expected: {FROZEN_HASH}")
-        print("  Proceeding, but results may differ from the frozen benchmark.")
-    else:
-        print(f"Benchmark hash verified: {benchmark_hash[:20]}...")
+        raise ValueError(
+            f"BENCHMARK HASH MISMATCH — refusing to score.\n"
+            f"  Computed: {benchmark_hash}\n"
+            f"  Expected: {FROZEN_HASH}\n"
+            f"The benchmark question set changed. Update FROZEN_HASH to the new "
+            f"hash and document the change, or revert the question/label changes."
+        )
+    print(f"Benchmark hash verified: {benchmark_hash[:20]}...")
 
     c = _connect()
     print(f"Server ready. Bank: {BANK_ID}")

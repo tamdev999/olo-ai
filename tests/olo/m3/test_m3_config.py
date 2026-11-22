@@ -42,7 +42,18 @@ def _fetch_hindsight_config_vars() -> frozenset[str]:
     """Return every ENV_* constant from Hindsight v1.2.1 config.py.
 
     These are the only valid HINDSIGHT_API_* variable names.
+
+    Tries the local vendored copy first (avoids network dependency),
+    then falls back to fetching from GitHub.
     """
+    _VENDORED_PATH = _OLO_M3 / "hindsight_config_vendored.py"
+
+    # Try local vendored file first
+    if _VENDORED_PATH.exists():
+        source = _VENDORED_PATH.read_text(encoding="utf-8")
+        return frozenset(re.findall(r'"(HINDSIGHT_API_[A-Z0-9_]+)"', source))
+
+    # Fall back to GitHub
     try:
         import urllib.request as _ur
         with _ur.urlopen(_HINDSIGHT_CONFIG_URL, timeout=10) as resp:

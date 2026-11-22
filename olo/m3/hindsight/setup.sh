@@ -278,7 +278,7 @@ HINDSIGHT_API_STORE_DOCUMENT_TEXT=true
 # C6: Enable LLM trace so the budget guard can see token counts.
 # Content capture is off — only token counts are stored.
 HINDSIGHT_API_LLM_TRACE_ENABLED=true
-HINDSIGHT_API_LLM_TRACE_STORE_CONTENT=false
+# HINDSIGHT_API_LLM_TRACE_STORE_CONTENT is not a valid v1.2.1 config var; omitted.
 # C7: Disable bank-wide automatic consolidation.
 # Prose consolidation is triggered explicitly after each prose retain batch,
 # scoped to prose entity tags only.  This prevents structured signals from

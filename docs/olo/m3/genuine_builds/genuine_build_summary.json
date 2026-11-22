@@ -1,0 +1,27 @@
+{
+  "methodology": "temperature=0 for retain/consolidation, concurrency=1, 200 candidates, source descriptors",
+  "explanation_of_previous_invalid_study": "In the previous 'build_2' and 'build_3' study, the patch_start.py script failed with NameError (variable CANDS not in Python scope). The start_controlled.sh was not created. All three 'builds' ran against the same 100-candidate server leftover from the sweep, producing identical results. build_2.json = build_3.json = sweep_100cands.json (SHA256: aa887111...). This study is retracted and replaced by the current genuine 3-build study.",
+  "builds": [
+    {
+      "build": 1,
+      "at10": 182,
+      "at50": 201,
+      "p50": 2538.6,
+      "sha": "240c4d9e97f3"
+    },
+    {
+      "build": 2,
+      "at10": 182,
+      "at50": 200,
+      "p50": 2468.1,
+      "sha": "9f727556b498"
+    },
+    {
+      "build": 3,
+      "at10": 178,
+      "at50": 201,
+      "p50": 2503.4,
+      "sha": "5bf549da4f6b"
+    }
+  ]
+}

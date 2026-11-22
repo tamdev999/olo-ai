@@ -238,45 +238,64 @@ def build_hindsight_items(
             "strategy": strategy,
         }
 
-        # ── Context enrichment ────────────────────────────────────────────────
-        # Builds a richer context string from subject + entity identity +
-        # source-specific labels.  Uses only facts from signal metadata —
-        # never from benchmark labels or expected answers.
+        # ── Context enrichment (Authorized by Opus audit §6 — Change A) ──────
+        # Builds a richer context string from: source kind descriptor, contact
+        # name, company name, and document subject.  Uses only facts from
+        # signal metadata — never from benchmark labels or expected answers.
         #
-        # Fixes two systematic retrieval failures identified by Opus:
-        #  1. Voice transcript queries use contact names (Alice Chen / Bob Torres /
-        #     Carla Osei) that don't appear in the transcript body.  Adding
-        #     "Contact: <name>" to the indexed context corrects this.
-        #  2. "According to Stripe/QBO" queries are outranked by invoice dispute
-        #     emails that mention charged amounts.  Labelling structured invoices
-        #     with their source system ("Stripe payment record") corrects this.
+        # Authorized change A: uniform source descriptor for EVERY signal type.
+        # Format: "<Kind descriptor> · <Contact> (<Company>) · <subject>"
+        # This allows the reranker to distinguish signal types without relying
+        # on body text that may not contain the type name (e.g., calendar events
+        # never mention "Calendar" in their body text).
+        #
+        # Preserves contact, company, direction, document subject and other
+        # grounded attributes when present.  Does NOT fabricate metadata.
         entity_id    = payload.get("entity_id", "")
         display_name, company = _get_entity_meta(entity_id)
         subject      = row["subject"] or ""
         doc_kind     = payload.get("kind", row["kind"])
         source_tag   = payload.get("source", "")
 
-        ctx_parts: list[str] = [subject] if subject else []
-
-        # 1. Contact-name enrichment for all entity-scoped docs where the
-        #    contact name is absent from both subject and body content.
-        if display_name and display_name not in content and display_name not in subject:
-            ctx_parts.append(f"Contact: {display_name}")
-
-        # 2. Source-label enrichment for structured payment records.
+        # Map signal kinds to human-readable source descriptors
+        _KIND_DESCRIPTORS: dict[str, str] = {
+            "email.received":         "Email received",
+            "email.sent":             "Email sent",
+            "call.transcript":        "Phone call transcript",
+            "calendar.event.created": "Calendar event",
+            "invoice.created":        "Invoice record",
+        }
+        # For invoice.created, prefer the specific payment system name
         if doc_kind == "invoice.created":
             if "stripe" in source_tag.lower():
-                ctx_parts.append("Stripe payment record")
+                kind_descriptor = "Stripe invoice record"
             elif "qbo" in source_tag.lower():
-                ctx_parts.append("QuickBooks accounting record")
+                kind_descriptor = "QuickBooks invoice record"
+            else:
+                kind_descriptor = "Invoice record"
+        else:
+            kind_descriptor = _KIND_DESCRIPTORS.get(doc_kind, doc_kind)
 
-        # 3. Company label for voice transcripts where subject only names company.
-        if doc_kind == "call.transcript":
-            if company and company not in subject:
-                ctx_parts.append(f"Company: {company}")
+        # Build the context parts: [kind_descriptor, identity, subject]
+        ctx_parts: list[str] = []
+
+        # 1. Source kind descriptor (for all signals)
+        ctx_parts.append(kind_descriptor)
+
+        # 2. Contact and company identity
+        if display_name and company:
+            ctx_parts.append(f"{display_name} ({company})")
+        elif display_name:
+            ctx_parts.append(display_name)
+        elif company:
+            ctx_parts.append(company)
+
+        # 3. Document subject
+        if subject:
+            ctx_parts.append(subject)
 
         if ctx_parts:
-            item["context"] = " | ".join(ctx_parts)
+            item["context"] = " · ".join(ctx_parts)
 
         items.append(item)
 

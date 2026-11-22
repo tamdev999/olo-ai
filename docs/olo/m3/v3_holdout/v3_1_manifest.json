@@ -1,0 +1,44 @@
+{
+  "version": "v3.1",
+  "based_on": "v3.0",
+  "corpus_fingerprint": "af8db32e5b8eacc9fcd77dd51300d122808fc992b6cc19cac562ef23227f8554",
+  "corpus_hash_v30": "d76e0fa13b859593f2ee44657332aad36229fb9ac53182794d219142176b85de",
+  "created": "2026-11-22",
+  "entity": {
+    "entity_id": "ent_01DELT000000000000000000",
+    "display_name": "Diana Patel",
+    "company": "Delta Finance"
+  },
+  "status": "FROZEN_PENDING_REVIEW",
+  "review_required_before": "building Delta Finance bank or running retrieval",
+  "corrections_summary": {
+    "lexical_giveaway_questions_identified": 8,
+    "multiple_referent_questions_identified": 11,
+    "total_issues": 19
+  },
+  "v3_1_changes": [
+    "Move questions containing exact invoice IDs (INV-DELT-2026-00x) to 'exact_lookup' category",
+    "Complete truncated label sets (e.g., rel_02 labelled with all complaint emails, not just first)",
+    "Rewrite or remove questions with multiple valid referents without unique identifiers",
+    "Verify all labels against body text predicates (not subject keywords)"
+  ],
+  "note": "v3.1 label corrections have been documented but not yet independently reviewed. Submit to BBC/GPT-6/Opus for review before building the Delta Finance bank. Do NOT use v3.1 to tune the existing implementation. Run v3.1 benchmark ONCE after the production configuration is fixed.",
+  "deferred_until": "Independent review by BBC/GPT-6 or Opus",
+  "original_v30": {
+    "question_count": 50,
+    "corpus_fingerprint": "af8db32e5b8eacc9fcd77dd51300d122808fc992b6cc19cac562ef23227f8554",
+    "benchmark_hash": "d76e0fa13b859593f2ee44657332aad36229fb9ac53182794d219142176b85de",
+    "issues_found": [
+      "  v3_inv_02: 2 labels for specific-answer question (category: invoice)",
+      "  v3_inv_02: contains exact ID in question text",
+      "  v3_inv_03: contains exact ID in question text",
+      "  v3_inv_04: contains exact ID in question text",
+      "  v3_inv_05: 2 labels for specific-answer question (category: invoice)",
+      "  v3_inv_05: contains exact ID in question text",
+      "  v3_inv_06: contains exact ID in question text",
+      "  v3_inv_07: contains exact ID in question text",
+      "  v3_inv_08: contains exact ID in question text",
+      "  v3_inv_10: 4 labels for specific-answer question (category: invoice)"
+    ]
+  }
+}
