@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="2" tests="26" time="343.384" timestamp="2026-11-21T19:33:47.627683-05:00" hostname="twPC"><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_structured_no_llm_calls" time="4.697" /><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_prose_calls_detected" time="0.169" /><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_prose_llm_calls_nc" time="0.249" /><testcase classname="tests.olo.m3.test_m3_gate.TestV9NoGenerativeCalls" name="test_p9_budget_guard_wired_to_feeder" time="0.329" /><testcase classname="tests.olo.m3.test_m3_gate.TestV8ProvenanceLive" name="test_live_recall_provenance" time="7.746" /><testcase classname="tests.olo.m3.test_m3_gate.TestV8ProvenanceLive" name="test_v8_live_negative_control" time="0.033" /><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_recall_at_10" time="78.565"><failure message="olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer">olo/m3/hindsight/client.py:201: in _request
+    with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_cli/urllib_security.py:155: in open_credentialed_url
+    return opener.open(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:487: in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:504: in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1362: in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/urllib/request.py:1337: in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:1478: in getresponse
+    response.begin()
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:343: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/http/client.py:304: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.hermes/tools/python-3.14.9+20261021-linux-x64/lib/python3.14/socket.py:729: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   ConnectionResetError: [Errno 104] Connection reset by peer
+
+The above exception was the direct cause of the following exception:
+tests/olo/m3/test_m3_gate.py:1215: in test_recall_at_10
+    result = hs_client.recall(
+olo/m3/hindsight/client.py:426: in recall
+    return _request(self._cfg, "POST", self._bank_path("/memories/recall", bank_id), payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+olo/m3/hindsight/client.py:242: in _request
+    raise HindsightUnavailable(
+E   olo.m3.hindsight.client.HindsightUnavailable: Hindsight not reachable at http://127.0.0.1:18800: [Errno 104] Connection reset by peer</failure></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_v1_no_answer_leakage_nc" time="9.448" /><testcase classname="tests.olo.m3.test_m3_gate.TestV1RecallQuality" name="test_recall_at_10_negative_control" time="0.032" /><testcase classname="tests.olo.m3.test_m3_gate.TestV2CrossConnectorIdentity" name="test_all_five_connectors_per_entity" time="7.273" /><testcase classname="tests.olo.m3.test_m3_gate.TestV2CrossConnectorIdentity" name="test_cross_connector_negative_control" time="0.040" /><testcase classname="tests.olo.m3.test_m3_gate.TestV3HistoryPreserved" name="test_re_retain_same_document_id_preserves_history" time="12.283" /><testcase classname="tests.olo.m3.test_m3_gate.TestV3HistoryPreserved" name="test_v3_negative_control" time="0.971" /><testcase classname="tests.olo.m3.test_m3_gate.TestV4HotWithoutHindsight" name="test_v4_hot_context" time="5.955"><skipped type="pytest.skip" message="V4 NOT RUN — M3.3: Context Builder (hot-context assembly from olo.db + Hindsight) is not implemented in M3.0. This test will be enabled when M3.3 is delivered.">/mnt/c/Users/twMatt/Music/OLO MVP/olo-ai/tests/olo/m3/test_m3_gate.py:1623: V4 NOT RUN — M3.3: Context Builder (hot-context assembly from olo.db + Hindsight) is not implemented in M3.0. This test will be enabled when M3.3 is delivered.</skipped></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV5CrashRecovery" name="test_crash_during_retain_no_loss_or_duplicate" time="91.242" /><testcase classname="tests.olo.m3.test_m3_gate.TestV6Replay" name="test_rebuild_gives_identical_document_ids" time="6.934" /><testcase classname="tests.olo.m3.test_m3_gate.TestV6Replay" name="test_v6_negative_control" time="15.746" /><testcase classname="tests.olo.m3.test_m3_gate.TestV7IsolationIntegration" name="test_separate_pg0_instances_no_cross_results" time="52.854" /><testcase classname="tests.olo.m3.test_m3_gate.TestV10Footprint" name="test_idle_rss_under_600mb" time="5.885"><skipped type="pytest.xfail" message="V10: Hindsight PSS 1923 MB &gt; 600 MB planning target (not hard requirement). RSS=1933 MB, peak=6299 MB, PostgreSQL=1670 MB (separate). BBC decides on memory budget; retrieval quality takes priority." /></testcase><testcase classname="tests.olo.m3.test_m3_gate.TestV10Footprint" name="test_v10_negative_control" time="0.004" /><testcase classname="tests.olo.m3.test_m3_gate.TestP1DeliveryDateConsolidation" name="test_new_date_in_observation_old_date_in_history" time="15.455" /><testcase classname="tests.olo.m3.test_m3_gate.TestP1DeliveryDateConsolidation" name="test_p1_proposed_only_does_not_update_confirmed_date" time="7.786" /><testcase classname="tests.olo.m3.test_m3_gate.TestP1DeliveryDateConsolidation" name="test_p1_negative_control" time="0.954" /><testcase classname="tests.olo.m3.test_m3_gate.TestP2InvoiceDisputeRetrieval" name="test_all_three_sources_in_recall" time="7.940" /><testcase classname="tests.olo.m3.test_m3_gate.TestP4ContradictionHistory" name="test_five_contradictions_current_correct_history_retrievable" time="8.979" /><testcase classname="tests.olo.m3.test_m3_gate.TestP4ContradictionHistory" name="test_p4_negative_control" time="0.005" /></testsuite></testsuites>
