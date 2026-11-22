@@ -1,21 +1,18 @@
 """Olo M3 — Hindsight HTTP client.
-
 Wraps the Hindsight v1.2.1 REST API for retain, recall, health and admin.
 Configured per business environment (host, port, API key from Hermes secret scope).
-
 All methods are synchronous wrappers around the HTTP API.
 The Hindsight server runs in its own venv; this client lives in the Olo venv.
-
 Security: all HTTP goes through open_credentialed_url (C2 fix, §4.1).
 HindsightConfig enforces that the host is 127.0.0.1 or localhost so that
 the C2 redirect-stripping guarantee covers any accidental redirect.
-
 Opus architecture: §B.2 (API surface used).
 """
 from __future__ import annotations
-
 import json
+import logging
 import os
+import random
 import time
 import urllib.error
 import urllib.parse
@@ -24,15 +21,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+_log = logging.getLogger(__name__)
+
 # ── Configuration ─────────────────────────────────────────────────────────────
-
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
-
-
 @dataclass
 class HindsightConfig:
     """Per-business Hindsight connection config.
-
     host must be 127.0.0.1 or localhost — Hindsight is a loopback IPC service.
     Attempting to point it at an external host raises ValueError at construction
     so that credential leakage through open_credentialed_url's redirect-stripping
@@ -43,7 +38,6 @@ class HindsightConfig:
     api_key: str = ""   # loaded from Hermes secret scope; never hardcoded
     timeout_s: float = 30.0
     bank_id: str = "main-v1"
-
     def __post_init__(self) -> None:
         if self.host not in _LOOPBACK_HOSTS:
             raise ValueError(
@@ -52,11 +46,9 @@ class HindsightConfig:
                 "Hindsight is a per-business loopback IPC service; "
                 "pointing it at an external host is a misconfiguration."
             )
-
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
-
     @classmethod
     def from_env(cls, prefix: str = "") -> "HindsightConfig":
         """Load config from environment variables (Hermes secret scope pattern)."""
@@ -68,20 +60,16 @@ class HindsightConfig:
             timeout_s=float(os.environ.get(f"{p}HINDSIGHT_TIMEOUT", "30")),
             bank_id=os.environ.get(f"{p}HINDSIGHT_BANK_ID", "main-v1"),
         )
-
     @classmethod
     def for_business(cls, business_id: str, registry_path: Optional[str] = None) -> "HindsightConfig":
         """Load config for a specific business from the port registry.
-
         The registry is written by setup.sh at
         ``$HERMES_HOME/hindsight_port_registry.json`` and maps
         ``business_id -> {port, bank_id}``.
-
         Audit correction D9 (fix 7): unique port per business, registry routing.
         """
         import json as _json
         import pathlib as _pathlib
-
         # Determine registry path
         reg_path: _pathlib.Path
         if registry_path:
@@ -94,13 +82,11 @@ class HindsightConfig:
                 # Fall back to per-business env convention
                 prefix = business_id.upper().replace("-", "_")
                 return cls.from_env(prefix=prefix)
-
         if not reg_path.exists():
             raise ValueError(
                 f"Hindsight port registry not found at {reg_path}. "
                 f"Run setup.sh for business {business_id!r} first."
             )
-
         registry = _json.loads(reg_path.read_text())
         entry = registry.get(business_id)
         if entry is None:
@@ -108,7 +94,6 @@ class HindsightConfig:
                 f"Business {business_id!r} not found in registry {reg_path}. "
                 f"Known businesses: {list(registry.keys())}"
             )
-
         return cls(
             host="127.0.0.1",
             port=int(entry["port"]),
@@ -121,7 +106,6 @@ class HindsightConfig:
             # from the per-business directory.
             api_key=cls._load_business_api_key(business_id, reg_path),
         )
-
     @classmethod
     def _load_business_api_key(
         cls,
@@ -140,10 +124,7 @@ class HindsightConfig:
             if line.startswith("HINDSIGHT_API_TENANT_EXTENSION_API_KEY="):
                 return line.split("=", 1)[1].strip()
         return ""
-
-
 # ── Exceptions ────────────────────────────────────────────────────────────────
-
 class HindsightError(Exception):
     """Base error for Hindsight client calls."""
     def __init__(self, message: str, status_code: Optional[int] = None,
@@ -151,17 +132,23 @@ class HindsightError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.response_body = response_body
-
-
 class HindsightUnavailable(HindsightError):
     """Server is not reachable."""
-
-
+    def __init__(self, message, *, retry_count=0, original_error=None, **kw):
+        super().__init__(message, **kw)
+        self.retry_count = retry_count
+        self.original_error = original_error
 class HindsightAPIError(HindsightError):
     """Server returned a 4xx/5xx error."""
-
-
 # ── Low-level HTTP ────────────────────────────────────────────────────────────
+_TRANSIENT_ERRNOS: frozenset[int] = frozenset({104, 111, 110})
+_MAX_ATTEMPTS = 3
+_BASE_DELAY_S = 0.5
+_JITTER_FRACTION = 0.25
+
+def _jittered_delay(attempt: int) -> float:
+    base = _BASE_DELAY_S * (2 ** attempt)
+    return max(0.0, base + base * random.uniform(-_JITTER_FRACTION, _JITTER_FRACTION))
 
 def _request(
     cfg: HindsightConfig,
@@ -175,32 +162,57 @@ def _request(
     Uses open_credentialed_url (C2 fix, §4.1) so Authorization headers are
     never forwarded on a cross-origin redirect.
 
-    Connection resets on the first request after a cold ONNX start are
-    retried once automatically (the ONNX embedder initialises asynchronously;
-    the first request races with model loading and is occasionally dropped).
+    Retry policy
+    ~~~~~~~~~~~~
+    Transient transport errors (ECONNRESET, ECONNREFUSED) are retried up to
+    _MAX_ATTEMPTS times total, using exponential backoff with ±25% jitter.
+    Total retry window is bounded at approximately 1.9 s (attempt 0->1: ~0.5 s, 1->2: ~1.0 s).
+    Retries are allowed ONLY for idempotent requests:
+      * GET / HEAD.
+      * POST with an operation_id (server-side idempotency key).
+      * POST to read-only endpoints: /memories/recall, /llm-requests/stats, /stats.
+    Non-idempotent writes (POST without operation_id, DELETE, PATCH) are never
+    retried to prevent duplicate side effects.
+    Auth failures (401, 403) and other 4xx errors are never retried.
+    Every retry attempt is logged at WARNING level with errno, error, attempt
+    number, and planned delay.  The final HindsightUnavailable exception carries
+    retry_count (number of retries attempted) and original_error (first error).
 
-    Raises HindsightUnavailable on network errors,
-           HindsightAPIError on 4xx/5xx responses.
+    Raises
+    ------
+    HindsightUnavailable  On network errors after any allowed retries.
+    HindsightAPIError     On 4xx/5xx responses.
     """
     from hermes_cli.urllib_security import open_credentialed_url
 
     url = cfg.base_url + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
-
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
-
     data = json.dumps(body).encode() if body is not None else None
 
-    last_exc: Optional[Exception] = None
-    for _attempt in range(3):  # up to 2 retries on connection reset
+    is_idempotent = method in ("GET", "HEAD") or (
+        method == "POST"
+        and (
+            (body is not None and "operation_id" in body)
+            or "/memories/recall" in path
+            or "/llm-requests/stats" in path
+            or "/stats" in path
+        )
+    )
+
+    first_exc: Optional[Exception] = None
+    retry_count = 0
+
+    for attempt in range(_MAX_ATTEMPTS):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
+
         except urllib.error.HTTPError as exc:
             raw = b""
             try:
@@ -208,92 +220,81 @@ def _request(
             except Exception:
                 pass
             raise HindsightAPIError(
-                f"Hindsight {method} {path} → HTTP {exc.code}",
+                f"Hindsight {method} {path} -> HTTP {exc.code}",
                 status_code=exc.code,
                 response_body=raw,
             ) from exc
-        except (urllib.error.URLError, ConnectionRefusedError, OSError) as exc:
-            # Retry only on transient connection failures, and only for
-            # idempotent calls: GET/HEAD requests, or POST requests that carry
-            # an operation_id (the server will deduplicate on replay),
-            # or POST to recall/stats endpoints (read-only).
-            is_idempotent = method in ("GET", "HEAD") or (
-                method == "POST"
-                and (
-                    (body is not None and "operation_id" in body)
-                    or "/memories/recall" in path
-                    or "/llm-requests/stats" in path
-                    or "/stats" in path
-                )
-            )
-            # Match by errno to avoid false positives from substring scanning.
-            _TRANSIENT_ERRNOS = frozenset({
-                104,  # ECONNRESET
-                111,  # ECONNREFUSED
-            })
-            inner = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-            is_transient = isinstance(inner, OSError) and (
-                getattr(inner, "errno", None) in _TRANSIENT_ERRNOS
-            )
-            if is_idempotent and is_transient and _attempt < 2:
-                last_exc = exc
-                time.sleep(8 + _attempt * 5)  # 8s, then 13s
-                continue
-            raise HindsightUnavailable(
-                f"Hindsight not reachable at {cfg.base_url}: {exc}"
-            ) from exc
+
         except TimeoutError as exc:
-            # HTTP timeout: safe to retry for idempotent calls (V6 retain with
-            # operation_id, recall, stats).  The server may be temporarily slow
-            # under memory pressure from V5/V7 pg0 instances.
+            if first_exc is None:
+                first_exc = exc
             is_idempotent_for_timeout = method in ("GET", "HEAD") or (
-                method == "POST"
-                and body is not None
-                and "operation_id" in body
+                method == "POST" and body is not None and "operation_id" in body
             )
-            if is_idempotent_for_timeout and _attempt < 2:
-                last_exc = exc
-                time.sleep(8 + _attempt * 5)
+            if is_idempotent_for_timeout and attempt < _MAX_ATTEMPTS - 1:
+                delay = _jittered_delay(attempt)
+                retry_count += 1
+                _log.warning(
+                    "Hindsight timeout (attempt %d/%d): %s — retrying in %.2fs",
+                    attempt + 1, _MAX_ATTEMPTS, exc, delay,
+                )
+                time.sleep(delay)
                 continue
             raise HindsightUnavailable(
-                f"Hindsight not reachable at {cfg.base_url}: {exc}"
+                f"Hindsight not reachable at {cfg.base_url}: {exc}",
+                retry_count=retry_count,
+                original_error=first_exc,
             ) from exc
 
+        except (urllib.error.URLError, ConnectionRefusedError, OSError) as exc:
+            inner = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            errno_val = getattr(inner, "errno", None)
+            is_transient = isinstance(inner, OSError) and errno_val in _TRANSIENT_ERRNOS
+            if first_exc is None:
+                first_exc = exc
+            if is_idempotent and is_transient and attempt < _MAX_ATTEMPTS - 1:
+                delay = _jittered_delay(attempt)
+                retry_count += 1
+                _log.warning(
+                    "Hindsight transient error (attempt %d/%d, errno=%s): %s — "
+                    "retrying on fresh connection in %.2fs",
+                    attempt + 1, _MAX_ATTEMPTS, errno_val, exc, delay,
+                )
+                time.sleep(delay)
+                continue
+            raise HindsightUnavailable(
+                f"Hindsight not reachable at {cfg.base_url}: {exc}",
+                retry_count=retry_count,
+                original_error=first_exc,
+            ) from exc
+
+        
     raise HindsightUnavailable(
-        f"Hindsight not reachable at {cfg.base_url}: {last_exc}"
-    ) from last_exc
-
-
+        f"Hindsight not reachable at {cfg.base_url}: exhausted {_MAX_ATTEMPTS} attempts",
+        retry_count=retry_count,
+        original_error=first_exc,
+    )
 # ── Public API ────────────────────────────────────────────────────────────────
-
 class HindsightClient:
     """Synchronous client for the Hindsight v1.2.1 API.
-
     Usage::
-
         cfg = HindsightConfig.from_env("ACME")
         client = HindsightClient(cfg)
         client.health_check()   # raises HindsightUnavailable if down
         client.retain([{...}], operation_id="olo-idx:...", async_=False)
         results = client.recall("delivery reschedule", tags=["ent:ent_01ACME..."])
     """
-
     def __init__(self, cfg: HindsightConfig) -> None:
         self._cfg = cfg
-
     # API prefix — v1.2.1 uses versioned, tenant-scoped, bank-scoped paths
     _API_PREFIX = "/v1/default"
-
     def _bank_path(self, suffix: str, bank_id: Optional[str] = None) -> str:
         b = bank_id or self._cfg.bank_id
         return f"{self._API_PREFIX}/banks/{urllib.parse.quote(b, safe='')}{suffix}"
-
     # ── Health ────────────────────────────────────────────────────────────────
-
     def health_check(self) -> dict:
         """Return health info or raise HindsightUnavailable."""
         return _request(self._cfg, "GET", "/health")
-
     def wait_until_ready(self, timeout_s: float = 30.0, poll_interval: float = 0.5) -> None:
         """Block until the server is healthy or timeout expires."""
         deadline = time.monotonic() + timeout_s
@@ -317,9 +318,7 @@ class HindsightClient:
         raise HindsightUnavailable(
             f"Hindsight not ready after {timeout_s}s"
         ) from last_exc
-
     # ── Retain ────────────────────────────────────────────────────────────────
-
     def retain(
         self,
         items: list[dict],
@@ -329,7 +328,6 @@ class HindsightClient:
         bank_id: Optional[str] = None,
     ) -> dict:
         """Submit items for retention.
-
         POST /v1/default/banks/{bank_id}/memories
         operation_id must be a valid UUID (v1.2.1 requirement).
         """
@@ -346,10 +344,8 @@ class HindsightClient:
             "operation_id": op_uuid,
         }
         return _request(self._cfg, "POST", self._bank_path("/memories", bank_id), payload)
-
     def get_operation_status(self, operation_id: str, bank_id: Optional[str] = None) -> dict:
         """Check the status of an async retain operation.
-
         GET /v1/default/banks/{bank_id}/operations/{operation_id}
         """
         path = self._bank_path(
@@ -357,7 +353,6 @@ class HindsightClient:
             bank_id,
         )
         return _request(self._cfg, "GET", path)
-
     def wait_for_operation(
         self,
         operation_id: str,
@@ -374,9 +369,7 @@ class HindsightClient:
                 return status
             time.sleep(poll_interval)
         raise TimeoutError(f"Operation {operation_id} not complete after {timeout_s}s")
-
     # ── Recall ────────────────────────────────────────────────────────────────
-
     def recall(
         self,
         query: str,
@@ -393,14 +386,11 @@ class HindsightClient:
         query_timestamp: Optional[str] = None,
     ) -> dict:
         """Run a recall query.
-
         POST /v1/default/banks/{bank_id}/memories/recall
-
         ``include_source_facts=True`` adds ``include.source_facts`` to the
         request so that observation results carry their originating world-fact
         document IDs.  This allows crediting an observation when its source
         document is the expected answer (Opus benchmark fix §5).
-
         ``query_timestamp`` sets the reference time for recency scoring; pass
         an ISO-8601 string when evaluating historical queries so the server
         applies the correct recency decay.
@@ -424,26 +414,20 @@ class HindsightClient:
         if query_timestamp:
             payload["query_timestamp"] = query_timestamp
         return _request(self._cfg, "POST", self._bank_path("/memories/recall", bank_id), payload)
-
     # ── Documents ─────────────────────────────────────────────────────────────
-
     def get_document(self, document_id: str, bank_id: Optional[str] = None) -> dict:
         path = self._bank_path(
             f"/documents/{urllib.parse.quote(document_id, safe='')}",
             bank_id,
         )
         return _request(self._cfg, "GET", path)
-
     def get_document_history(
         self, document_id: str, bank_id: Optional[str] = None
     ) -> dict:
         """Return the full revision history for a document.
-
         GET /v1/default/banks/{bank_id}/documents/{document_id}/history
-
         Returns a list or dict of history entries.  Each entry contains the
         content and metadata at that revision.
-
         Audit V3 fix: use the real document-history endpoint instead of the
         observation-level ``/memories/{id}/history`` path.
         """
@@ -452,7 +436,6 @@ class HindsightClient:
             bank_id,
         )
         return _request(self._cfg, "GET", path)
-
     def list_documents(
         self,
         limit: int = 100,
@@ -461,7 +444,6 @@ class HindsightClient:
     ) -> dict:
         params = {"limit": str(limit), "offset": str(offset)}
         return _request(self._cfg, "GET", self._bank_path("/documents", bank_id), params=params)
-
     def list_all_documents_with_tags(
         self,
         tags: list[str],
@@ -469,7 +451,6 @@ class HindsightClient:
         page_size: int = 200,
     ) -> list[dict]:
         """List ALL documents in the bank that have any of the given tags.
-
         Uses pagination to fetch all documents, then filters locally by tags.
         This avoids ranking bias from semantic recall.
         """
@@ -490,33 +471,26 @@ class HindsightClient:
             if len(docs) < page_size:
                 break
             offset += page_size
-
         # Filter locally by tags
         tag_set = set(tags)
         return [d for d in all_docs
                 if tag_set & set(d.get("tags", []) or [])]
-
     def delete_document(self, document_id: str, bank_id: Optional[str] = None) -> dict:
         path = self._bank_path(
             f"/documents/{urllib.parse.quote(document_id, safe='')}",
             bank_id,
         )
         return _request(self._cfg, "DELETE", path)
-
     # ── Banks ─────────────────────────────────────────────────────────────────
-
     def create_bank(self, bank_id: str, description: str = "") -> dict:
         return _request(self._cfg, "POST", f"{self._API_PREFIX}/banks", {
             "bank_id": bank_id,
             "description": description,
         })
-
     def list_banks(self) -> dict:
         return _request(self._cfg, "GET", f"{self._API_PREFIX}/banks")
-
     def delete_bank(self, bank_id: str) -> dict:
         """Delete a bank and all its data (irreversible).
-
         Note: Hindsight v1.2.1 may return HTTP 405 if banks cannot be
         deleted this way — catch gracefully in callers.
         """
@@ -524,58 +498,45 @@ class HindsightClient:
             self._cfg, "DELETE",
             f"{self._API_PREFIX}/banks/{urllib.parse.quote(bank_id, safe='')}",
         )
-
     def patch_bank_config(self, updates: dict, bank_id: Optional[str] = None) -> dict:
         """Update per-bank configuration fields (PATCH).
-
         PATCH /v1/default/banks/{bank_id}/config
-
-        ``updates`` is a dict of field names → values.  Keys can be in Python
+        ``updates`` is a dict of field names -> values.  Keys can be in Python
         field format (``retain_extraction_mode``) or env-var format
         (``HINDSIGHT_API_RETAIN_EXTRACTION_MODE``).
-
         Used by the Olo feeder to configure the bank after first creation:
           - Register the ``structured-no-llm`` named retain strategy (chunks
             mode, observations disabled) so structured signals use zero LLM.
           - Disable automatic bank-wide consolidation so prose consolidation
             is triggered explicitly after each prose batch.
-
         Returns the updated bank config.
-
         Raises HindsightAPIError if the bank config API is not enabled on
         this Hindsight build (HTTP 405).
         """
         path = f"{self._API_PREFIX}/banks/{urllib.parse.quote(bank_id or self._cfg.bank_id, safe='')}/config"
         return _request(self._cfg, "PATCH", path, {"updates": updates})
-
     def trigger_consolidation(
         self,
         observation_scopes: Optional[list] = None,
         bank_id: Optional[str] = None,
     ) -> dict:
         """Trigger targeted consolidation for specific tag scopes.
-
         POST /v1/default/banks/{bank_id}/consolidate
-
         ``observation_scopes``: list of tag-lists.  Only memories whose tags
         contain ALL tags in at least one scope are consolidated.  ``None``
         consolidates everything pending.
-
         Used after retaining prose items to run DeepSeek consolidation for
         prose-only entity scopes without touching structured items.
-
         Returns {"operation_id": "...", "deduplicated": bool}.
         """
         body: dict = {}
         if observation_scopes is not None:
             body["observation_scopes"] = observation_scopes
         return _request(self._cfg, "POST", self._bank_path("/consolidate", bank_id), body or None)
-
     def get_observation_history(
         self, memory_id: str, bank_id: Optional[str] = None
     ) -> dict:
         """Get the history of a single observation.
-
         GET /v1/default/banks/{bank_id}/memories/{memory_id}/history
         Returns the full history of changes with source facts.
         """
@@ -584,34 +545,26 @@ class HindsightClient:
             bank_id,
         )
         return _request(self._cfg, "GET", path)
-
     # ── Admin ─────────────────────────────────────────────────────────────────
-
     def admin_health(self) -> dict:
         return _request(self._cfg, "GET", "/health")
-
     def retry_failed(self, bank_id: Optional[str] = None) -> dict:
         return _request(
             self._cfg, "POST",
             self._bank_path("/consolidation/recover", bank_id),
         )
-
     def get_llm_stats(self, bank_id: Optional[str] = None) -> dict:
         """Return LLM usage stats for the bank.
-
         GET /v1/default/banks/{bank_id}/llm-requests/stats
         Response: {"bank_id": "...", "buckets": [{"total": N, "tokens": {"input": N, "output": N}}, ...]}
         Used by UsageGuard for the $8 budget hard stop (audit correction D1).
         """
         return _request(self._cfg, "GET", self._bank_path("/llm-requests/stats", bank_id))
-
     def get_bank_stats(self, bank_id: Optional[str] = None) -> dict:
         """Return bank stats including pending_consolidation count.
-
         GET /v1/default/banks/{bank_id}/stats
         """
         return _request(self._cfg, "GET", self._bank_path("/stats", bank_id))
-
     def list_operations(
         self,
         limit: int = 10,
@@ -619,7 +572,6 @@ class HindsightClient:
         bank_id: Optional[str] = None,
     ) -> dict:
         """List recent retain operations, optionally filtered by status.
-
         GET /v1/default/banks/{bank_id}/operations?limit=N[&status=S]
         Used by V5 to detect in-flight operations before kill-9.
         """

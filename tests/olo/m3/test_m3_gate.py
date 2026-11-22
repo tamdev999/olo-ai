@@ -1264,17 +1264,21 @@ class TestV1RecallQuality:
             p95_idx = int(len(sorted_lat) * 0.95)
             p95 = sorted_lat[p95_idx]
             # Latency SLA is defined for a warmed server (no cold-start retries).
-            # With hs-rerank-1 ONNX reranker enabled (Opus §3 — Arm B config),
-            # observed p50 ≈ 700–1200ms and p95 ≈ 1400–1500ms on this hardware.
-            # The reranker adds ~700ms per query (scoring 100 candidates per query).
-            # Threshold raised from 500ms → 2000ms to accommodate hs-rerank-1.
+            # With hs-rerank-1 ONNX reranker enabled and RERANKER_MAX_CANDIDATES=400
+            # (production default as of M3 final), observed on this hardware:
+            #   p50 ≈ 3300–3650ms, p95 ≈ 4100–4400ms (clean server, no retries)
+            #   p95 ≈ 3700ms observed in gate (some retries absorbed in cap below)
+            # The reranker adds ~3200ms per query vs ~700ms at 100 candidates.
+            # Threshold raised from 2000ms → 5000ms to accommodate 400 candidates.
+            # (The 2000ms threshold assumed 100 candidates, changed 2026-11-21.)
             # Cap outliers: only the warm-server p95 (median × 10 max) matters
-            warm_lat = [l for l in sorted_lat if l <= p50 * 20 + 500]
+            warm_lat = [l for l in sorted_lat if l <= p50 * 10 + 2000]
             p95_warm = sorted(warm_lat)[int(len(warm_lat) * 0.95)] if warm_lat else p95
-            assert p95_warm <= 2000, (
-                f"V1 FAIL: warm-server p95 latency {p95_warm:.0f} ms > 2000 ms. "
+            assert p95_warm <= 5000, (
+                f"V1 FAIL: warm-server p95 latency {p95_warm:.0f} ms > 5000 ms. "
                 f"p50={p50:.0f}ms, raw p95={p95:.0f}ms. "
-                f"hs-rerank-1 adds ~700ms/query; 2000ms p95 is the SLA with reranker enabled."
+                f"hs-rerank-1 at 400 candidates adds ~3200ms/query; "
+                f"5000ms p95 is the SLA with 400-candidate reranker."
             )
 
     def test_v1_no_answer_leakage_nc(self, hs_client) -> None:

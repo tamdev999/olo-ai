@@ -1,0 +1,7732 @@
+{
+  "summary": {
+    "config": "C_400cands_source_facts",
+    "bank_id": "main-v1-granite",
+    "n_questions": 201,
+    "errors": 0,
+    "recall": {
+      "recall_at_1": {
+        "hits": 130,
+        "total": 201,
+        "pct": 0.6467661691542289
+      },
+      "recall_at_5": {
+        "hits": 155,
+        "total": 201,
+        "pct": 0.7711442786069652
+      },
+      "recall_at_10": {
+        "hits": 174,
+        "total": 201,
+        "pct": 0.8656716417910447
+      },
+      "recall_at_20": {
+        "hits": 197,
+        "total": 201,
+        "pct": 0.9800995024875622
+      },
+      "recall_at_50": {
+        "hits": 201,
+        "total": 201,
+        "pct": 1.0
+      },
+      "recall_at_100": {
+        "hits": 201,
+        "total": 201,
+        "pct": 1.0
+      }
+    },
+    "sf_specific_gains": {
+      "sf_gain_at_1": {
+        "count": 0,
+        "question_ids": []
+      },
+      "sf_gain_at_5": {
+        "count": 2,
+        "question_ids": [
+          "v2_ent_01AC_mtg_02",
+          "v2_ent_01AC_rel_09"
+        ]
+      },
+      "sf_gain_at_10": {
+        "count": 4,
+        "question_ids": [
+          "v2_ent_01AC_inv_04",
+          "v2_ent_01BE_rel_05",
+          "v2_ent_01GA_mtg_02",
+          "v2_ent_01GA_rel_04"
+        ]
+      },
+      "sf_gain_at_20": {
+        "count": 9,
+        "question_ids": [
+          "v2_ent_01AC_mtg_07",
+          "v2_ent_01AC_rel_02",
+          "v2_ent_01BE_mtg_07",
+          "v2_ent_01BE_rel_07",
+          "v2_ent_01GA_inv_03",
+          "v2_ent_01GA_inv_04",
+          "v2_ent_01GA_mtg_06",
+          "v2_xent_ent_01AC_2",
+          "v2_xent_ent_01GA_2"
+        ]
+      },
+      "sf_gain_at_50": {
+        "count": 1,
+        "question_ids": [
+          "v2_ent_01BE_del_05"
+        ]
+      },
+      "sf_gain_at_100": {
+        "count": 0,
+        "question_ids": []
+      }
+    },
+    "latency_ms": {
+      "p50": 3648.0,
+      "p95": 4333.2
+    },
+    "failure_categories": {
+      "invoice_dispute": 3,
+      "delivery_commitments": 2,
+      "meeting_voice": 2,
+      "relationship_complaint": 2,
+      "relationship_service_issues": 2,
+      "relationship_incoming_emails": 3,
+      "multidoc_support_chain": 3,
+      "multidoc_all_schedule_changes": 2,
+      "delivery_reschedule": 1,
+      "delivery_all_changes": 1,
+      "meeting_calendar": 1,
+      "xent_reschedule": 2,
+      "xent_invoice": 2,
+      "xent_delivery": 1
+    }
+  },
+  "per_question": [
+    {
+      "id": "v2_ent_01AC_inv_01",
+      "category": "invoice_dispute",
+      "query": "Has Alice Chen from Acme Corp ever reported a billing discrepancy?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_14da54e85cafe6ae752dc965",
+        "sig:sig_7ff98a571c6b7f41be9ae510",
+        "sig:sig_878c09750cb1e9720801dd5c",
+        "sig:sig_e5fed3aefb21a087e92a1faf",
+        "sig:sig_607d45f58dd23d48dc9d219a",
+        "sig:sig_22e9abaccaaf7b3ace5c078e",
+        "sig:sig_776ed92497e78704dcdba71f",
+        "sig:sig_21b50af7dcd56a5ef606ae56",
+        "sig:sig_4c34097f2cc813b79952e317",
+        "sig:sig_b08b3e12556d7b8b7c4ae02a",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3960.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_02",
+      "category": "invoice_cross",
+      "query": "Show me all Acme Corp invoice and billing records.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_14da54e85cafe6ae752dc965",
+        "sig:sig_7ff98a571c6b7f41be9ae510",
+        "sig:sig_a5cca61b8b296b8bd68bb2c0",
+        "sig:sig_0ce17fd21042a2598f38f838",
+        "sig:sig_878c09750cb1e9720801dd5c",
+        "sig:sig_e5fed3aefb21a087e92a1faf",
+        "sig:sig_607d45f58dd23d48dc9d219a",
+        "sig:sig_22e9abaccaaf7b3ace5c078e",
+        "sig:sig_776ed92497e78704dcdba71f",
+        "sig:sig_21b50af7dcd56a5ef606ae56",
+        "sig:sig_4c34097f2cc813b79952e317",
+        "sig:sig_b08b3e12556d7b8b7c4ae02a",
+        "sig:sig_bb6407d8bbe21aaab19720e8",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3685.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_03",
+      "category": "invoice_dispute",
+      "query": "What was the original agreed price on the invoice that Acme Corp disputed?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_878c09750cb1e9720801dd5c"
+      ],
+      "first_rank": 17,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3789.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_04",
+      "category": "invoice_dispute",
+      "query": "What is the invoice ID number for the billing dispute with Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_f46c15dcb9bfa4ba042c7b68",
+        "sig:sig_878c09750cb1e9720801dd5c"
+      ],
+      "first_rank": 16,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3589.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_05",
+      "category": "invoice_voice",
+      "query": "Did Alice Chen discuss invoice issues on a phone call?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_bb6407d8bbe21aaab19720e8",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3902.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_06",
+      "category": "invoice_structured",
+      "query": "What payment records exist for Acme Corp in the payment system?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_a5cca61b8b296b8bd68bb2c0"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3745.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_07",
+      "category": "invoice_structured",
+      "query": "Show me the accounting records for Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_0ce17fd21042a2598f38f838"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3624.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_08",
+      "category": "invoice_amount",
+      "query": "How much was Acme Corp charged according to Stripe?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_a5cca61b8b296b8bd68bb2c0"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3691.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_09",
+      "category": "invoice_email",
+      "query": "Find emails from Alice Chen about payment or billing issues.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_14da54e85cafe6ae752dc965",
+        "sig:sig_7ff98a571c6b7f41be9ae510",
+        "sig:sig_878c09750cb1e9720801dd5c",
+        "sig:sig_e5fed3aefb21a087e92a1faf",
+        "sig:sig_607d45f58dd23d48dc9d219a",
+        "sig:sig_22e9abaccaaf7b3ace5c078e",
+        "sig:sig_776ed92497e78704dcdba71f",
+        "sig:sig_21b50af7dcd56a5ef606ae56",
+        "sig:sig_4c34097f2cc813b79952e317",
+        "sig:sig_b08b3e12556d7b8b7c4ae02a",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3882.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_inv_10",
+      "category": "invoice_all",
+      "query": "What billing communications exist between us and Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_14da54e85cafe6ae752dc965",
+        "sig:sig_7ff98a571c6b7f41be9ae510",
+        "sig:sig_a5cca61b8b296b8bd68bb2c0",
+        "sig:sig_0ce17fd21042a2598f38f838",
+        "sig:sig_878c09750cb1e9720801dd5c",
+        "sig:sig_e5fed3aefb21a087e92a1faf",
+        "sig:sig_607d45f58dd23d48dc9d219a",
+        "sig:sig_22e9abaccaaf7b3ace5c078e",
+        "sig:sig_776ed92497e78704dcdba71f",
+        "sig:sig_21b50af7dcd56a5ef606ae56",
+        "sig:sig_4c34097f2cc813b79952e317",
+        "sig:sig_b08b3e12556d7b8b7c4ae02a",
+        "sig:sig_bb6407d8bbe21aaab19720e8",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3573.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_del_01",
+      "category": "delivery_reschedule",
+      "query": "Has Acme Corp ever requested to reschedule a meeting or delivery?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_32dd54681afe36e86953ba8e",
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_08e9ea787f62d5e743bf7288",
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "first_rank": 8,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3772.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_del_02",
+      "category": "delivery_original",
+      "query": "What was the original delivery date we committed to Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_32dd54681afe36e86953ba8e"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3706.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_del_03",
+      "category": "delivery_revision",
+      "query": "Was the delivery timeline for Acme Corp ever revised?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_32dd54681afe36e86953ba8e",
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3537.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_del_04",
+      "category": "delivery_current",
+      "query": "What is the current confirmed delivery date for Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3609.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_del_05",
+      "category": "delivery_all_changes",
+      "query": "Show me all schedule-change communications with Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_32dd54681afe36e86953ba8e",
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_08e9ea787f62d5e743bf7288",
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3621.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_del_06",
+      "category": "delivery_voice",
+      "query": "Did Alice Chen discuss any upcoming delivery on a call?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_d992bc383e81974213d7d74a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3657.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_del_07",
+      "category": "delivery_apology",
+      "query": "Find the email where we apologised for changing the delivery date for Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3468.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_del_08",
+      "category": "delivery_commitments",
+      "query": "What delivery commitments have we made to Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_32dd54681afe36e86953ba8e",
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "first_rank": 15,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3586.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_mtg_01",
+      "category": "meeting_all",
+      "query": "Show me all meeting-related communications with Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_4b70800dbc6ff4101983ff1f",
+        "sig:sig_348ca6b9fce92cdfeafb63f5",
+        "sig:sig_4a2f2bdd3c6f158762fae057",
+        "sig:sig_268e85fa1edb4737bd93f49c",
+        "sig:sig_1730213689957c0713ba923d",
+        "sig:sig_08e9ea787f62d5e743bf7288",
+        "sig:sig_77192f2cc52068f5de5be6b2",
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_67d70d5b3e95a57eb6493a19",
+        "sig:sig_fbc98c24f8d895acb18e30b6"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3570.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_mtg_02",
+      "category": "meeting_reschedule",
+      "query": "Did Alice Chen request to change a meeting date?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_08e9ea787f62d5e743bf7288",
+        "sig:sig_77192f2cc52068f5de5be6b2",
+        "sig:sig_268e85fa1edb4737bd93f49c"
+      ],
+      "first_rank": 6,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": true,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3686.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_mtg_03",
+      "category": "meeting_contradiction",
+      "query": "Was any meeting date correction sent to Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_77192f2cc52068f5de5be6b2",
+        "sig:sig_268e85fa1edb4737bd93f49c"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3552.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_mtg_04",
+      "category": "meeting_current",
+      "query": "What is the confirmed meeting date for Acme Corp after any corrections?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_268e85fa1edb4737bd93f49c"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3672.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_mtg_05",
+      "category": "meeting_confirmation",
+      "query": "Find the email confirming a meeting was still happening on the original date for Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_67d70d5b3e95a57eb6493a19"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3769.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_mtg_06",
+      "category": "meeting_calendar",
+      "query": "What calendar events have been created for Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_4b70800dbc6ff4101983ff1f",
+        "sig:sig_4a2f2bdd3c6f158762fae057",
+        "sig:sig_348ca6b9fce92cdfeafb63f5",
+        "sig:sig_d52a64518149c0dab3bcc03f",
+        "sig:sig_17745ccb076db808c32e52ec",
+        "sig:sig_1730213689957c0713ba923d",
+        "sig:sig_e4b6ab58944df444aebd91db",
+        "sig:sig_5713744c09024e11ffa74957",
+        "sig:sig_89f1b1782d40814942345249",
+        "sig:sig_fbc98c24f8d895acb18e30b6"
+      ],
+      "first_rank": 10,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3514.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_mtg_07",
+      "category": "meeting_voice",
+      "query": "Did Alice Chen discuss a rescheduled meeting on a voice call?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_d992bc383e81974213d7d74a"
+      ],
+      "first_rank": 32,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3740.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_mtg_08",
+      "category": "meeting_apology",
+      "query": "Find the email where Acme Corp apologised for a wrong meeting date.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_268e85fa1edb4737bd93f49c"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3640.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_00",
+      "category": "historical",
+      "query": "support issue resolution commitment mid-year 2026",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_ff104c708f6f092c5e831858"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3871.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_01",
+      "category": "historical",
+      "query": "payment confirmation acknowledgement received mid-year 2026",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_634dbe1410868424a81aa462"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3807.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_02",
+      "category": "historical",
+      "query": "new service engagement request infrastructure last summer",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_040db6c6fde51e6027819306"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3388.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_03",
+      "category": "historical",
+      "query": "formal support complaint response last summer",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_d1dde8ba81ad6cda551cdd6a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3142.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_04",
+      "category": "historical",
+      "query": "issue resolution confirmed notification last autumn",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_301dacb64994f341dfbf333c"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3455.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_05",
+      "category": "historical",
+      "query": "contract renewal terms discussion last October",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_e020111df4e5efcc1354e848"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3336.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_06",
+      "category": "historical",
+      "query": "invoice amount query details last October",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_26b6e0547cb5f4b0e73f92a8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3674.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_07",
+      "category": "historical",
+      "query": "quarterly account business review last November",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_1d82c87176524eb197343f8f"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3319.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_08",
+      "category": "historical",
+      "query": "positive feedback appreciation received last November",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_aa31cf634e33135c1fed4b24"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3410.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_hist_09",
+      "category": "historical",
+      "query": "new purchase order request last November",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_3394eee16268c576c1cc6962"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3579.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_01",
+      "category": "relationship_reschedule",
+      "query": "Find all emails from Acme Corp asking us to reschedule something.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_2495a1f42e2a6de0ec9e11b8",
+        "sig:sig_268e85fa1edb4737bd93f49c",
+        "sig:sig_6631b6a973679a646ecf4a55",
+        "sig:sig_08e9ea787f62d5e743bf7288",
+        "sig:sig_490d1a692d3bb046d8378c4c",
+        "sig:sig_67d70d5b3e95a57eb6493a19"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3681.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_02",
+      "category": "relationship_complaint",
+      "query": "Has Acme Corp ever filed a formal complaint?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_14da54e85cafe6ae752dc965",
+        "sig:sig_7ff98a571c6b7f41be9ae510",
+        "sig:sig_878c09750cb1e9720801dd5c",
+        "sig:sig_ff104c708f6f092c5e831858",
+        "sig:sig_776ed92497e78704dcdba71f",
+        "sig:sig_4c34097f2cc813b79952e317",
+        "sig:sig_b08b3e12556d7b8b7c4ae02a",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 22,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3553.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_03",
+      "category": "relationship_commitment",
+      "query": "Show me all commitments and confirmations we made to Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_29c92fd4b843ed3ec1b38de9",
+        "sig:sig_878c09750cb1e9720801dd5c",
+        "sig:sig_08335849a267017dcad04126",
+        "sig:sig_77192f2cc52068f5de5be6b2",
+        "sig:sig_de2cc0d94604fab5972a669d",
+        "sig:sig_71f14d04a57a2bdd3ab7fde9",
+        "sig:sig_272f595dcb25a58400c975d1",
+        "sig:sig_67d70d5b3e95a57eb6493a19",
+        "sig:sig_5fc39b80b6c23a6cf7d82aa3"
+      ],
+      "first_rank": 6,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3648.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_04",
+      "category": "relationship_payment_history",
+      "query": "What is the payment history with Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_a5cca61b8b296b8bd68bb2c0",
+        "sig:sig_0ce17fd21042a2598f38f838"
+      ],
+      "first_rank": 3,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3882.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_05",
+      "category": "relationship_service_issues",
+      "query": "Find recent service issues reported by Alice Chen.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_7ff98a571c6b7f41be9ae510",
+        "sig:sig_878c09750cb1e9720801dd5c",
+        "sig:sig_4c34097f2cc813b79952e317",
+        "sig:sig_b08b3e12556d7b8b7c4ae02a",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 49,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3826.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_06",
+      "category": "relationship_voice_all",
+      "query": "Show me all voice call transcripts involving Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_bb6407d8bbe21aaab19720e8",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3542.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_07",
+      "category": "relationship_incoming_emails",
+      "query": "What emails has Alice Chen sent to us in the past year?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_878c09750cb1e9720801dd5c",
+        "sig:sig_a30c2f353d162fc06d8cb063",
+        "sig:sig_fddec3788bd2d957390a8d69",
+        "sig:sig_08e9ea787f62d5e743bf7288",
+        "sig:sig_1591efe81f1d16ddbfa285dc",
+        "sig:sig_490d1a692d3bb046d8378c4c",
+        "sig:sig_0261197dd1b48a9688bcfa9e",
+        "sig:sig_71f14d04a57a2bdd3ab7fde9",
+        "sig:sig_272f595dcb25a58400c975d1",
+        "sig:sig_8e21db70a31f2d416d7ff7be"
+      ],
+      "first_rank": 20,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3998.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_08",
+      "category": "relationship_renewal",
+      "query": "Find the renewal conversation with Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_e020111df4e5efcc1354e848"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3453.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_09",
+      "category": "relationship_appreciation",
+      "query": "Has Acme Corp expressed satisfaction with our services?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_aa31cf634e33135c1fed4b24"
+      ],
+      "first_rank": 7,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": true,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3584.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_rel_10",
+      "category": "relationship_new_business",
+      "query": "Find any new orders or service requests from Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_040db6c6fde51e6027819306",
+        "sig:sig_3394eee16268c576c1cc6962"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3601.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_con_01",
+      "category": "contradiction_meeting",
+      "query": "Show all evidence of the meeting date correction for Acme Corp in May 2026.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_77192f2cc52068f5de5be6b2",
+        "sig:sig_268e85fa1edb4737bd93f49c"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4179.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_con_02",
+      "category": "contradiction_delivery",
+      "query": "Show all evidence of the delivery date correction we sent to Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_32dd54681afe36e86953ba8e",
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3632.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_con_03",
+      "category": "cross_connector_invoice",
+      "query": "Show all records for the main Acme Corp invoice from every system.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_a5cca61b8b296b8bd68bb2c0",
+        "sig:sig_0ce17fd21042a2598f38f838",
+        "sig:sig_878c09750cb1e9720801dd5c"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3772.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_con_04",
+      "category": "cross_connector_reschedule",
+      "query": "Find all evidence of the meeting rescheduling by Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_08e9ea787f62d5e743bf7288"
+      ],
+      "first_rank": 4,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3710.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_con_05",
+      "category": "multidoc_support_chain",
+      "query": "What was the support escalation and resolution history for Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_301dacb64994f341dfbf333c",
+        "sig:sig_d1dde8ba81ad6cda551cdd6a"
+      ],
+      "first_rank": 17,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3696.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_con_06",
+      "category": "multidoc_all_schedule_changes",
+      "query": "What schedule changes were requested by Acme Corp this year?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_08e9ea787f62d5e743bf7288",
+        "sig:sig_77192f2cc52068f5de5be6b2",
+        "sig:sig_268e85fa1edb4737bd93f49c"
+      ],
+      "first_rank": 12,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3544.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_dis_01",
+      "category": "disambiguation_email",
+      "query": "Show me the email where Acme Corp reported the billing discrepancy.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_878c09750cb1e9720801dd5c"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3487.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_dis_02",
+      "category": "disambiguation_voice",
+      "query": "Find the voice call where Acme Corp raised the billing issue.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_bb6407d8bbe21aaab19720e8",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3559.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_dis_03",
+      "category": "disambiguation_payment_ack",
+      "query": "Find the payment acknowledgement email from Acme Corp in our records.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_634dbe1410868424a81aa462"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3678.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_dis_04",
+      "category": "disambiguation_invoice_query",
+      "query": "Find the invoice question or query that Acme Corp sent us.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_26b6e0547cb5f4b0e73f92a8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3720.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01AC_dis_05",
+      "category": "disambiguation_dual_billing",
+      "query": "What billing data exists for Acme Corp in both Stripe and QuickBooks?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected": [
+        "sig:sig_a5cca61b8b296b8bd68bb2c0",
+        "sig:sig_0ce17fd21042a2598f38f838"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3661.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_01",
+      "category": "invoice_dispute",
+      "query": "Has Bob Torres from Beta Tech ever reported a billing discrepancy?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_50535c3f48d44c5cde1c6d88",
+        "sig:sig_65dc0ec9c2f0daaeea449f41",
+        "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+        "sig:sig_3020a0107d62c0a4ce2db400",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_671ed8b7aaee2ffdd4d243d4"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3453.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_02",
+      "category": "invoice_cross",
+      "query": "Show me all Beta Tech invoice and billing records.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_50535c3f48d44c5cde1c6d88",
+        "sig:sig_65dc0ec9c2f0daaeea449f41",
+        "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+        "sig:sig_32d4b42aeb8a9e8e94139a59",
+        "sig:sig_3020a0107d62c0a4ce2db400",
+        "sig:sig_0415f7fff9a17671cfbf6ce9",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_671ed8b7aaee2ffdd4d243d4",
+        "sig:sig_5569db734da9245c2219d1d3"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3492.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_03",
+      "category": "invoice_dispute",
+      "query": "What was the original agreed price on the invoice that Beta Tech disputed?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_7f5b418718dd44a4715e1d0f"
+      ],
+      "first_rank": 9,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3547.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_04",
+      "category": "invoice_dispute",
+      "query": "What is the invoice ID number for the billing dispute with Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_7f5b418718dd44a4715e1d0f"
+      ],
+      "first_rank": 8,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3776.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_05",
+      "category": "invoice_voice",
+      "query": "Did Bob Torres discuss invoice issues on a phone call?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_5569db734da9245c2219d1d3"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3480.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_06",
+      "category": "invoice_structured",
+      "query": "What payment records exist for Beta Tech in the payment system?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_32d4b42aeb8a9e8e94139a59"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3490.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_07",
+      "category": "invoice_structured",
+      "query": "Show me the accounting records for Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_0415f7fff9a17671cfbf6ce9"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3405.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_08",
+      "category": "invoice_amount",
+      "query": "How much was Beta Tech charged according to Stripe?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_32d4b42aeb8a9e8e94139a59"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3455.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_09",
+      "category": "invoice_email",
+      "query": "Find emails from Bob Torres about payment or billing issues.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_50535c3f48d44c5cde1c6d88",
+        "sig:sig_65dc0ec9c2f0daaeea449f41",
+        "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+        "sig:sig_3020a0107d62c0a4ce2db400",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_671ed8b7aaee2ffdd4d243d4"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3501.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_inv_10",
+      "category": "invoice_all",
+      "query": "What billing communications exist between us and Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_50535c3f48d44c5cde1c6d88",
+        "sig:sig_65dc0ec9c2f0daaeea449f41",
+        "sig:sig_3ff84f5dfe7a590a38bbcfb2",
+        "sig:sig_32d4b42aeb8a9e8e94139a59",
+        "sig:sig_3020a0107d62c0a4ce2db400",
+        "sig:sig_0415f7fff9a17671cfbf6ce9",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_671ed8b7aaee2ffdd4d243d4",
+        "sig:sig_5569db734da9245c2219d1d3"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3396.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_del_01",
+      "category": "delivery_reschedule",
+      "query": "Has Beta Tech ever requested to reschedule a meeting or delivery?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_ce5ba919011158bbedf5c26e",
+        "sig:sig_7f85f460aad67ec44e2f0458",
+        "sig:sig_d85fa3aa4478d40bdcab278c",
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 11,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3338.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_del_02",
+      "category": "delivery_original",
+      "query": "What was the original delivery date we committed to Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_ce5ba919011158bbedf5c26e"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3314.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_del_03",
+      "category": "delivery_revision",
+      "query": "Was the delivery timeline for Beta Tech ever revised?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_ce5ba919011158bbedf5c26e",
+        "sig:sig_7f85f460aad67ec44e2f0458"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3190.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_del_04",
+      "category": "delivery_current",
+      "query": "What is the current confirmed delivery date for Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_7f85f460aad67ec44e2f0458"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3234.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_del_05",
+      "category": "delivery_all_changes",
+      "query": "Show me all schedule-change communications with Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_ce5ba919011158bbedf5c26e",
+        "sig:sig_7f85f460aad67ec44e2f0458",
+        "sig:sig_d85fa3aa4478d40bdcab278c",
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 53,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": false
+      },
+      "latency_ms": 3172.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_del_06",
+      "category": "delivery_voice",
+      "query": "Did Bob Torres discuss any upcoming delivery on a call?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 9,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3418.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_del_07",
+      "category": "delivery_apology",
+      "query": "Find the email where we apologised for changing the delivery date for Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_7f85f460aad67ec44e2f0458"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3293.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_del_08",
+      "category": "delivery_commitments",
+      "query": "What delivery commitments have we made to Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_ce5ba919011158bbedf5c26e",
+        "sig:sig_7f85f460aad67ec44e2f0458"
+      ],
+      "first_rank": 8,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3264.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_mtg_01",
+      "category": "meeting_all",
+      "query": "Show me all meeting-related communications with Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_10e0726b1a473156d048ae8d",
+        "sig:sig_bbe3d0b2aabb7feece2ba727",
+        "sig:sig_ca427e422d59ad023a7ebb1d",
+        "sig:sig_d85fa3aa4478d40bdcab278c",
+        "sig:sig_48518687bb887a30e9cf7ddb",
+        "sig:sig_1fb3d3bc7528a1fd9d86a756",
+        "sig:sig_8be758642a3e80889947453d",
+        "sig:sig_10514b8d3f9c5278a79b07a1",
+        "sig:sig_9ffe848fe605d9307f4bde03",
+        "sig:sig_76e597a71002469aaab5901a"
+      ],
+      "first_rank": 3,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3269.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_mtg_02",
+      "category": "meeting_reschedule",
+      "query": "Did Bob Torres request to change a meeting date?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_1fb3d3bc7528a1fd9d86a756",
+        "sig:sig_d85fa3aa4478d40bdcab278c",
+        "sig:sig_10e0726b1a473156d048ae8d",
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3345.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_mtg_03",
+      "category": "meeting_contradiction",
+      "query": "Was any meeting date correction sent to Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_1fb3d3bc7528a1fd9d86a756",
+        "sig:sig_10e0726b1a473156d048ae8d"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3248.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_mtg_04",
+      "category": "meeting_current",
+      "query": "What is the confirmed meeting date for Beta Tech after any corrections?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_10e0726b1a473156d048ae8d"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3352.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_mtg_05",
+      "category": "meeting_confirmation",
+      "query": "Find the email confirming a meeting was still happening on the original date for Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_8be758642a3e80889947453d"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3387.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_mtg_06",
+      "category": "meeting_calendar",
+      "query": "What calendar events have been created for Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_f57c790edee42886f573b5bd",
+        "sig:sig_bbe3d0b2aabb7feece2ba727",
+        "sig:sig_48518687bb887a30e9cf7ddb",
+        "sig:sig_bf2c76840ac3fd0ddf1a7356",
+        "sig:sig_2da9e68dab1b9e6c0d105775",
+        "sig:sig_d56f2ef24ee36baceeb26a24",
+        "sig:sig_10514b8d3f9c5278a79b07a1",
+        "sig:sig_4e1b6f3956b221c43efe635b",
+        "sig:sig_9ffe848fe605d9307f4bde03",
+        "sig:sig_76e597a71002469aaab5901a"
+      ],
+      "first_rank": 9,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 2917.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_mtg_07",
+      "category": "meeting_voice",
+      "query": "Did Bob Torres discuss a rescheduled meeting on a voice call?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 39,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3474.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_mtg_08",
+      "category": "meeting_apology",
+      "query": "Find the email where Beta Tech apologised for a wrong meeting date.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_10e0726b1a473156d048ae8d"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3264.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_00",
+      "category": "historical",
+      "query": "support issue resolution commitment mid-year 2026",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_c2e22cacbeb25f5e191e551f"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3477.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_01",
+      "category": "historical",
+      "query": "payment confirmation acknowledgement received mid-year 2026",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_08234c81184801d8a1b48779"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3456.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_02",
+      "category": "historical",
+      "query": "new service engagement request infrastructure last summer",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_b190e9743a9a19d05f52be16"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 2870.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_03",
+      "category": "historical",
+      "query": "formal support complaint response last summer",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_79a8b3e14d32aa307fe9f048"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 2836.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_04",
+      "category": "historical",
+      "query": "issue resolution confirmed notification last autumn",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_dc141370fb973038afb49320"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 2974.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_05",
+      "category": "historical",
+      "query": "contract renewal terms discussion last October",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_744cc5cab66f54b7f10b8321"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3001.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_06",
+      "category": "historical",
+      "query": "invoice amount query details last October",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_3eb565595542c20d8fbb36fe"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3375.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_07",
+      "category": "historical",
+      "query": "quarterly account business review last November",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_7c19d9a779c10cfded778354"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3240.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_08",
+      "category": "historical",
+      "query": "positive feedback appreciation received last November",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_188b70392f920b43ef0c41f4"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3231.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_hist_09",
+      "category": "historical",
+      "query": "new purchase order request last November",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_4918642614d8f1de2d0dd565"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3362.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_01",
+      "category": "relationship_reschedule",
+      "query": "Find all emails from Beta Tech asking us to reschedule something.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_9f7c314e41501b3c5b046acf",
+        "sig:sig_10e0726b1a473156d048ae8d",
+        "sig:sig_d85fa3aa4478d40bdcab278c",
+        "sig:sig_b34f738cd4abf22425d18d82",
+        "sig:sig_871e61bf7cdbdd6f60d1e0da",
+        "sig:sig_8be758642a3e80889947453d"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3303.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_02",
+      "category": "relationship_complaint",
+      "query": "Has Beta Tech ever filed a formal complaint?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_c2e22cacbeb25f5e191e551f",
+        "sig:sig_79a8b3e14d32aa307fe9f048",
+        "sig:sig_65dc0ec9c2f0daaeea449f41",
+        "sig:sig_dc141370fb973038afb49320",
+        "sig:sig_3020a0107d62c0a4ce2db400",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_671ed8b7aaee2ffdd4d243d4"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3239.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_03",
+      "category": "relationship_commitment",
+      "query": "Show me all commitments and confirmations we made to Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_edf6e164feae17ac2a59f79c",
+        "sig:sig_fc6ced3877beb90991c4ff56",
+        "sig:sig_65dc0ec9c2f0daaeea449f41",
+        "sig:sig_060083c75dd0870ec55685d4",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_08772ced6e655255b1150013",
+        "sig:sig_8be758642a3e80889947453d",
+        "sig:sig_b09058cca34effa3e1dc6bac",
+        "sig:sig_49758b3361db371bfc5e9684"
+      ],
+      "first_rank": 3,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3337.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_04",
+      "category": "relationship_payment_history",
+      "query": "What is the payment history with Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_0415f7fff9a17671cfbf6ce9",
+        "sig:sig_32d4b42aeb8a9e8e94139a59"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3339.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_05",
+      "category": "relationship_service_issues",
+      "query": "Find recent service issues reported by Bob Torres.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_c2e22cacbeb25f5e191e551f",
+        "sig:sig_65dc0ec9c2f0daaeea449f41",
+        "sig:sig_3020a0107d62c0a4ce2db400",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_9f7323a589743f5f9d333bf1"
+      ],
+      "first_rank": 12,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3397.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_06",
+      "category": "relationship_voice_all",
+      "query": "Show me all voice call transcripts involving Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_5569db734da9245c2219d1d3",
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3381.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_07",
+      "category": "relationship_incoming_emails",
+      "query": "What emails has Bob Torres sent to us in the past year?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_edf6e164feae17ac2a59f79c",
+        "sig:sig_10e0726b1a473156d048ae8d",
+        "sig:sig_65dc0ec9c2f0daaeea449f41",
+        "sig:sig_6636e4bdea7f0eb64e78697f",
+        "sig:sig_d85fa3aa4478d40bdcab278c",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_08772ced6e655255b1150013",
+        "sig:sig_1fb3d3bc7528a1fd9d86a756",
+        "sig:sig_9aa6a08fb9813e8265af3d44",
+        "sig:sig_49758b3361db371bfc5e9684"
+      ],
+      "first_rank": 22,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3458.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_08",
+      "category": "relationship_renewal",
+      "query": "Find the renewal conversation with Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_744cc5cab66f54b7f10b8321"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3158.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_09",
+      "category": "relationship_appreciation",
+      "query": "Has Beta Tech expressed satisfaction with our services?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_188b70392f920b43ef0c41f4"
+      ],
+      "first_rank": 5,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3217.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_rel_10",
+      "category": "relationship_new_business",
+      "query": "Find any new orders or service requests from Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_4918642614d8f1de2d0dd565",
+        "sig:sig_b190e9743a9a19d05f52be16"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3323.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_con_01",
+      "category": "contradiction_meeting",
+      "query": "Show all evidence of the meeting date correction for Beta Tech in May 2026.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_1fb3d3bc7528a1fd9d86a756",
+        "sig:sig_10e0726b1a473156d048ae8d"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3551.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_con_02",
+      "category": "contradiction_delivery",
+      "query": "Show all evidence of the delivery date correction we sent to Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_ce5ba919011158bbedf5c26e",
+        "sig:sig_7f85f460aad67ec44e2f0458"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3289.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_con_03",
+      "category": "cross_connector_invoice",
+      "query": "Show all records for the main Beta Tech invoice from every system.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_0415f7fff9a17671cfbf6ce9",
+        "sig:sig_7f5b418718dd44a4715e1d0f",
+        "sig:sig_32d4b42aeb8a9e8e94139a59"
+      ],
+      "first_rank": 3,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3507.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_con_04",
+      "category": "cross_connector_reschedule",
+      "query": "Find all evidence of the meeting rescheduling by Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_d85fa3aa4478d40bdcab278c",
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 7,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3340.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_con_05",
+      "category": "multidoc_support_chain",
+      "query": "What was the support escalation and resolution history for Beta Tech?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_79a8b3e14d32aa307fe9f048",
+        "sig:sig_dc141370fb973038afb49320"
+      ],
+      "first_rank": 12,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3343.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_con_06",
+      "category": "multidoc_all_schedule_changes",
+      "query": "What schedule changes were requested by Beta Tech this year?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_1fb3d3bc7528a1fd9d86a756",
+        "sig:sig_d85fa3aa4478d40bdcab278c",
+        "sig:sig_10e0726b1a473156d048ae8d",
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 13,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3322.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_dis_01",
+      "category": "disambiguation_email",
+      "query": "Show me the email where Beta Tech reported the billing discrepancy.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_7f5b418718dd44a4715e1d0f"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3353.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_dis_02",
+      "category": "disambiguation_voice",
+      "query": "Find the voice call where Beta Tech raised the billing issue.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_9f7323a589743f5f9d333bf1",
+        "sig:sig_5569db734da9245c2219d1d3"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3385.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_dis_03",
+      "category": "disambiguation_payment_ack",
+      "query": "Find the payment acknowledgement email from Beta Tech in our records.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_08234c81184801d8a1b48779"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3520.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_dis_04",
+      "category": "disambiguation_invoice_query",
+      "query": "Find the invoice question or query that Beta Tech sent us.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_3eb565595542c20d8fbb36fe"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3509.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01BE_dis_05",
+      "category": "disambiguation_dual_billing",
+      "query": "What billing data exists for Beta Tech in both Stripe and QuickBooks?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected": [
+        "sig:sig_0415f7fff9a17671cfbf6ce9",
+        "sig:sig_32d4b42aeb8a9e8e94139a59"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3502.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_01",
+      "category": "invoice_dispute",
+      "query": "Has Carla Osei from Gamma Retail ever reported a billing discrepancy?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_0e98da4a5a572ec0942c6b60",
+        "sig:sig_ed4f4905bae68d8dd7cb1207",
+        "sig:sig_898e865009d67e8f53e5dd7d",
+        "sig:sig_28cd0c135962d40b2b72c4e8",
+        "sig:sig_c74eeaca4e928ddc49f114e8",
+        "sig:sig_c508af86047f34cf66016a72",
+        "sig:sig_e88d921786a5ff81716d0c44",
+        "sig:sig_dda958931863b8e96f7febda",
+        "sig:sig_a1629a88fe8102ab65ba3e10",
+        "sig:sig_df3be92dca0e0aae610f1b04",
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_b709a30905b982276cfa4afd",
+        "sig:sig_7680510cd45d68d4fb91311c",
+        "sig:sig_a529dfaa6eccd851c4b15e6b",
+        "sig:sig_b306a42d2ceab89f96f43c92",
+        "sig:sig_f43d7d07925e5398024e61d1"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3993.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_02",
+      "category": "invoice_cross",
+      "query": "Show me all Gamma Retail invoice and billing records.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_ed4f4905bae68d8dd7cb1207",
+        "sig:sig_4ed2e2a68841628919579af9",
+        "sig:sig_dda958931863b8e96f7febda",
+        "sig:sig_c508af86047f34cf66016a72",
+        "sig:sig_898e865009d67e8f53e5dd7d",
+        "sig:sig_e88d921786a5ff81716d0c44",
+        "sig:sig_a1629a88fe8102ab65ba3e10",
+        "sig:sig_b709a30905b982276cfa4afd",
+        "sig:sig_c47a2ff2893985c5d47a624a",
+        "sig:sig_c74eeaca4e928ddc49f114e8",
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_a529dfaa6eccd851c4b15e6b",
+        "sig:sig_f43d7d07925e5398024e61d1",
+        "sig:sig_0e98da4a5a572ec0942c6b60",
+        "sig:sig_28cd0c135962d40b2b72c4e8",
+        "sig:sig_7552c06c5598b53e11eec48a",
+        "sig:sig_df3be92dca0e0aae610f1b04",
+        "sig:sig_7680510cd45d68d4fb91311c",
+        "sig:sig_b306a42d2ceab89f96f43c92"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3740.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_03",
+      "category": "invoice_dispute",
+      "query": "What was the original agreed price on the invoice that Gamma Retail disputed?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_9315534b81d6b50bc304d55a"
+      ],
+      "first_rank": 23,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3842.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_04",
+      "category": "invoice_dispute",
+      "query": "What is the invoice ID number for the billing dispute with Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_f43d7d07925e5398024e61d1",
+        "sig:sig_9315534b81d6b50bc304d55a"
+      ],
+      "first_rank": 22,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4030.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_05",
+      "category": "invoice_voice",
+      "query": "Did Carla Osei discuss invoice issues on a phone call?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_4ed2e2a68841628919579af9",
+        "sig:sig_f43d7d07925e5398024e61d1"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3758.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_06",
+      "category": "invoice_structured",
+      "query": "What payment records exist for Gamma Retail in the payment system?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_c47a2ff2893985c5d47a624a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3756.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_07",
+      "category": "invoice_structured",
+      "query": "Show me the accounting records for Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_7552c06c5598b53e11eec48a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3679.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_08",
+      "category": "invoice_amount",
+      "query": "How much was Gamma Retail charged according to Stripe?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_c47a2ff2893985c5d47a624a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3942.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_09",
+      "category": "invoice_email",
+      "query": "Find emails from Carla Osei about payment or billing issues.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_0e98da4a5a572ec0942c6b60",
+        "sig:sig_ed4f4905bae68d8dd7cb1207",
+        "sig:sig_898e865009d67e8f53e5dd7d",
+        "sig:sig_28cd0c135962d40b2b72c4e8",
+        "sig:sig_c74eeaca4e928ddc49f114e8",
+        "sig:sig_c508af86047f34cf66016a72",
+        "sig:sig_e88d921786a5ff81716d0c44",
+        "sig:sig_dda958931863b8e96f7febda",
+        "sig:sig_a1629a88fe8102ab65ba3e10",
+        "sig:sig_df3be92dca0e0aae610f1b04",
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_b709a30905b982276cfa4afd",
+        "sig:sig_7680510cd45d68d4fb91311c",
+        "sig:sig_a529dfaa6eccd851c4b15e6b",
+        "sig:sig_b306a42d2ceab89f96f43c92",
+        "sig:sig_f43d7d07925e5398024e61d1"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3931.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_inv_10",
+      "category": "invoice_all",
+      "query": "What billing communications exist between us and Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_ed4f4905bae68d8dd7cb1207",
+        "sig:sig_4ed2e2a68841628919579af9",
+        "sig:sig_dda958931863b8e96f7febda",
+        "sig:sig_c508af86047f34cf66016a72",
+        "sig:sig_898e865009d67e8f53e5dd7d",
+        "sig:sig_e88d921786a5ff81716d0c44",
+        "sig:sig_a1629a88fe8102ab65ba3e10",
+        "sig:sig_b709a30905b982276cfa4afd",
+        "sig:sig_c47a2ff2893985c5d47a624a",
+        "sig:sig_c74eeaca4e928ddc49f114e8",
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_a529dfaa6eccd851c4b15e6b",
+        "sig:sig_f43d7d07925e5398024e61d1",
+        "sig:sig_0e98da4a5a572ec0942c6b60",
+        "sig:sig_28cd0c135962d40b2b72c4e8",
+        "sig:sig_7552c06c5598b53e11eec48a",
+        "sig:sig_df3be92dca0e0aae610f1b04",
+        "sig:sig_7680510cd45d68d4fb91311c",
+        "sig:sig_b306a42d2ceab89f96f43c92"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3687.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_del_01",
+      "category": "delivery_reschedule",
+      "query": "Has Gamma Retail ever requested to reschedule a meeting or delivery?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_266aebd291567e3b16d4202c",
+        "sig:sig_55c373fd1e2fedaca5284fd8",
+        "sig:sig_c85f02b177def59cd8b287f5"
+      ],
+      "first_rank": 8,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3738.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_del_02",
+      "category": "delivery_original",
+      "query": "What was the original delivery date we committed to Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_266aebd291567e3b16d4202c"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3734.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_del_03",
+      "category": "delivery_revision",
+      "query": "Was the delivery timeline for Gamma Retail ever revised?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_266aebd291567e3b16d4202c",
+        "sig:sig_55c373fd1e2fedaca5284fd8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3646.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_del_04",
+      "category": "delivery_current",
+      "query": "What is the current confirmed delivery date for Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_55c373fd1e2fedaca5284fd8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3686.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_del_05",
+      "category": "delivery_all_changes",
+      "query": "Show me all schedule-change communications with Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_266aebd291567e3b16d4202c",
+        "sig:sig_55c373fd1e2fedaca5284fd8",
+        "sig:sig_c85f02b177def59cd8b287f5"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3601.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_del_06",
+      "category": "delivery_voice",
+      "query": "Did Carla Osei discuss any upcoming delivery on a call?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_c85f02b177def59cd8b287f5"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3968.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_del_07",
+      "category": "delivery_apology",
+      "query": "Find the email where we apologised for changing the delivery date for Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_55c373fd1e2fedaca5284fd8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3942.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_del_08",
+      "category": "delivery_commitments",
+      "query": "What delivery commitments have we made to Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_266aebd291567e3b16d4202c",
+        "sig:sig_55c373fd1e2fedaca5284fd8"
+      ],
+      "first_rank": 18,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3910.9,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_mtg_01",
+      "category": "meeting_all",
+      "query": "Show me all meeting-related communications with Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_70bb789484a9eb0be3a73e1c",
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_73573f4352378ff8dccabd5c",
+        "sig:sig_774587b43d098badf169d55f",
+        "sig:sig_c85f02b177def59cd8b287f5",
+        "sig:sig_9a16c8e73385fbfe74e076c7",
+        "sig:sig_4474dfef32a4f6d68569154c",
+        "sig:sig_91969e2ff96a8ef8f9f6f4fa",
+        "sig:sig_1386af934a2eae684848e08f",
+        "sig:sig_e12b03c837b2de0ac6dc47af"
+      ],
+      "first_rank": 3,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3969.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_mtg_02",
+      "category": "meeting_reschedule",
+      "query": "Did Carla Osei request to change a meeting date?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_4474dfef32a4f6d68569154c",
+        "sig:sig_c85f02b177def59cd8b287f5",
+        "sig:sig_e12b03c837b2de0ac6dc47af"
+      ],
+      "first_rank": 14,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3797.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_mtg_03",
+      "category": "meeting_contradiction",
+      "query": "Was any meeting date correction sent to Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_4474dfef32a4f6d68569154c",
+        "sig:sig_e12b03c837b2de0ac6dc47af"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3714.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_mtg_04",
+      "category": "meeting_current",
+      "query": "What is the confirmed meeting date for Gamma Retail after any corrections?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_e12b03c837b2de0ac6dc47af"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3794.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_mtg_05",
+      "category": "meeting_confirmation",
+      "query": "Find the email confirming a meeting was still happening on the original date for Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_73573f4352378ff8dccabd5c"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3854.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_mtg_06",
+      "category": "meeting_calendar",
+      "query": "What calendar events have been created for Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_70bb789484a9eb0be3a73e1c",
+        "sig:sig_b302e7ccefb7a934ddb5990f",
+        "sig:sig_582b3c532e51c6ddbe6bd2cc",
+        "sig:sig_774587b43d098badf169d55f",
+        "sig:sig_8cf2d43449deea9f19a4a7c6",
+        "sig:sig_9a16c8e73385fbfe74e076c7",
+        "sig:sig_97a983c8c90aa75f7c147ad4",
+        "sig:sig_d2fe69d060d25a76c5f02eb3",
+        "sig:sig_91969e2ff96a8ef8f9f6f4fa",
+        "sig:sig_1386af934a2eae684848e08f"
+      ],
+      "first_rank": 24,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3545.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_mtg_07",
+      "category": "meeting_voice",
+      "query": "Did Carla Osei discuss a rescheduled meeting on a voice call?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_c85f02b177def59cd8b287f5"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3765.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_mtg_08",
+      "category": "meeting_apology",
+      "query": "Find the email where Gamma Retail apologised for a wrong meeting date.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_e12b03c837b2de0ac6dc47af"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3616.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_00",
+      "category": "historical",
+      "query": "support issue resolution commitment mid-year 2026",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_b8e8cd8a748a9c8b766bdd0e"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3854.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_01",
+      "category": "historical",
+      "query": "payment confirmation acknowledgement received mid-year 2026",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_b0e0ca3684d95b58d3eef949"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3770.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_02",
+      "category": "historical",
+      "query": "new service engagement request infrastructure last summer",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_d4d73bdb8a99ca5594d7e31e"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3399.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_03",
+      "category": "historical",
+      "query": "formal support complaint response last summer",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_4a4b309fdcdd2a23745317d0"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3409.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_04",
+      "category": "historical",
+      "query": "issue resolution confirmed notification last autumn",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_f2a337f17842b04c8ca1d748"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3487.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_05",
+      "category": "historical",
+      "query": "contract renewal terms discussion last October",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_403789cf3e4bd5aa3a2f07f8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3297.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_06",
+      "category": "historical",
+      "query": "invoice amount query details last October",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_15fe5cbb51703c32461bcb46"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3642.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_07",
+      "category": "historical",
+      "query": "quarterly account business review last November",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_8d285ecd4b34e015dc6a2f8e"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3360.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_08",
+      "category": "historical",
+      "query": "positive feedback appreciation received last November",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_0a8b81620af634f05f39ff7b"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3056.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_hist_09",
+      "category": "historical",
+      "query": "new purchase order request last November",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_df3c84b5238f518b5a119aa4"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3319.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_01",
+      "category": "relationship_reschedule",
+      "query": "Find all emails from Gamma Retail asking us to reschedule something.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_73573f4352378ff8dccabd5c",
+        "sig:sig_33b58a25724e64489cf74a15",
+        "sig:sig_d11d197a24e5748f7f91b890",
+        "sig:sig_1e698a912497246f287ae7e1",
+        "sig:sig_e12b03c837b2de0ac6dc47af"
+      ],
+      "first_rank": 3,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3678.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_02",
+      "category": "relationship_complaint",
+      "query": "Has Gamma Retail ever filed a formal complaint?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_28cd0c135962d40b2b72c4e8",
+        "sig:sig_a1629a88fe8102ab65ba3e10",
+        "sig:sig_df3be92dca0e0aae610f1b04",
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_b709a30905b982276cfa4afd",
+        "sig:sig_7680510cd45d68d4fb91311c",
+        "sig:sig_b306a42d2ceab89f96f43c92",
+        "sig:sig_f43d7d07925e5398024e61d1"
+      ],
+      "first_rank": 45,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3705.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_03",
+      "category": "relationship_commitment",
+      "query": "Show me all commitments and confirmations we made to Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_73573f4352378ff8dccabd5c",
+        "sig:sig_453dc0462b7659233a3b6d85",
+        "sig:sig_f9ac3b02fe7a9d87bca5b6c2",
+        "sig:sig_3c04b4ca7ca13b8eae003048",
+        "sig:sig_d599fa0c4603aafffdcb757b",
+        "sig:sig_d7ba05e317084c829f16a710",
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_9a715ecf64e5e98aff2152a1",
+        "sig:sig_7680510cd45d68d4fb91311c"
+      ],
+      "first_rank": 6,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3748.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_04",
+      "category": "relationship_payment_history",
+      "query": "What is the payment history with Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_7552c06c5598b53e11eec48a",
+        "sig:sig_c47a2ff2893985c5d47a624a"
+      ],
+      "first_rank": 14,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3743.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_05",
+      "category": "relationship_service_issues",
+      "query": "Find recent service issues reported by Carla Osei.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_a1629a88fe8102ab65ba3e10",
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_b709a30905b982276cfa4afd",
+        "sig:sig_7680510cd45d68d4fb91311c",
+        "sig:sig_f43d7d07925e5398024e61d1"
+      ],
+      "first_rank": 18,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3800.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_06",
+      "category": "relationship_voice_all",
+      "query": "Show me all voice call transcripts involving Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_4ed2e2a68841628919579af9",
+        "sig:sig_c85f02b177def59cd8b287f5",
+        "sig:sig_f43d7d07925e5398024e61d1"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3575.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_07",
+      "category": "relationship_incoming_emails",
+      "query": "What emails has Carla Osei sent to us in the past year?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_17ffc9e38df846852ae0f8d5",
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_f9ac3b02fe7a9d87bca5b6c2",
+        "sig:sig_d599fa0c4603aafffdcb757b",
+        "sig:sig_d7ba05e317084c829f16a710",
+        "sig:sig_f996114df88ff14651c43e11",
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_7680510cd45d68d4fb91311c",
+        "sig:sig_1e698a912497246f287ae7e1",
+        "sig:sig_b709a30905b982276cfa4afd"
+      ],
+      "first_rank": 37,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3987.1,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_08",
+      "category": "relationship_renewal",
+      "query": "Find the renewal conversation with Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_403789cf3e4bd5aa3a2f07f8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3591.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_09",
+      "category": "relationship_appreciation",
+      "query": "Has Gamma Retail expressed satisfaction with our services?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_0a8b81620af634f05f39ff7b"
+      ],
+      "first_rank": 4,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3879.6,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_rel_10",
+      "category": "relationship_new_business",
+      "query": "Find any new orders or service requests from Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_df3c84b5238f518b5a119aa4",
+        "sig:sig_d4d73bdb8a99ca5594d7e31e"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3637.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_con_01",
+      "category": "contradiction_meeting",
+      "query": "Show all evidence of the meeting date correction for Gamma Retail in May 2026.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_4474dfef32a4f6d68569154c",
+        "sig:sig_e12b03c837b2de0ac6dc47af"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4013.0,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_con_02",
+      "category": "contradiction_delivery",
+      "query": "Show all evidence of the delivery date correction we sent to Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_266aebd291567e3b16d4202c",
+        "sig:sig_55c373fd1e2fedaca5284fd8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3551.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_con_03",
+      "category": "cross_connector_invoice",
+      "query": "Show all records for the main Gamma Retail invoice from every system.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_7552c06c5598b53e11eec48a",
+        "sig:sig_c47a2ff2893985c5d47a624a",
+        "sig:sig_9315534b81d6b50bc304d55a"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3793.4,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_con_04",
+      "category": "cross_connector_reschedule",
+      "query": "Find all evidence of the meeting rescheduling by Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_c85f02b177def59cd8b287f5"
+      ],
+      "first_rank": 6,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3708.8,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_con_05",
+      "category": "multidoc_support_chain",
+      "query": "What was the support escalation and resolution history for Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_4a4b309fdcdd2a23745317d0",
+        "sig:sig_f2a337f17842b04c8ca1d748"
+      ],
+      "first_rank": 17,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3932.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_con_06",
+      "category": "multidoc_all_schedule_changes",
+      "query": "What schedule changes were requested by Gamma Retail this year?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_4474dfef32a4f6d68569154c",
+        "sig:sig_c85f02b177def59cd8b287f5",
+        "sig:sig_e12b03c837b2de0ac6dc47af"
+      ],
+      "first_rank": 9,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3700.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_dis_01",
+      "category": "disambiguation_email",
+      "query": "Show me the email where Gamma Retail reported the billing discrepancy.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_9315534b81d6b50bc304d55a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3959.2,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_dis_02",
+      "category": "disambiguation_voice",
+      "query": "Find the voice call where Gamma Retail raised the billing issue.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_4ed2e2a68841628919579af9",
+        "sig:sig_f43d7d07925e5398024e61d1"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4001.3,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_dis_03",
+      "category": "disambiguation_payment_ack",
+      "query": "Find the payment acknowledgement email from Gamma Retail in our records.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_b0e0ca3684d95b58d3eef949"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3793.7,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_dis_04",
+      "category": "disambiguation_invoice_query",
+      "query": "Find the invoice question or query that Gamma Retail sent us.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_15fe5cbb51703c32461bcb46"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4004.5,
+      "error": null
+    },
+    {
+      "id": "v2_ent_01GA_dis_05",
+      "category": "disambiguation_dual_billing",
+      "query": "What billing data exists for Gamma Retail in both Stripe and QuickBooks?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected": [
+        "sig:sig_7552c06c5598b53e11eec48a",
+        "sig:sig_c47a2ff2893985c5d47a624a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4001.5,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_1",
+      "category": "xent_reschedule",
+      "query": "Find the meeting rescheduling request from Alice Chen.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_08e9ea787f62d5e743bf7288"
+      ],
+      "first_rank": 11,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4037.0,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_2",
+      "category": "xent_invoice",
+      "query": "What invoice amount did Acme Corp dispute?",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_878c09750cb1e9720801dd5c"
+      ],
+      "first_rank": 25,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4333.2,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_3",
+      "category": "xent_stripe",
+      "query": "Show Stripe payment record for Acme Corp.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_a5cca61b8b296b8bd68bb2c0"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4628.9,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_4",
+      "category": "xent_delivery",
+      "query": "What delivery commitment did we send to Alice Chen?",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_32dd54681afe36e86953ba8e",
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3946.5,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_5",
+      "category": "xent_voice",
+      "query": "Find the voice call transcript about rescheduling with Acme Corp.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_d992bc383e81974213d7d74a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4194.7,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_6",
+      "category": "xent_appreciation",
+      "query": "Find the customer appreciation or thank-you email from Alice Chen.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_aa31cf634e33135c1fed4b24"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3819.9,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_7",
+      "category": "xent_complaint",
+      "query": "Find the formal complaint email filed by Acme Corp.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_d1dde8ba81ad6cda551cdd6a"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4068.4,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_8",
+      "category": "xent_renewal",
+      "query": "Find the contract renewal discussion with Acme Corp.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_e020111df4e5efcc1354e848"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4023.4,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_9",
+      "category": "xent_account_review",
+      "query": "Find the account review or business summary sent to Acme Corp.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_1d82c87176524eb197343f8f"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4463.4,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01AC_10",
+      "category": "xent_new_service",
+      "query": "Find any new service or project request submitted by Acme Corp.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_040db6c6fde51e6027819306",
+        "sig:sig_3394eee16268c576c1cc6962"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4117.8,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_1",
+      "category": "xent_reschedule",
+      "query": "Find the meeting rescheduling request from Bob Torres.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_d85fa3aa4478d40bdcab278c"
+      ],
+      "first_rank": 11,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3902.6,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_2",
+      "category": "xent_invoice",
+      "query": "What invoice amount did Beta Tech dispute?",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_7f5b418718dd44a4715e1d0f"
+      ],
+      "first_rank": 9,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4228.7,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_3",
+      "category": "xent_stripe",
+      "query": "Show Stripe payment record for Beta Tech.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_32d4b42aeb8a9e8e94139a59"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4356.7,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_4",
+      "category": "xent_delivery",
+      "query": "What delivery commitment did we send to Bob Torres?",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_ce5ba919011158bbedf5c26e",
+        "sig:sig_7f85f460aad67ec44e2f0458"
+      ],
+      "first_rank": 3,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4130.6,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_5",
+      "category": "xent_voice",
+      "query": "Find the voice call transcript about rescheduling with Beta Tech.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4106.1,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_6",
+      "category": "xent_appreciation",
+      "query": "Find the customer appreciation or thank-you email from Bob Torres.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_188b70392f920b43ef0c41f4"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4039.6,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_7",
+      "category": "xent_complaint",
+      "query": "Find the formal complaint email filed by Beta Tech.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_79a8b3e14d32aa307fe9f048"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4278.1,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_8",
+      "category": "xent_renewal",
+      "query": "Find the contract renewal discussion with Beta Tech.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_744cc5cab66f54b7f10b8321"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3884.9,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_9",
+      "category": "xent_account_review",
+      "query": "Find the account review or business summary sent to Beta Tech.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_7c19d9a779c10cfded778354"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4553.5,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01BE_10",
+      "category": "xent_new_service",
+      "query": "Find any new service or project request submitted by Beta Tech.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_4918642614d8f1de2d0dd565",
+        "sig:sig_b190e9743a9a19d05f52be16"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4393.0,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_1",
+      "category": "xent_reschedule",
+      "query": "Find the meeting rescheduling request from Carla Osei.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_5d19a947f076bdc266445f69"
+      ],
+      "first_rank": 8,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4145.9,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_2",
+      "category": "xent_invoice",
+      "query": "What invoice amount did Gamma Retail dispute?",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_9315534b81d6b50bc304d55a"
+      ],
+      "first_rank": 27,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4404.2,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_3",
+      "category": "xent_stripe",
+      "query": "Show Stripe payment record for Gamma Retail.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_c47a2ff2893985c5d47a624a"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4250.8,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_4",
+      "category": "xent_delivery",
+      "query": "What delivery commitment did we send to Carla Osei?",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_266aebd291567e3b16d4202c",
+        "sig:sig_55c373fd1e2fedaca5284fd8"
+      ],
+      "first_rank": 12,
+      "pass_at": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4375.3,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_5",
+      "category": "xent_voice",
+      "query": "Find the voice call transcript about rescheduling with Gamma Retail.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_c85f02b177def59cd8b287f5"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4422.6,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_6",
+      "category": "xent_appreciation",
+      "query": "Find the customer appreciation or thank-you email from Carla Osei.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_0a8b81620af634f05f39ff7b"
+      ],
+      "first_rank": 2,
+      "pass_at": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": false,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4050.3,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_7",
+      "category": "xent_complaint",
+      "query": "Find the formal complaint email filed by Gamma Retail.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_4a4b309fdcdd2a23745317d0"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4041.9,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_8",
+      "category": "xent_renewal",
+      "query": "Find the contract renewal discussion with Gamma Retail.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_403789cf3e4bd5aa3a2f07f8"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 3972.6,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_9",
+      "category": "xent_account_review",
+      "query": "Find the account review or business summary sent to Gamma Retail.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_8d285ecd4b34e015dc6a2f8e"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4334.2,
+      "error": null
+    },
+    {
+      "id": "v2_xent_ent_01GA_10",
+      "category": "xent_new_service",
+      "query": "Find any new service or project request submitted by Gamma Retail.",
+      "entity_id": null,
+      "expected": [
+        "sig:sig_df3c84b5238f518b5a119aa4",
+        "sig:sig_d4d73bdb8a99ca5594d7e31e"
+      ],
+      "first_rank": 1,
+      "pass_at": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "pass_at_nosf": {
+        "1": true,
+        "5": true,
+        "10": true,
+        "20": true,
+        "50": true,
+        "100": true
+      },
+      "sf_gain": {
+        "1": false,
+        "5": false,
+        "10": false,
+        "20": false,
+        "50": false,
+        "100": false
+      },
+      "latency_ms": 4495.8,
+      "error": null
+    }
+  ]
+}

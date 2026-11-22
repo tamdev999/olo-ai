@@ -1,0 +1,710 @@
+{
+  "summary": {
+    "config_a_failures_at_10": 30,
+    "classification_counts": {
+      "reranker_depth": 18,
+      "provenance_miss": 11,
+      "deep_rerank_needed": 1
+    },
+    "fixed_by_b": 7,
+    "fixed_by_c": 13,
+    "fixed_by_either": 13,
+    "still_failing_in_c": 17,
+    "category_patterns": {
+      "invoice_dispute": [
+        "reranker_depth"
+      ],
+      "delivery_all_changes": [
+        "deep_rerank_needed",
+        "provenance_miss"
+      ],
+      "delivery_voice": [
+        "provenance_miss"
+      ],
+      "delivery_commitments": [
+        "reranker_depth"
+      ],
+      "meeting_reschedule": [
+        "provenance_miss",
+        "reranker_depth"
+      ],
+      "meeting_voice": [
+        "reranker_depth"
+      ],
+      "relationship_service_issues": [
+        "reranker_depth"
+      ],
+      "multidoc_support_chain": [
+        "reranker_depth"
+      ],
+      "meeting_all": [
+        "provenance_miss"
+      ],
+      "multidoc_all_schedule_changes": [
+        "provenance_miss",
+        "reranker_depth"
+      ],
+      "invoice_structured": [
+        "provenance_miss"
+      ],
+      "relationship_payment_history": [
+        "reranker_depth"
+      ],
+      "relationship_incoming_emails": [
+        "reranker_depth"
+      ],
+      "xent_reschedule": [
+        "reranker_depth"
+      ],
+      "xent_invoice": [
+        "provenance_miss",
+        "reranker_depth"
+      ],
+      "xent_voice": [
+        "provenance_miss"
+      ]
+    }
+  },
+  "per_failure": [
+    {
+      "id": "v2_ent_01AC_inv_03",
+      "category": "invoice_dispute",
+      "query": "What was the original agreed price on the invoice that Acme Corp disputed?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected_sample": [
+        "sig:sig_878c09750cb1e9720801dd5c"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 17,
+      "rank_config_a": 15,
+      "rank_config_b": 17,
+      "rank_config_c": 17,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01AC_del_05",
+      "category": "delivery_all_changes",
+      "query": "Show me all schedule-change communications with Acme Corp.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected_sample": [
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_32dd54681afe36e86953ba8e",
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 2,
+      "rank_config_a": 64,
+      "rank_config_b": 2,
+      "rank_config_c": 2,
+      "fixed_by_b": true,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01AC_del_06",
+      "category": "delivery_voice",
+      "query": "Did Alice Chen discuss any upcoming delivery on a call?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected_sample": [
+        "sig:sig_d992bc383e81974213d7d74a"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 1,
+      "rank_config_a": -1,
+      "rank_config_b": 1,
+      "rank_config_c": 1,
+      "fixed_by_b": true,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01AC_del_08",
+      "category": "delivery_commitments",
+      "query": "What delivery commitments have we made to Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected_sample": [
+        "sig:sig_32dd54681afe36e86953ba8e",
+        "sig:sig_0a06499cd6677a99ccbfbd04"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 15,
+      "rank_config_a": 14,
+      "rank_config_b": 17,
+      "rank_config_c": 15,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": [
+        "sig:sig_32dd54681afe36e86953ba8e"
+      ]
+    },
+    {
+      "id": "v2_ent_01AC_mtg_02",
+      "category": "meeting_reschedule",
+      "query": "Did Alice Chen request to change a meeting date?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected_sample": [
+        "sig:sig_268e85fa1edb4737bd93f49c",
+        "sig:sig_d992bc383e81974213d7d74a",
+        "sig:sig_08e9ea787f62d5e743bf7288"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 6,
+      "rank_config_a": 13,
+      "rank_config_b": 13,
+      "rank_config_c": 6,
+      "fixed_by_b": false,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": [
+        "sig:sig_08e9ea787f62d5e743bf7288"
+      ]
+    },
+    {
+      "id": "v2_ent_01AC_mtg_07",
+      "category": "meeting_voice",
+      "query": "Did Alice Chen discuss a rescheduled meeting on a voice call?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected_sample": [
+        "sig:sig_d992bc383e81974213d7d74a"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 32,
+      "rank_config_a": -1,
+      "rank_config_b": 32,
+      "rank_config_c": 32,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01AC_rel_05",
+      "category": "relationship_service_issues",
+      "query": "Find recent service issues reported by Alice Chen.",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected_sample": [
+        "sig:sig_8e21db70a31f2d416d7ff7be",
+        "sig:sig_f46c15dcb9bfa4ba042c7b68",
+        "sig:sig_878c09750cb1e9720801dd5c"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 22,
+      "rank_config_a": 14,
+      "rank_config_b": 22,
+      "rank_config_c": 49,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01AC_con_05",
+      "category": "multidoc_support_chain",
+      "query": "What was the support escalation and resolution history for Acme Corp?",
+      "entity_id": "ent_01ACME000000000000000000",
+      "expected_sample": [
+        "sig:sig_301dacb64994f341dfbf333c",
+        "sig:sig_d1dde8ba81ad6cda551cdd6a"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 17,
+      "rank_config_a": 14,
+      "rank_config_b": 17,
+      "rank_config_c": 17,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01BE_del_05",
+      "category": "delivery_all_changes",
+      "query": "Show me all schedule-change communications with Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected_sample": [
+        "sig:sig_ca427e422d59ad023a7ebb1d",
+        "sig:sig_7f85f460aad67ec44e2f0458",
+        "sig:sig_ce5ba919011158bbedf5c26e"
+      ],
+      "classification": "deep_rerank_needed",
+      "targeted_rank": 53,
+      "rank_config_a": 78,
+      "rank_config_b": 83,
+      "rank_config_c": 53,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": [
+        "sig:sig_ce5ba919011158bbedf5c26e"
+      ]
+    },
+    {
+      "id": "v2_ent_01BE_mtg_01",
+      "category": "meeting_all",
+      "query": "Show me all meeting-related communications with Beta Tech.",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected_sample": [
+        "sig:sig_e881af72f646d6b9bf6717d1",
+        "sig:sig_722aa54bf87a3c8edf136c7d",
+        "sig:sig_cfba2f00a0839c0b95b414a1"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 1,
+      "rank_config_a": 18,
+      "rank_config_b": 22,
+      "rank_config_c": 3,
+      "fixed_by_b": false,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": [
+        "sig:sig_e881af72f646d6b9bf6717d1"
+      ]
+    },
+    {
+      "id": "v2_ent_01BE_mtg_02",
+      "category": "meeting_reschedule",
+      "query": "Did Bob Torres request to change a meeting date?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected_sample": [
+        "sig:sig_ca427e422d59ad023a7ebb1d",
+        "sig:sig_10e0726b1a473156d048ae8d",
+        "sig:sig_1fb3d3bc7528a1fd9d86a756"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 1,
+      "rank_config_a": 13,
+      "rank_config_b": 14,
+      "rank_config_c": 1,
+      "fixed_by_b": false,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": [
+        "sig:sig_1fb3d3bc7528a1fd9d86a756"
+      ]
+    },
+    {
+      "id": "v2_ent_01BE_mtg_07",
+      "category": "meeting_voice",
+      "query": "Did Bob Torres discuss a rescheduled meeting on a voice call?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected_sample": [
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 39,
+      "rank_config_a": -1,
+      "rank_config_b": 39,
+      "rank_config_c": 39,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01BE_con_06",
+      "category": "multidoc_all_schedule_changes",
+      "query": "What schedule changes were requested by Beta Tech this year?",
+      "entity_id": "ent_01BETA000000000000000000",
+      "expected_sample": [
+        "sig:sig_ca427e422d59ad023a7ebb1d",
+        "sig:sig_10e0726b1a473156d048ae8d",
+        "sig:sig_1fb3d3bc7528a1fd9d86a756"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 13,
+      "rank_config_a": -1,
+      "rank_config_b": 13,
+      "rank_config_c": 13,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_inv_03",
+      "category": "invoice_dispute",
+      "query": "What was the original agreed price on the invoice that Gamma Retail disputed?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_9315534b81d6b50bc304d55a"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 23,
+      "rank_config_a": 21,
+      "rank_config_b": 23,
+      "rank_config_c": 23,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_inv_04",
+      "category": "invoice_dispute",
+      "query": "What is the invoice ID number for the billing dispute with Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_9315534b81d6b50bc304d55a",
+        "sig:sig_f43d7d07925e5398024e61d1"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 22,
+      "rank_config_a": 15,
+      "rank_config_b": 22,
+      "rank_config_c": 22,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_inv_06",
+      "category": "invoice_structured",
+      "query": "What payment records exist for Gamma Retail in the payment system?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_c47a2ff2893985c5d47a624a"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 1,
+      "rank_config_a": -1,
+      "rank_config_b": 1,
+      "rank_config_c": 1,
+      "fixed_by_b": true,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_del_05",
+      "category": "delivery_all_changes",
+      "query": "Show me all schedule-change communications with Gamma Retail.",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_c85f02b177def59cd8b287f5",
+        "sig:sig_266aebd291567e3b16d4202c",
+        "sig:sig_55c373fd1e2fedaca5284fd8"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 2,
+      "rank_config_a": 71,
+      "rank_config_b": 2,
+      "rank_config_c": 2,
+      "fixed_by_b": true,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_del_08",
+      "category": "delivery_commitments",
+      "query": "What delivery commitments have we made to Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_266aebd291567e3b16d4202c",
+        "sig:sig_55c373fd1e2fedaca5284fd8"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 18,
+      "rank_config_a": 16,
+      "rank_config_b": 18,
+      "rank_config_c": 18,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_mtg_02",
+      "category": "meeting_reschedule",
+      "query": "Did Carla Osei request to change a meeting date?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_e12b03c837b2de0ac6dc47af",
+        "sig:sig_c85f02b177def59cd8b287f5",
+        "sig:sig_4474dfef32a4f6d68569154c"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 14,
+      "rank_config_a": 12,
+      "rank_config_b": 14,
+      "rank_config_c": 14,
+      "fixed_by_b": false,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_rel_04",
+      "category": "relationship_payment_history",
+      "query": "What is the payment history with Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_c47a2ff2893985c5d47a624a",
+        "sig:sig_7552c06c5598b53e11eec48a"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 14,
+      "rank_config_a": 14,
+      "rank_config_b": 14,
+      "rank_config_c": 14,
+      "fixed_by_b": false,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_rel_07",
+      "category": "relationship_incoming_emails",
+      "query": "What emails has Carla Osei sent to us in the past year?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_f9ac3b02fe7a9d87bca5b6c2",
+        "sig:sig_5d19a947f076bdc266445f69",
+        "sig:sig_9315534b81d6b50bc304d55a"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 37,
+      "rank_config_a": 15,
+      "rank_config_b": 37,
+      "rank_config_c": 37,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_con_05",
+      "category": "multidoc_support_chain",
+      "query": "What was the support escalation and resolution history for Gamma Retail?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_4a4b309fdcdd2a23745317d0",
+        "sig:sig_f2a337f17842b04c8ca1d748"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 17,
+      "rank_config_a": 13,
+      "rank_config_b": 17,
+      "rank_config_c": 17,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_ent_01GA_con_06",
+      "category": "multidoc_all_schedule_changes",
+      "query": "What schedule changes were requested by Gamma Retail this year?",
+      "entity_id": "ent_01GAMM000000000000000000",
+      "expected_sample": [
+        "sig:sig_e12b03c837b2de0ac6dc47af",
+        "sig:sig_c85f02b177def59cd8b287f5",
+        "sig:sig_4474dfef32a4f6d68569154c"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 9,
+      "rank_config_a": 19,
+      "rank_config_b": 9,
+      "rank_config_c": 9,
+      "fixed_by_b": true,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_xent_ent_01AC_1",
+      "category": "xent_reschedule",
+      "query": "Find the meeting rescheduling request from Alice Chen.",
+      "entity_id": null,
+      "expected_sample": [
+        "sig:sig_08e9ea787f62d5e743bf7288"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 11,
+      "rank_config_a": 11,
+      "rank_config_b": 11,
+      "rank_config_c": 11,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_xent_ent_01AC_2",
+      "category": "xent_invoice",
+      "query": "What invoice amount did Acme Corp dispute?",
+      "entity_id": null,
+      "expected_sample": [
+        "sig:sig_878c09750cb1e9720801dd5c"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 25,
+      "rank_config_a": 20,
+      "rank_config_b": 25,
+      "rank_config_c": 25,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_xent_ent_01AC_5",
+      "category": "xent_voice",
+      "query": "Find the voice call transcript about rescheduling with Acme Corp.",
+      "entity_id": null,
+      "expected_sample": [
+        "sig:sig_d992bc383e81974213d7d74a"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 1,
+      "rank_config_a": -1,
+      "rank_config_b": 1,
+      "rank_config_c": 1,
+      "fixed_by_b": true,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_xent_ent_01BE_1",
+      "category": "xent_reschedule",
+      "query": "Find the meeting rescheduling request from Bob Torres.",
+      "entity_id": null,
+      "expected_sample": [
+        "sig:sig_d85fa3aa4478d40bdcab278c"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 11,
+      "rank_config_a": 11,
+      "rank_config_b": 11,
+      "rank_config_c": 11,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_xent_ent_01BE_2",
+      "category": "xent_invoice",
+      "query": "What invoice amount did Beta Tech dispute?",
+      "entity_id": null,
+      "expected_sample": [
+        "sig:sig_7f5b418718dd44a4715e1d0f"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 9,
+      "rank_config_a": 11,
+      "rank_config_b": 11,
+      "rank_config_c": 9,
+      "fixed_by_b": false,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": [
+        "sig:sig_7f5b418718dd44a4715e1d0f"
+      ]
+    },
+    {
+      "id": "v2_xent_ent_01BE_5",
+      "category": "xent_voice",
+      "query": "Find the voice call transcript about rescheduling with Beta Tech.",
+      "entity_id": null,
+      "expected_sample": [
+        "sig:sig_ca427e422d59ad023a7ebb1d"
+      ],
+      "classification": "provenance_miss",
+      "targeted_rank": 1,
+      "rank_config_a": -1,
+      "rank_config_b": 1,
+      "rank_config_c": 1,
+      "fixed_by_b": true,
+      "fixed_by_c": true,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    },
+    {
+      "id": "v2_xent_ent_01GA_2",
+      "category": "xent_invoice",
+      "query": "What invoice amount did Gamma Retail dispute?",
+      "entity_id": null,
+      "expected_sample": [
+        "sig:sig_9315534b81d6b50bc304d55a"
+      ],
+      "classification": "reranker_depth",
+      "targeted_rank": 27,
+      "rank_config_a": 20,
+      "rank_config_b": 27,
+      "rank_config_c": 27,
+      "fixed_by_b": false,
+      "fixed_by_c": false,
+      "doc_exists_in_bank": null,
+      "doc_type": null,
+      "doc_has_sf": null,
+      "sf_found_doc_ids": []
+    }
+  ]
+}
