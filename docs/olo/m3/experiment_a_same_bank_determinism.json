@@ -1,0 +1,71 @@
+{
+  "description": "Same frozen bank, 3 repeated recall runs. Tests retrieval determinism.",
+  "runs": [
+    {
+      "run": 1,
+      "recall_at_10": {
+        "hits": 164,
+        "total": 201,
+        "pct": 0.8159203980099502
+      },
+      "recall_at_50": {
+        "hits": 193,
+        "total": 201,
+        "pct": 0.9601990049751243
+      },
+      "latency_ms": {
+        "p50": 1099.9,
+        "p95": 1476.4,
+        "max": 1641.8
+      },
+      "bank_id": "main-v1-granite",
+      "benchmark_hash": "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
+    },
+    {
+      "run": 2,
+      "recall_at_10": {
+        "hits": 164,
+        "total": 201,
+        "pct": 0.8159203980099502
+      },
+      "recall_at_50": {
+        "hits": 193,
+        "total": 201,
+        "pct": 0.9601990049751243
+      },
+      "latency_ms": {
+        "p50": 1313.5,
+        "p95": 1591.3,
+        "max": 1754.8
+      },
+      "bank_id": "main-v1-granite",
+      "benchmark_hash": "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
+    },
+    {
+      "run": 3,
+      "recall_at_10": {
+        "hits": 164,
+        "total": 201,
+        "pct": 0.8159203980099502
+      },
+      "recall_at_50": {
+        "hits": 193,
+        "total": 201,
+        "pct": 0.9601990049751243
+      },
+      "latency_ms": {
+        "p50": 1398.8,
+        "p95": 1684.8,
+        "max": 1808.8
+      },
+      "bank_id": "main-v1-granite",
+      "benchmark_hash": "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
+    }
+  ],
+  "conclusion": {
+    "pass_at_10_differences": 0,
+    "rank_differences": 0,
+    "result": "FULLY DETERMINISTIC: identical pass@10 and ranks across all 3 runs",
+    "explanation": "All retrieval steps use ONNX (embedding + reranker) with no LLM calls. Results are reproducible."
+  }
+}

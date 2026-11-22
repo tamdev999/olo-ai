@@ -1,0 +1,80 @@
+{
+  "description": "2 independent bank rebuilds from 385 source signals. Tests DeepSeek consolidation non-determinism.",
+  "source_signals": 385,
+  "source_db": "/root/gate_olo.db",
+  "llm": "deepseek-chat via api.deepseek.com",
+  "embedding_model": "ibm-granite/granite-embedding-97m-multilingual-r2 (int8 ONNX, CLS pooling)",
+  "reranker": "hindsight-ai/hs-rerank-1 (ONNX)",
+  "baseline_facts": {
+    "note": "current bank after gate run (gate tests added docs to main-v1-granite)",
+    "fact_count": 1269
+  },
+  "rebuilds": [
+    {
+      "rebuild": 1,
+      "fact_count": 1267,
+      "recall_at_10": {
+        "hits": 160,
+        "total": 201,
+        "pct": 0.7960199004975125
+      },
+      "recall_at_50": {
+        "hits": 192,
+        "total": 201,
+        "pct": 0.9552238805970149
+      },
+      "latency_ms": {
+        "p50": 1421.3,
+        "p95": 1694.6,
+        "max": 1813.6
+      },
+      "benchmark_hash": "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
+    },
+    {
+      "rebuild": 2,
+      "fact_count": 1213,
+      "recall_at_10": {
+        "hits": 171,
+        "total": 201,
+        "pct": 0.8507462686567164
+      },
+      "recall_at_50": {
+        "hits": 191,
+        "total": 201,
+        "pct": 0.9502487562189055
+      },
+      "latency_ms": {
+        "p50": 1473.5,
+        "p95": 1690.0,
+        "max": 1777.5
+      },
+      "benchmark_hash": "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
+    }
+  ],
+  "all_data_points": {
+    "previous_session_deploy_1": {
+      "facts": 1261,
+      "recall_at_10_hits": 163,
+      "note": "from summary handoff"
+    },
+    "previous_session_deploy_2": {
+      "facts": 1263,
+      "recall_at_10_hits": 164,
+      "note": "current bank before gate run"
+    },
+    "current_session_rebuild_1": {
+      "facts": 1267,
+      "recall_at_10_hits": 160
+    },
+    "current_session_rebuild_2": {
+      "facts": 1213,
+      "recall_at_10_hits": 171
+    }
+  },
+  "conclusion": {
+    "fact_count_range": "1213\u20131269 across 4 builds",
+    "recall_at_10_range": "160\u2013171/201 (79.6%\u201385.1%) across 4 builds",
+    "variation_magnitude": "\u00b111 questions from DeepSeek consolidation non-determinism",
+    "explanation": "DeepSeek produces different consolidation outputs on each run. Different observations/facts are created from the same 385 source signals. This explains the 163\u2013171 score variation in the live-bank configuration. The 182/201 (arm_b) result is NOT explained by this variation \u2014 it requires a different retrieval configuration (400 reranker candidates, include_source_facts, 16000 max_tokens)."
+  }
+}
