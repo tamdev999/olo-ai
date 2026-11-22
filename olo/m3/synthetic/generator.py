@@ -25,11 +25,23 @@ from pathlib import Path
 from typing import Optional
 
 # ── Seed for determinism ─────────────────────────────────────────────────────
-_RNG = random.Random(0xA1D3_B1BB)  # deterministic seed for Olo M3 PoC
+# IMPORTANT: _DEFAULT_SEED is a constant.  Do NOT use a module-level
+# random.Random singleton — each call to generate_timeline() must create
+# a fresh Random instance from this seed so repeated calls in the same
+# process produce identical corpora.  The historical singleton bug caused
+# the bank, benchmark hash, and scoring labels to come from three different
+# random timelines, invalidating 33/201 question labels (Opus audit §4.1).
+_DEFAULT_SEED: int = 0xA1D3_B1BB  # canonical seed for the standard corpus
+
+# Kept for backward compatibility only.  Deprecated: use generate_timeline(seed=…).
+_RNG = random.Random(_DEFAULT_SEED)
 
 
 def _rng() -> random.Random:
-    return _RNG
+    """Deprecated. Returns a fresh Random from the default seed.
+    Use generate_timeline(seed=...) instead.
+    """
+    return random.Random(_DEFAULT_SEED)
 
 
 # ── Entity definitions ────────────────────────────────────────────────────────
@@ -286,12 +298,22 @@ def _extract_temporal_ym(query: str) -> Optional[str]:
 def generate_timeline(
     months: int = 12,
     base_date: Optional[datetime] = None,
+    seed: Optional[int] = None,
 ) -> list[SyntheticSignal]:
     """Generate ~400 synthetic signals over *months* months.
 
     Deterministic — same output for the same seed/months/base_date.
+
+    ``seed`` controls random choices.  Pass ``None`` (default) to use
+    ``_DEFAULT_SEED``.  Pass an explicit seed to generate an independent
+    reproducible dataset for holdout benchmarks or variance studies.
+
+    A **fresh** ``random.Random(seed)`` is created on every call, so
+    repeated calls with the same seed always produce identical corpora.
+    (The historical module-global singleton advanced state between calls,
+    causing divergent corpora — Opus audit §4.1.)
     """
-    rng = _rng()
+    rng = random.Random(_DEFAULT_SEED if seed is None else seed)
     start = base_date or datetime(2026, 1, 1, tzinfo=UTC)
     end = start + timedelta(days=months * 30)
     signals: list[SyntheticSignal] = []
@@ -362,7 +384,7 @@ def _add_entity_signals(
         owner_name="Owner",
         date_orig=date_orig,
         date_new=date_new,
-        order_id=f"ORD-{ent.entity_id[:6].upper()}-001",
+        order_id=f"ORD-{ent.entity_id[6:10].upper()}-001",
         phone=ent.phone,
     )
     out.append(SyntheticSignal(
@@ -380,7 +402,9 @@ def _add_entity_signals(
 
     # P2 scenario: invoice dispute (email + Stripe record + QBO record)
     day_45 = start + timedelta(days=45)
-    invoice_id = f"INV-{ent.entity_id[:6].upper()}-2026-001"
+    # Use entity_id[6:10] (company abbrev: ACME/BETA/GAMM) not [:6]
+    # which yields "ent_01" for all three entities — a collision.
+    invoice_id = f"INV-{ent.entity_id[6:10].upper()}-2026-001"
     amount_agreed = round(rng.uniform(1500, 8000), 2)
     amount_charged = round(amount_agreed * 1.1, 2)  # 10% overcharge (the dispute)
     dispute_thread = f"thread_{ent.entity_id[:12]}_dispute"
@@ -890,3 +914,56 @@ def _benchmark_query_hash() -> str:
 def get_benchmark_hash() -> str:
     """Return the sha256 hash of the frozen benchmark question texts."""
     return _benchmark_query_hash()
+
+
+def corpus_fingerprint(signals: "list[SyntheticSignal]") -> str:
+    """Return a stable SHA-256 fingerprint of an authoritative signal corpus.
+
+    The fingerprint hashes a canonical representation of every signal's
+    identifier, content hash and kind — not human-readable fields that could
+    drift (subjects, emails) — so it can be compared across builds and stored
+    alongside benchmark results to detect corpus/label mismatches.
+
+    Usage
+    -----
+        tl = generate_timeline()
+        fp = corpus_fingerprint(tl)
+        # Store fp alongside the bank; refuse to benchmark when fp mismatches
+        # the label key's expected fingerprint.
+
+    Returns a hex-encoded SHA-256 string.
+    """
+    import hashlib as _hashlib
+    import json as _json
+    canon = _json.dumps(
+        sorted(
+            (
+                {
+                    "id": s.signal_id,
+                    "kind": s.kind,
+                    "entity_id": s.entity_id or "",
+                    # Hash the body text to represent content identity.
+                    # SyntheticSignal has body_text, not a pre-computed content_sha256.
+                    "content_sha256": _hashlib.sha256(
+                        (s.body_text or "").encode()
+                    ).hexdigest(),
+                }
+                for s in signals
+            ),
+            key=lambda d: d["id"],
+        ),
+        sort_keys=True,
+        ensure_ascii=True,
+    )
+    return _hashlib.sha256(canon.encode()).hexdigest()
+
+
+def corpus_fingerprint_from_seed(
+    seed: "Optional[int]" = None,
+    months: int = 12,
+) -> str:
+    """Return the corpus fingerprint for a given seed without storing signals.
+
+    Convenience wrapper for callers that only need the fingerprint.
+    """
+    return corpus_fingerprint(generate_timeline(months=months, seed=seed))

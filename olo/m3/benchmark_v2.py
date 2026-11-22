@@ -267,7 +267,7 @@ def _meeting_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[Benchm
         query=f"Show me all meeting-related communications with {ent.company}.",
         entity_id=ent.entity_id,
         expected_signal_ids=[reschedule_email, reschedule_trans, confirm_email,
-                              p4_meet_orig, p4_meet_corr] + cal_events[:5],
+                              p4_meet_orig, p4_meet_corr] + cal_events,
         category="meeting_all",
         description="Broad: all meeting communications",
     ))
@@ -309,7 +309,7 @@ def _meeting_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[Benchm
         id=_qid(ent, "mtg", 6),
         query=f"What calendar events have been created for {ent.company}?",
         entity_id=ent.entity_id,
-        expected_signal_ids=cal_events[:10],
+        expected_signal_ids=cal_events,
         category="meeting_calendar",
         description="Structured: calendar events",
     ))
@@ -401,7 +401,7 @@ def _relationship_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[B
         id=_qid(ent, "rel", 1),
         query=f"Find all emails from {ent.company} asking us to reschedule something.",
         entity_id=ent.entity_id,
-        expected_signal_ids=[_sig_id(f"email_reschedule_{ent.entity_id}")] + reschedule_fillers[:5],
+        expected_signal_ids=[_sig_id(f"email_reschedule_{ent.entity_id}")] + reschedule_fillers,
         category="relationship_reschedule",
         description="Filler: all reschedule request emails",
     ))
@@ -409,7 +409,7 @@ def _relationship_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[B
         id=_qid(ent, "rel", 2),
         query=f"Has {ent.company} ever filed a formal complaint?",
         entity_id=ent.entity_id,
-        expected_signal_ids=complaint_fillers[:8],
+        expected_signal_ids=complaint_fillers,
         category="relationship_complaint",
         description="Filler: complaint emails",
     ))
@@ -417,7 +417,7 @@ def _relationship_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[B
         id=_qid(ent, "rel", 3),
         query=f"Show me all commitments and confirmations we made to {ent.company}.",
         entity_id=ent.entity_id,
-        expected_signal_ids=commitment_fillers[:8] + [
+        expected_signal_ids=commitment_fillers + [
             _sig_id(f"email_confirm_orig_{ent.entity_id}"),
         ],
         category="relationship_commitment",
@@ -438,7 +438,7 @@ def _relationship_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[B
         id=_qid(ent, "rel", 5),
         query=f"Find recent service issues reported by {ent.display_name}.",
         entity_id=ent.entity_id,
-        expected_signal_ids=complaint_fillers[:5] + [_sig_id(f"email_dispute_{ent.entity_id}")],
+        expected_signal_ids=complaint_fillers + [_sig_id(f"email_dispute_{ent.entity_id}")],
         category="relationship_service_issues",
         description="Filler: service complaints",
     ))
@@ -463,7 +463,7 @@ def _relationship_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[B
             if s.entity_id == ent.entity_id
             and s.kind in ("email.received",)
             and s.source == "gmail_owner"
-        ][:10],
+        ],
         category="relationship_incoming_emails",
         description="Generic: inbound emails from contact",
     ))

@@ -23,7 +23,11 @@ from olo.m3.hindsight.client import (
 BANK_ID    = os.environ.get("HINDSIGHT_BANK_ID", "main-v1-granite")
 TOP_K_MAX  = 100
 K_TARGETS  = [1, 5, 10, 20, 50, 100]
-FROZEN_HASH = "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
+# Historical hash (pre-fix): generator RNG bug caused bank/hash/scorer to use 3 different
+# timelines, invalidating 33 question labels (Opus audit §4.1). Label truncations ([:N])
+# also reduced label coverage. Both defects are fixed; the hash is now stable.
+# OLD_FROZEN_HASH = "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
+FROZEN_HASH = "e9ac10c347caff427e28126bfc336be67d1316145a7f408a2702af7fb6b47ef5"
 OUT_DIR     = Path("/tmp/benchmark_results")
 OUT_DIR.mkdir(exist_ok=True)
 

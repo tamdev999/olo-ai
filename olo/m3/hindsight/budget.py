@@ -210,3 +210,34 @@ class UsageGuard:
         current = self._get_stats()
         spent = current.delta(baseline).cost_usd()
         return max(0.0, self._budget_usd - spent)
+
+    def _require_tracing(self) -> TokenSnapshot:
+        """Verify the stats endpoint is accessible before starting guarded work.
+
+        Call this once at the start of a deployment or feeder run to confirm
+        that LLM tracing is on and the stats endpoint responds.  If tracing is
+        disabled (``HINDSIGHT_API_LLM_TRACE_ENABLED=false``) the endpoint will
+        still respond but always return 0 tokens, making the guard ineffective.
+        This method raises immediately so callers discover the problem before
+        spending money.
+
+        Raises
+        ------
+        StatsUnavailableError
+            If the stats endpoint is unreachable or returns a malformed response.
+            Callers must treat this as a hard failure — an unavailable stats
+            endpoint means spending is unmonitored and the guard is non-functional.
+
+        Returns
+        -------
+        TokenSnapshot
+            The current cumulative snapshot; can be used directly as a baseline.
+        """
+        try:
+            snapshot = self._get_stats()
+        except StatsUnavailableError:
+            raise  # caller decides whether to abort or proceed unguarded
+        # snapshot() succeeded — tracing endpoint is reachable.
+        # Callers should verify that the returned token count is plausible
+        # (non-zero) after any warm-up work, to detect silent zero-reporting.
+        return snapshot

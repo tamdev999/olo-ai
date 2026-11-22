@@ -1,0 +1,1106 @@
+{
+ "evaluator_version": "v2.1",
+ "evaluator_provenance": "Opus independent audit 2026-11-22; adapted for repo",
+ "label_note": "v2 labels are INVALIDATED (Opus audit \u00a74.1: generator RNG bug caused bank, frozen hash, and scorer to use 3 different corpora). Kept as historical reference only. v2.1a is the corpus-aligned corrected baseline. v2.1b rules are PENDING BBC/Opus review before official use.",
+ "label_sizes": {
+  "v2.1a": 1128
+ },
+ "scores": {
+  "A_100_hist": {
+   "committed_pass@10": 164,
+   "note": "committed pass@10 uses the original frozen-hash labels (v2)",
+   "v2": {
+    "@1": 103,
+    "@5": 145,
+    "@10": 164,
+    "@20": 185,
+    "@50": 185
+   },
+   "v2.1a": {
+    "@1": 109,
+    "@5": 149,
+    "@10": 165,
+    "@20": 187,
+    "@50": 187
+   },
+   "v2.1b": {
+    "@1": 129,
+    "@5": 172,
+    "@10": 180,
+    "@20": 190,
+    "@50": 190
+   }
+  },
+  "B_400_hist": {
+   "committed_pass@10": 168,
+   "note": "committed pass@10 uses the original frozen-hash labels (v2)",
+   "v2": {
+    "@1": 103,
+    "@5": 149,
+    "@10": 168,
+    "@20": 191,
+    "@50": 191
+   },
+   "v2.1a": {
+    "@1": 111,
+    "@5": 152,
+    "@10": 173,
+    "@20": 194,
+    "@50": 194
+   },
+   "v2.1b": {
+    "@1": 134,
+    "@5": 175,
+    "@10": 188,
+    "@20": 198,
+    "@50": 198
+   }
+  },
+  "C_400_corrected": {
+   "committed_pass@10": 170,
+   "note": "committed pass@10 uses the original frozen-hash labels (v2)",
+   "v2": {
+    "@1": 98,
+    "@5": 148,
+    "@10": 170,
+    "@20": 194,
+    "@50": 194
+   },
+   "v2.1a": {
+    "@1": 98,
+    "@5": 148,
+    "@10": 170,
+    "@20": 194,
+    "@50": 194
+   },
+   "v2.1b": {
+    "@1": 118,
+    "@5": 171,
+    "@10": 185,
+    "@20": 198,
+    "@50": 198
+   }
+  }
+ },
+ "sibling_rules": {
+  "inv_03": "Any invoice-dispute email states a charged vs agreed price; 'the invoice that X disputed' is ambiguous in a corpus with many disputes",
+  "inv_04": "Every dispute email/call names an invoice ID",
+  "xent_2": "'What invoice amount did X dispute' \u2014 every dispute email/call states the amount",
+  "mtg_02": "Contact asked to change a meeting date: any reschedule-request email",
+  "con_06": "Schedule changes requested by X: any reschedule request",
+  "del_01": "Requested to reschedule a meeting or delivery: any reschedule request",
+  "xent_1": "'The meeting rescheduling request from <contact>' \u2014 every reschedule request qualifies",
+  "rel_02": "Formal complaint: any complaint email",
+  "rel_05": "Service issues reported: any complaint email",
+  "rel_07": "Emails the contact sent us: any received email of that entity",
+  "mtg_01": "All meeting-related communications: calendar events + meeting emails",
+  "mtg_06": "Calendar events created: any calendar.event.created"
+ },
+ "per_question_first_rank": {
+  "v2_ent_01AC_inv_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_inv_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_inv_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_inv_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_inv_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_inv_06": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01AC_inv_07": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_inv_08": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_inv_09": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_inv_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_del_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_del_02": {
+   "A_100_hist": 5,
+   "B_400_hist": 8,
+   "C_400_corrected": 6
+  },
+  "v2_ent_01AC_del_03": {
+   "A_100_hist": 2,
+   "B_400_hist": 2,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01AC_del_04": {
+   "A_100_hist": 3,
+   "B_400_hist": 4,
+   "C_400_corrected": 5
+  },
+  "v2_ent_01AC_del_05": {
+   "A_100_hist": -1,
+   "B_400_hist": 2,
+   "C_400_corrected": 7
+  },
+  "v2_ent_01AC_del_06": {
+   "A_100_hist": -1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_del_07": {
+   "A_100_hist": 2,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01AC_del_08": {
+   "A_100_hist": 13,
+   "B_400_hist": 17,
+   "C_400_corrected": 15
+  },
+  "v2_ent_01AC_mtg_01": {
+   "A_100_hist": 4,
+   "B_400_hist": 3,
+   "C_400_corrected": 11
+  },
+  "v2_ent_01AC_mtg_02": {
+   "A_100_hist": 4,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_mtg_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01AC_mtg_04": {
+   "A_100_hist": 2,
+   "B_400_hist": 3,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01AC_mtg_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01AC_mtg_06": {
+   "A_100_hist": 13,
+   "B_400_hist": 9,
+   "C_400_corrected": -1
+  },
+  "v2_ent_01AC_mtg_07": {
+   "A_100_hist": -1,
+   "B_400_hist": -1,
+   "C_400_corrected": 7
+  },
+  "v2_ent_01AC_mtg_08": {
+   "A_100_hist": 1,
+   "B_400_hist": 3,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01AC_hist_00": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_hist_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_hist_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_hist_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01AC_hist_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 5
+  },
+  "v2_ent_01AC_hist_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_hist_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_hist_07": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01AC_hist_08": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_hist_09": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_rel_01": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01AC_rel_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_rel_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_rel_04": {
+   "A_100_hist": 3,
+   "B_400_hist": 3,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01AC_rel_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_rel_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_rel_07": {
+   "A_100_hist": 3,
+   "B_400_hist": 9,
+   "C_400_corrected": 9
+  },
+  "v2_ent_01AC_rel_08": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01AC_rel_09": {
+   "A_100_hist": 6,
+   "B_400_hist": 7,
+   "C_400_corrected": 5
+  },
+  "v2_ent_01AC_rel_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_con_01": {
+   "A_100_hist": 4,
+   "B_400_hist": 4,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01AC_con_02": {
+   "A_100_hist": 2,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01AC_con_03": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 6
+  },
+  "v2_ent_01AC_con_04": {
+   "A_100_hist": 7,
+   "B_400_hist": 4,
+   "C_400_corrected": 9
+  },
+  "v2_ent_01AC_con_05": {
+   "A_100_hist": 16,
+   "B_400_hist": 17,
+   "C_400_corrected": 17
+  },
+  "v2_ent_01AC_con_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_dis_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_dis_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_dis_03": {
+   "A_100_hist": 3,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_dis_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01AC_dis_05": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01BE_inv_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_inv_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_inv_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_inv_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_inv_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_inv_06": {
+   "A_100_hist": -1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_inv_07": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_inv_08": {
+   "A_100_hist": -1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01BE_inv_09": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_inv_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_del_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_del_02": {
+   "A_100_hist": 3,
+   "B_400_hist": 4,
+   "C_400_corrected": 4
+  },
+  "v2_ent_01BE_del_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01BE_del_04": {
+   "A_100_hist": 2,
+   "B_400_hist": 3,
+   "C_400_corrected": 4
+  },
+  "v2_ent_01BE_del_05": {
+   "A_100_hist": 17,
+   "B_400_hist": -1,
+   "C_400_corrected": 14
+  },
+  "v2_ent_01BE_del_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 9,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_del_07": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01BE_del_08": {
+   "A_100_hist": 8,
+   "B_400_hist": 8,
+   "C_400_corrected": 11
+  },
+  "v2_ent_01BE_mtg_01": {
+   "A_100_hist": 2,
+   "B_400_hist": 2,
+   "C_400_corrected": 9
+  },
+  "v2_ent_01BE_mtg_02": {
+   "A_100_hist": 10,
+   "B_400_hist": 14,
+   "C_400_corrected": 12
+  },
+  "v2_ent_01BE_mtg_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01BE_mtg_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01BE_mtg_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01BE_mtg_06": {
+   "A_100_hist": -1,
+   "B_400_hist": 9,
+   "C_400_corrected": -1
+  },
+  "v2_ent_01BE_mtg_07": {
+   "A_100_hist": -1,
+   "B_400_hist": -1,
+   "C_400_corrected": 20
+  },
+  "v2_ent_01BE_mtg_08": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01BE_hist_00": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_03": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_07": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_08": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_hist_09": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_rel_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01BE_rel_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_rel_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_rel_04": {
+   "A_100_hist": -1,
+   "B_400_hist": 2,
+   "C_400_corrected": 4
+  },
+  "v2_ent_01BE_rel_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_rel_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_rel_07": {
+   "A_100_hist": 4,
+   "B_400_hist": 3,
+   "C_400_corrected": 6
+  },
+  "v2_ent_01BE_rel_08": {
+   "A_100_hist": 3,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_rel_09": {
+   "A_100_hist": 2,
+   "B_400_hist": 5,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01BE_rel_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_con_01": {
+   "A_100_hist": 2,
+   "B_400_hist": 4,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01BE_con_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01BE_con_03": {
+   "A_100_hist": 4,
+   "B_400_hist": 3,
+   "C_400_corrected": 4
+  },
+  "v2_ent_01BE_con_04": {
+   "A_100_hist": 10,
+   "B_400_hist": 7,
+   "C_400_corrected": 10
+  },
+  "v2_ent_01BE_con_05": {
+   "A_100_hist": 10,
+   "B_400_hist": 12,
+   "C_400_corrected": 14
+  },
+  "v2_ent_01BE_con_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_dis_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_dis_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_dis_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_dis_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01BE_dis_05": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_inv_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_inv_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_inv_03": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_inv_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_inv_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_inv_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_inv_07": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_inv_08": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_inv_09": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_inv_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_del_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_del_02": {
+   "A_100_hist": 5,
+   "B_400_hist": 6,
+   "C_400_corrected": 7
+  },
+  "v2_ent_01GA_del_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_del_04": {
+   "A_100_hist": 2,
+   "B_400_hist": 3,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01GA_del_05": {
+   "A_100_hist": 16,
+   "B_400_hist": 2,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01GA_del_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_del_07": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_del_08": {
+   "A_100_hist": 16,
+   "B_400_hist": 18,
+   "C_400_corrected": 17
+  },
+  "v2_ent_01GA_mtg_01": {
+   "A_100_hist": 11,
+   "B_400_hist": 3,
+   "C_400_corrected": 5
+  },
+  "v2_ent_01GA_mtg_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_mtg_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_mtg_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_mtg_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_mtg_06": {
+   "A_100_hist": 15,
+   "B_400_hist": 9,
+   "C_400_corrected": -1
+  },
+  "v2_ent_01GA_mtg_07": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01GA_mtg_08": {
+   "A_100_hist": 4,
+   "B_400_hist": 1,
+   "C_400_corrected": 4
+  },
+  "v2_ent_01GA_hist_00": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_hist_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_hist_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_hist_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_hist_04": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_hist_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_hist_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_hist_07": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_hist_08": {
+   "A_100_hist": 2,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_hist_09": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_rel_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_rel_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_rel_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_rel_04": {
+   "A_100_hist": -1,
+   "B_400_hist": 14,
+   "C_400_corrected": 9
+  },
+  "v2_ent_01GA_rel_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_rel_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_rel_07": {
+   "A_100_hist": 5,
+   "B_400_hist": 17,
+   "C_400_corrected": 16
+  },
+  "v2_ent_01GA_rel_08": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_rel_09": {
+   "A_100_hist": 3,
+   "B_400_hist": 7,
+   "C_400_corrected": 3
+  },
+  "v2_ent_01GA_rel_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_con_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 2
+  },
+  "v2_ent_01GA_con_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_con_03": {
+   "A_100_hist": 8,
+   "B_400_hist": 2,
+   "C_400_corrected": 13
+  },
+  "v2_ent_01GA_con_04": {
+   "A_100_hist": 3,
+   "B_400_hist": 6,
+   "C_400_corrected": 7
+  },
+  "v2_ent_01GA_con_05": {
+   "A_100_hist": 16,
+   "B_400_hist": 17,
+   "C_400_corrected": 18
+  },
+  "v2_ent_01GA_con_06": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_dis_01": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_dis_02": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_dis_03": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_dis_04": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_ent_01GA_dis_05": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01AC_1": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01AC_2": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01AC_3": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01AC_4": {
+   "A_100_hist": 5,
+   "B_400_hist": 9,
+   "C_400_corrected": 6
+  },
+  "v2_xent_ent_01AC_5": {
+   "A_100_hist": -1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01AC_6": {
+   "A_100_hist": 2,
+   "B_400_hist": 2,
+   "C_400_corrected": 3
+  },
+  "v2_xent_ent_01AC_7": {
+   "A_100_hist": 1,
+   "B_400_hist": 2,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01AC_8": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01AC_9": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01AC_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_1": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_2": {
+   "A_100_hist": 2,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_3": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_4": {
+   "A_100_hist": 6,
+   "B_400_hist": 12,
+   "C_400_corrected": 13
+  },
+  "v2_xent_ent_01BE_5": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_6": {
+   "A_100_hist": 2,
+   "B_400_hist": 2,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_7": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_8": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_9": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01BE_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01GA_1": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 2
+  },
+  "v2_xent_ent_01GA_2": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01GA_3": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01GA_4": {
+   "A_100_hist": 13,
+   "B_400_hist": 12,
+   "C_400_corrected": 10
+  },
+  "v2_xent_ent_01GA_5": {
+   "A_100_hist": -1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01GA_6": {
+   "A_100_hist": 3,
+   "B_400_hist": 4,
+   "C_400_corrected": 4
+  },
+  "v2_xent_ent_01GA_7": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01GA_8": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01GA_9": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  },
+  "v2_xent_ent_01GA_10": {
+   "A_100_hist": 1,
+   "B_400_hist": 1,
+   "C_400_corrected": 1
+  }
+ }
+}

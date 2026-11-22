@@ -52,6 +52,19 @@ def pg0_stop(
     return result.returncode == 0 or b"not running" in stderr_lower or b"no running" in stderr_lower
 
 
+class Pg0StillRunningError(RuntimeError):
+    """Raised when pg0_stop_and_clean cannot verify that PostgreSQL exited.
+
+    Per Opus audit: an unsuccessful stop must never be treated as success when
+    the cleanup would delete a live database.  ``pg0_stop_and_clean`` raises
+    this if ``pg0_stop`` returns False — meaning the postmaster may still be
+    alive — and the caller requested ``data_dir`` deletion.
+
+    It is always safe to wipe the socket directory (reconnectable) even on a
+    failed stop.  Deleting the data directory on a live instance is never safe.
+    """
+
+
 def pg0_stop_and_clean(
     *,
     instance_name: str,
@@ -63,20 +76,42 @@ def pg0_stop_and_clean(
 ) -> None:
     """Stop a pg0 instance and optionally remove its data/socket directories.
 
-    Per Opus's requirements: never delete instance files while the postmaster
-    is alive.  Stop first, verify exit, then clean up.
+    Per Opus audit §4.A: an unsuccessful stop must NEVER cause data deletion.
+    Stop is verified before any data-directory wipe.
 
     ``data_dir``   — wipe pg0 data directory (use for fresh restarts only;
                      never wipe during a crash-recovery test).
-    ``socket_dir`` — wipe Unix socket directory; always safe to remove and
-                     recreate between attempts.
+    ``socket_dir`` — wipe Unix socket directory; safe to remove and recreate
+                     between attempts even if stop partially failed.
+
+    Raises
+    ------
+    Pg0StillRunningError
+        If ``pg0_stop`` returns False (instance may still be alive) AND
+        ``data_dir`` deletion was requested.  Callers that only clean the
+        socket directory do not get this exception.
     """
-    pg0_stop(
+    stopped = pg0_stop(
         instance_name=instance_name,
         home_dir=home_dir,
         timeout_s=timeout_s,
         settle_s=settle_s,
     )
+
+    if not stopped and data_dir is not None:
+        # Refuse to delete a live database.  Wipe only the socket dir so the
+        # caller can retry starting on a fresh socket path.
+        if socket_dir is not None:
+            subprocess.run(
+                ["sudo", "-u", "olo_hs", "rm", "-rf", str(socket_dir)],
+                check=False, capture_output=True,
+            )
+        raise Pg0StillRunningError(
+            f"pg0_stop_and_clean: failed to verify that pg0 instance "
+            f"{instance_name!r} exited (HOME={home_dir}).  Refusing to "
+            f"delete data_dir={data_dir} while the postmaster may still be "
+            f"alive.  Socket directory was cleaned if provided."
+        )
 
     for target in filter(None, [socket_dir, data_dir]):
         subprocess.run(

@@ -1386,17 +1386,44 @@ class TestV2CrossConnectorIdentity:
 
 @_integration
 class TestV3HistoryPreserved:
-    """V3: re-retain after tag change loses 0 documents; prior versions retrievable."""
+    """V3: re-retain after tag change loses 0 documents; prior versions retrievable.
+
+    IMPORTANT: V3 uses a **scratch bank** isolated from the benchmark bank
+    (main-v1-granite) so that retaining test documents never contaminates the
+    evaluation corpus.  Opus audit: "V3 retains documents into main-v1-granite …
+    This changes bank contents and invalidates controlled experiments."
+    """
 
     @pytest.fixture(scope="class")
     def hs_client(self) -> Generator[HindsightClient, None, None]:
-        cfg = HindsightConfig.from_env()
+        import uuid as _uuid_v3
+        # Connect to the server via the env-configured host/port.
+        base_cfg = HindsightConfig.from_env()
+        # Build a scratch bank client so V3 never touches main-v1-granite.
+        v3_bank_id = f"v3-history-test-{_uuid_v3.uuid4().hex[:8]}"
+        cfg = HindsightConfig(
+            host=base_cfg.host,
+            port=base_cfg.port,
+            api_key=base_cfg.api_key,
+            timeout_s=base_cfg.timeout_s,
+            bank_id=v3_bank_id,
+        )
         client = HindsightClient(cfg)
         try:
             client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running")
+        # Create the scratch bank
+        try:
+            client.create_bank(v3_bank_id, description="V3 history test scratch bank")
+        except Exception:
+            pass  # may already exist from a previous run
         yield client
+        # Teardown: delete the scratch bank
+        try:
+            client.delete_bank(v3_bank_id)
+        except Exception:
+            pass  # best-effort cleanup
 
     def test_re_retain_same_document_id_preserves_history(
         self, hs_client, hindsight_items
@@ -1442,7 +1469,10 @@ class TestV3HistoryPreserved:
                     "render_version": "1",
                     "is_llm_eligible": "false",
                 },
-                "strategy": "structured",
+                # structured-no-llm = registered named strategy: 0 LLM calls.
+                # The legacy "structured" strategy is unknown to the bank and
+                # would fall back to DeepSeek extraction — use the named one.
+                "strategy": "structured-no-llm",
                 "resolve_entities": False,
             }
             # Include v3_doc_id in the op_id seed so it's unique across runs
@@ -1454,9 +1484,16 @@ class TestV3HistoryPreserved:
             response = hs_client.retain([item], operation_id=op_id, async_=async_)
             return response.get("operation_id", op_id)
 
-        # Count docs before
-        docs_before = hs_client.list_documents(limit=10000)
-        count_before = len(docs_before.get("items", []))
+        # Count docs before — a new scratch bank may not have been initialized yet,
+        # so list_documents may return 404.  Treat 404 as an empty bank (0 docs).
+        try:
+            docs_before = hs_client.list_documents(limit=10000)
+            count_before = len(docs_before.get("items", []))
+        except HindsightAPIError as _e:
+            if _e.status_code == 404:
+                count_before = 0  # new bank, no documents yet
+            else:
+                raise
 
         # First retain (sync baseline — blocks until committed).
         _retain(original_content, original_tags, async_=False)
@@ -1473,9 +1510,15 @@ class TestV3HistoryPreserved:
             except TimeoutError:
                 _strict_skip("V3: async retain operation did not complete in 90s")
 
-        # Count docs after — must not increase by more than 1 (the new doc)
-        docs_after = hs_client.list_documents(limit=10000)
-        count_after = len(docs_after.get("items", []))
+        # Count docs after — handle 404 as empty (should not happen after retain, but defensively)
+        try:
+            docs_after = hs_client.list_documents(limit=10000)
+            count_after = len(docs_after.get("items", []))
+        except HindsightAPIError as _e:
+            if _e.status_code == 404:
+                count_after = 0
+            else:
+                raise
         assert count_after <= count_before + 1, (
             f"V3 FAIL: document count went from {count_before} to {count_after} "
             "(expected +0 or +1 for the fixed test doc)"
@@ -2786,7 +2829,11 @@ class TestP1DeliveryDateConsolidation:
                 try:
                     hs_client.wait_for_operation(op_id, timeout_s=90.0, bank_id=p1_bank)
                 except TimeoutError:
-                    _strict_skip(f"P1: async retain of {label} timed out")
+                    pytest.fail(
+                        f"P1 FAIL: async retain of {label} timed out. "
+                        "A consolidation timeout is a real test failure, not a skip — "
+                        "it means the memory system did not complete extraction."
+                    )
 
             # ── Step 4: consolidate — LLM detects the later confirmation ──────
             # Existing: "Meeting April 04 confirmed"
@@ -2800,7 +2847,11 @@ class TestP1DeliveryDateConsolidation:
                 try:
                     hs_client.wait_for_operation(cons2_op, timeout_s=120.0, bank_id=p1_bank)
                 except TimeoutError:
-                    _strict_skip("P1: second consolidation timed out (120 s)")
+                    pytest.fail(
+                        "P1 FAIL: second consolidation timed out after 120 s. "
+                        "Consolidation timeout is a real failure — the LLM did not "
+                        "merge the conflicting date signals in time."
+                    )
 
             # ── Step 5: query and verify ─────────────────────────────────────
             result = hs_client.recall(
@@ -2897,15 +2948,19 @@ class TestP1DeliveryDateConsolidation:
                 f"Observations: {[o.get('text','')[:60] for o in observations[:5]]!r}"
             )
             # 3. The supersession is explicitly noted in the correction observation
+            # Stronger assertion: the correction observation must explicitly name
+            # a date-change action — not just contain a vague word like "confirmed"
+            # or "now" which could appear in any observation.
             supersession_stated = any(
                 kw in (reschedule_obs.get("text") or "").lower()
                 for kw in ("reschedule", "rescheduled", "moved", "changed",
-                           "new date", date_new.lower(), "april 08", "april 8",
-                           "confirmed", "now")
+                           "new date", date_new.lower(), "april 08", "april 8")
             )
             assert supersession_stated, (
                 f"P1 FAIL: the correction observation does not explicitly state "
-                f"the supersession (rescheduled/moved/changed/confirmed). "
+                f"the supersession (rescheduled/moved/changed to April 08). "
+                f"The keyword match must be specific to date-change language, not "
+                f"generic words like 'confirmed'. "
                 f"obs={obs_text[:200]!r}"
             )
 

@@ -262,7 +262,8 @@ HINDSIGHT_API_LLM_PROVIDER=${PROVIDER}
 HINDSIGHT_API_TENANT_EXTENSION_API_KEY=${BUSINESS_API_KEY}
 
 # C4: Per-business bank ID — a mis-routed client gets 404, not data.
-HINDSIGHT_API_DEFAULT_BANK_ID=${BANK_ID}
+# HINDSIGHT_API_DEFAULT_BANK_ID removed: silently ignored in v1.2.1 (bank_id is
+# passed per-request; Opus audit TestConfigValidity.test_removed_invalid_vars_absent){BANK_ID}
 
 HINDSIGHT_API_DECISION_MODEL_PROVIDER=none
 HINDSIGHT_API_MCP_ENABLED=false
