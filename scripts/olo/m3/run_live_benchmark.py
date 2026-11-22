@@ -27,7 +27,8 @@ K_TARGETS  = [1, 5, 10, 20, 50, 100]
 # timelines, invalidating 33 question labels (Opus audit §4.1). Label truncations ([:N])
 # also reduced label coverage. Both defects are fixed; the hash is now stable.
 # OLD_FROZEN_HASH = "e0cbbd985af2ca5a070751b1921f3c6c77d52b2013a3f0d52a40cf6ad98c7592"
-FROZEN_HASH = "e9ac10c347caff427e28126bfc336be67d1316145a7f408a2702af7fb6b47ef5"
+# PRE_P1_FIX_HASH = "e9ac10c347caff427e28126bfc336be67d1316145a7f408a2702af7fb6b47ef5"
+FROZEN_HASH = "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
 OUT_DIR     = Path("/tmp/benchmark_results")
 OUT_DIR.mkdir(exist_ok=True)
 
@@ -160,7 +161,7 @@ def run_benchmark() -> dict:
 
         # Retrieve actual result IDs for per-question record
         retrieved = []
-        for rank, hit in enumerate(result.get("results", [])[:20], 1):
+        for rank, hit in enumerate(result.get("results", [])[:100], 1):
             doc_id = hit.get("document_id", "") or ""
             retrieved.append({
                 "rank": rank,
@@ -179,7 +180,7 @@ def run_benchmark() -> dict:
             "first_rank": first_r,
             "pass_at": pass_at,
             "latency_ms": round(latency, 1),
-            "retrieved_top20": retrieved,
+            "retrieved_top100": retrieved,
             "error": None,
         })
 

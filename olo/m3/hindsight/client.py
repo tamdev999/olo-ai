@@ -203,13 +203,17 @@ def _request(
         )
     )
 
+    # Cap each attempt to the remaining overall budget so the total wall-clock
+    # time is bounded by cfg.timeout_s rather than _MAX_ATTEMPTS x cfg.timeout_s.
+    _overall_deadline = time.monotonic() + cfg.timeout_s
     first_exc: Optional[Exception] = None
     retry_count = 0
 
     for attempt in range(_MAX_ATTEMPTS):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with open_credentialed_url(req, timeout=cfg.timeout_s) as resp:
+            _remaining = max(0.5, _overall_deadline - time.monotonic())
+            with open_credentialed_url(req, timeout=min(cfg.timeout_s, _remaining)) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
 

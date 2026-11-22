@@ -137,6 +137,11 @@ _EMAIL_TEMPLATES = {
         "{date_orig}. Could we move it to {date_new} instead? Let me know if "
         "that works. Best, {name}"
     ),
+    "delivery_reschedule_request": (
+        "Hi there, I need to reschedule our delivery originally planned for "
+        "{date_orig}. Could we move it to {date_new} instead? Let me know if "
+        "that works. Best, {name}"
+    ),
     "invoice_dispute": (
         "Hello, I'm writing about invoice #{invoice_id}. We were charged "
         "${amount_charged:.2f} but according to our records the agreed price "
@@ -171,6 +176,16 @@ _TRANSCRIPT_TEMPLATES = {
         "I can confirm the delivery is now rescheduled for {date_new}. "
         "Customer: Perfect, thank you. My number is {phone} if you need to reach me. "
         "Agent: Got it. All confirmed. Have a great day."
+    ),
+    "meeting_change": (
+        "Agent: Hi, this is {owner_name} from Olo Business. "
+        "Customer: Hi, I'm calling about our scheduled meeting on {date_orig}. "
+        "I need to move it to {date_new} if at all possible. "
+        "Agent: Let me check availability. Yes, {date_new} works for us. "
+        "The meeting is now rescheduled to {date_new}. I'll send a calendar update. "
+        "Customer: Great, thank you so much. "
+        "Agent: Confirmed. Meeting rescheduled from {date_orig} to {date_new}. "
+        "Have a great day."
     ),
     "payment_dispute": (
         "Agent: {owner_name} speaking. "
@@ -358,7 +373,7 @@ def _add_entity_signals(
     date_new = (day_90 + timedelta(days=7)).strftime("%A %B %d")
 
     # Delivery reschedule email
-    reschedule_body = _EMAIL_TEMPLATES["reschedule_request"].format(
+    reschedule_body = _EMAIL_TEMPLATES["delivery_reschedule_request"].format(
         date_orig=date_orig,
         date_new=date_new,
         name=ent.display_name,
@@ -370,7 +385,7 @@ def _add_entity_signals(
         kind="email.received",
         occurred_at=day_90,
         entity_id=ent.entity_id,
-        subject=f"Need to reschedule our meeting — {ent.company}",
+        subject=f"Need to reschedule our delivery — {ent.company}",
         body_text=reschedule_body,
         metadata={"from": ent.email, "to": OWNER_EMAIL, "thread_id": reschedule_thread},
         tags=[f"src:gmail_owner", f"kind:email.received",
@@ -398,6 +413,26 @@ def _add_entity_signals(
         metadata={"phone": ent.phone, "duration_s": 180},
         tags=[f"src:voice_fixture", f"kind:call.transcript",
               f"ent:{ent.entity_id}", "dc:voice", _ym(day_92)],
+    ))
+    # Meeting reschedule voice transcript — semantically separate from P1 delivery scenario.
+    # Used by benchmark mtg_07: "Did {contact} discuss a rescheduled meeting on a voice call?"
+    day_93 = day_90 + timedelta(days=3)
+    meeting_transcript_body = _TRANSCRIPT_TEMPLATES["meeting_change"].format(
+        owner_name="Owner",
+        date_orig=date_orig,
+        date_new=date_new,
+    )
+    out.append(SyntheticSignal(
+        signal_id=_sig_id(f"transcript_meeting_reschedule_{ent.entity_id}"),
+        source="voice_fixture",
+        kind="call.transcript",
+        occurred_at=day_93,
+        entity_id=ent.entity_id,
+        subject=f"Call: meeting reschedule — {ent.company}",
+        body_text=meeting_transcript_body,
+        metadata={"phone": ent.phone, "duration_s": 150},
+        tags=[f"src:voice_fixture", f"kind:call.transcript",
+              f"ent:{ent.entity_id}", "dc:voice", _ym(day_93)],
     ))
 
     # P2 scenario: invoice dispute (email + Stripe record + QBO record)
@@ -599,7 +634,7 @@ def _add_entity_signals(
         kind="email.sent",
         occurred_at=day_91,
         entity_id=ent.entity_id,
-        subject=f"RE: Need to reschedule our meeting — {ent.company}",
+        subject=f"RE: Delivery for {date_orig} — {ent.company}",
         body_text=confirm_original_body,
         metadata={"from": OWNER_EMAIL, "to": ent.email, "thread_id": reschedule_thread},
         tags=[f"src:gmail_owner", f"kind:email.sent",

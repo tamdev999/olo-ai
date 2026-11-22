@@ -1,0 +1,57 @@
+{
+  "sweep_date": "2026-11-22",
+  "bank_id": "main-v1-granite",
+  "bank_facts": 1256,
+  "benchmark_hash": "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be",
+  "note": "Controlled sweep: same bank, same questions, same everything except RERANKER_MAX_CANDIDATES",
+  "results": [
+    {
+      "candidates": 100,
+      "recall_at_1": 103,
+      "recall_at_5": 147,
+      "recall_at_10": 168,
+      "recall_at_20": 189,
+      "recall_at_50": 192,
+      "latency_p50": 1437.5,
+      "latency_p95": 1706.2,
+      "errors": 0,
+      "benchmark_hash": "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
+    },
+    {
+      "candidates": 200,
+      "recall_at_1": 105,
+      "recall_at_5": 148,
+      "recall_at_10": 170,
+      "recall_at_20": 191,
+      "recall_at_50": 198,
+      "latency_p50": 2347.1,
+      "latency_p95": 2668.9,
+      "errors": 0,
+      "benchmark_hash": "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
+    },
+    {
+      "candidates": 300,
+      "recall_at_1": 104,
+      "recall_at_5": 148,
+      "recall_at_10": 170,
+      "recall_at_20": 191,
+      "recall_at_50": 198,
+      "latency_p50": 2957.0,
+      "latency_p95": 3376.6,
+      "errors": 0,
+      "benchmark_hash": "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
+    },
+    {
+      "candidates": 400,
+      "recall_at_1": 104,
+      "recall_at_5": 148,
+      "recall_at_10": 170,
+      "recall_at_20": 191,
+      "recall_at_50": 198,
+      "latency_p50": 3423.0,
+      "latency_p95": 3933.4,
+      "errors": 0,
+      "benchmark_hash": "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
+    }
+  ]
+}

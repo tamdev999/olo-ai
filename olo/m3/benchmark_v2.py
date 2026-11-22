@@ -252,6 +252,7 @@ def _meeting_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[Benchm
 
     reschedule_email = _sig_id(f"email_reschedule_{ent.entity_id}")
     reschedule_trans = _sig_id(f"transcript_reschedule_{ent.entity_id}")
+    meeting_trans    = _sig_id(f"transcript_meeting_reschedule_{ent.entity_id}")
     confirm_email    = _sig_id(f"email_confirm_orig_{ent.entity_id}")
     p4_meet_orig     = _sig_id(f"p4_meeting_orig_{ent.entity_id}")
     p4_meet_corr     = _sig_id(f"p4_meeting_corr_{ent.entity_id}")
@@ -317,7 +318,7 @@ def _meeting_questions(ent: SyntheticEntity, timeline_sigs: list) -> list[Benchm
         id=_qid(ent, "mtg", 7),
         query=f"Did {ent.display_name} discuss a rescheduled meeting on a voice call?",
         entity_id=ent.entity_id,
-        expected_signal_ids=[reschedule_trans],
+        expected_signal_ids=[meeting_trans],
         category="meeting_voice",
         description="Voice transcript: rescheduling discussion",
     ))

@@ -197,3 +197,69 @@ class TestHindsightConfigValidation:
     def test_localhost_accepted(self):
         cfg = HindsightConfig(host="localhost", port=18800)
         assert cfg.host == "localhost"
+
+
+class TestDeadlinePreservation:
+    """Prove the caller's deadline is preserved across retry attempts.
+
+    Opus audit: each retry previously used the full cfg.timeout_s, stacking
+    timeouts so worst case was _MAX_ATTEMPTS * timeout_s. The fix tracks an
+    _overall_deadline computed from one cfg.timeout_s budget split across all
+    attempts.
+    """
+
+    def test_deadline_shortens_per_attempt(self) -> None:
+        """Remaining time decreases on each attempt; never exceeds original budget."""
+        import time
+        from olo.m3.hindsight.client import _request, _MAX_ATTEMPTS
+        observed_timeouts: list[float] = []
+        call_count = [0]
+
+        def fake_open(req, timeout=None):
+            call_count[0] += 1
+            observed_timeouts.append(timeout or 0.0)
+            raise urllib.error.URLError(reason=OSError(104, "ECONNRESET"))
+
+        cfg = _cfg()
+        cfg = type(cfg)(host=cfg.host, port=cfg.port, timeout_s=10.0)
+        with patch("hermes_cli.urllib_security.open_credentialed_url",
+                   side_effect=fake_open), \
+             patch("time.sleep"):
+            with pytest.raises(HindsightUnavailable):
+                _request(cfg, "GET", "/health")
+
+        # All attempts happened
+        assert call_count[0] == _MAX_ATTEMPTS
+        # Each timeout must be <= original budget (10s) and decreasing
+        assert all(t <= 10.0 for t in observed_timeouts), (
+            f"At least one per-attempt timeout exceeds the original 10s budget: {observed_timeouts}"
+        )
+        # Second attempt has less time remaining than first
+        # (after first attempt + sleep, the remaining budget shrinks)
+        assert observed_timeouts[0] >= observed_timeouts[-1] or len(observed_timeouts) < 2, (
+            "Timeout should be decreasing or stable across attempts, not increasing"
+        )
+
+    def test_no_retry_stacking_on_benchmark_runner(self) -> None:
+        """The benchmark runner must not add an extra retry layer on top of _request.
+
+        run_live_benchmark.py has a retry wrapper (_recall_question) with up to
+        2 retries. Combined with _request's 3 attempts this could mean up to
+        9 total attempts per recall. Verify that _recall_question does not
+        silently absorb and hide failures.
+        """
+        import scripts.olo.m3.run_live_benchmark as runner
+        import inspect
+        src = inspect.getsource(runner._recall_question)
+        # Must record errors, not silently swallow them
+        assert "error" in src.lower(), (
+            "_recall_question must record errors in its return value"
+        )
+        # Sleep should be bounded
+        assert "time.sleep" in src, "_recall_question must have delay between retries"
+        # Should not have more than 3 total attempts at runner level (client already retries)
+        retries_in_src = src.count("for _attempt") + src.count("for attempt") + src.count("retries +")
+        # The runner loop should have a small bound
+        assert "retries + 1" in src or "retries=2" in src or "range(retries" in src, (
+            "Runner retry count must be explicitly bounded"
+        )

@@ -2741,7 +2741,7 @@ class TestP1DeliveryDateConsolidation:
           1. email_confirm_orig  → confirms the original April 04 meeting date.
           2. trigger_consolidation + wait_for_operation → initial observation
              "Meeting April 04 confirmed" is created.
-          3. email_reschedule   → requests to move the meeting to April 08.
+          3. email_reschedule   → requests to move the delivery to April 08.
           4. trigger_consolidation + wait_for_operation → LLM detects the
              contradiction and updates the observation to "April 08" with a
              history entry showing "April 04" as the prior value.
@@ -2855,7 +2855,7 @@ class TestP1DeliveryDateConsolidation:
 
             # ── Step 5: query and verify ─────────────────────────────────────
             result = hs_client.recall(
-                f"meeting reschedule {ent.company} April 2026",
+                f"delivery reschedule {ent.company} April 2026",
                 tag_groups=[
                     {"tags": [f"ent:{ent.entity_id}"], "match": "all_strict"},
                     {"tags": [ym_tag], "match": "any_strict"},

@@ -1,0 +1,26 @@
+{
+  "methodology": "temperature=0 retain/consolidation, concurrency=1, deterministic source order",
+  "builds": [
+    {
+      "build": 1,
+      "facts": 1256,
+      "at10": 170,
+      "at20": 191,
+      "at50": 198
+    },
+    {
+      "build": 2,
+      "at10": 168,
+      "at20": 189,
+      "at50": 192,
+      "latency_p50": 1437.5
+    },
+    {
+      "build": 3,
+      "at10": 168,
+      "at20": 189,
+      "at50": 192,
+      "latency_p50": 1437.5
+    }
+  ]
+}

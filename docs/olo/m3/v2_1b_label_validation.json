@@ -1,0 +1,60 @@
+{
+  "validation_date": "2026-11-22",
+  "note": "v2.1b label validation \u2014 post P1 generator fix",
+  "rules": {
+    "inv_03": {
+      "verdict": "VALID \u2014 every dispute email names the invoice ID in subject/body. The question admits any dispute email since all share the invoice ID.",
+      "question": "What is the invoice ID number for the billing dispute with Acme Corp?"
+    },
+    "inv_04": {
+      "verdict": "VALID \u2014 every dispute email body states both amount_charged and amount_agreed. All are valid answers to 'original agreed price'.",
+      "question": "What was the original agreed price on the invoice that Acme Corp disputed?"
+    },
+    "xent_2": {
+      "verdict": "VALID \u2014 all dispute emails contain the disputed amount in body.",
+      "question": "What invoice amount did [contact] dispute?"
+    },
+    "mtg_02": {
+      "verdict": "VALID \u2014 after P1 fix, email_reschedule says 'Need to reschedule our delivery'. BUT this rule credits DELIVERY reschedule emails for a MEETING question. REVIEW NEEDED.",
+      "question": "Did [contact] request to change a meeting date?"
+    },
+    "con_06": {
+      "verdict": "VALID \u2014 'schedule changes' admits both meeting and delivery reschedule requests.",
+      "question": "What schedule changes were requested by [company] this year?"
+    },
+    "del_01": {
+      "verdict": "VALID \u2014 question explicitly asks about meeting OR delivery; any reschedule qualifies.",
+      "question": "Did [contact] request to reschedule a meeting or delivery?"
+    },
+    "xent_1": {
+      "verdict": "PARTIALLY VALID \u2014 after P1 fix, reschedule emails are about DELIVERY, not meetings. 'meeting rescheduling request' should credit meeting-specific requests only. LABEL SHOULD BE RESTRICTED to emails.received with meeting context.",
+      "question": "Find the meeting rescheduling request from [contact]"
+    },
+    "rel_02": {
+      "verdict": "VALID \u2014 a 'formal complaint' in this corpus is any email with 'Formal Complaint' subject. All qualifying emails are formal complaints.",
+      "question": "Has [company] filed a formal complaint?"
+    },
+    "rel_05": {
+      "verdict": "VALID \u2014 'service issues' maps to complaint emails in this corpus.",
+      "question": "Find recent service issues reported by [contact]"
+    },
+    "rel_07": {
+      "verdict": "VALID \u2014 all email.received are emails sent BY the contact TO us.",
+      "question": "What emails has [contact] sent to us in the past year?"
+    },
+    "mtg_01": {
+      "verdict": "PARTIALLY VALID \u2014 after P1 fix, reschedule emails say 'delivery' not 'meeting'. The rule may credit delivery-related emails for a meeting question. LABEL SHOULD BE RESTRICTED to calendar + meeting-subject emails only.",
+      "question": "Show me all meeting-related communications with [company]"
+    },
+    "mtg_06": {
+      "verdict": "VALID \u2014 all calendar events are calendar events.",
+      "question": "What calendar events have been created for [company]?"
+    }
+  },
+  "issues": [
+    "mtg_02",
+    "xent_1",
+    "mtg_01"
+  ],
+  "recommendation": "Rules mtg_02 and xent_1 may credit delivery-reschedule emails for meeting questions. After the P1 fix, email_reschedule is about delivery not meetings. These rules need corpus-aware restriction OR the questions should be flagged ambiguous."
+}
