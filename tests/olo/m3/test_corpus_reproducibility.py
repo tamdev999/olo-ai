@@ -131,6 +131,58 @@ class TestDeterministicBuilds:
             "entity IDs, body text, or signal IDs changed unexpectedly."
         )
 
+    def test_full_item_fingerprint_stable(self, tmp_path: Path) -> None:
+        """full_item_fingerprint must be identical across three fresh builds."""
+        from olo.m3.feeder import full_item_fingerprint
+
+        fps = []
+        for i in range(3):
+            _, items = _build(tmp_path, f"fip{i}")
+            fps.append(full_item_fingerprint(items))
+
+        assert fps[0] == fps[1] == fps[2], (
+            f"Full-item fingerprint not stable: {fps[0][:16]}, {fps[1][:16]}, {fps[2][:16]}"
+        )
+
+    def test_full_item_fingerprint_changes_on_context_mutation(self, tmp_path: Path) -> None:
+        """full_item_fingerprint must change when a context string is mutated."""
+        import copy
+        from olo.m3.feeder import full_item_fingerprint
+
+        _, items = _build(tmp_path, "fipm_ctx")
+        fip_orig = full_item_fingerprint(items)
+        mutated = copy.deepcopy(items)
+        mutated[0]["context"] = "TAMPERED CONTEXT"
+        assert full_item_fingerprint(mutated) != fip_orig, (
+            "Full-item fingerprint must change when context string is mutated"
+        )
+
+    def test_full_item_fingerprint_changes_on_entity_link_change(self, tmp_path: Path) -> None:
+        """full_item_fingerprint must change when an entity link is changed."""
+        import copy
+        from olo.m3.feeder import full_item_fingerprint
+
+        _, items = _build(tmp_path, "fipm_ent")
+        fip_orig = full_item_fingerprint(items)
+        mutated = copy.deepcopy(items)
+        mutated[0]["entities"] = [{"text": "cid_different", "type": "person"}]
+        assert full_item_fingerprint(mutated) != fip_orig, (
+            "Full-item fingerprint must change when entity link is changed"
+        )
+
+    def test_full_item_fingerprint_changes_on_tag_change(self, tmp_path: Path) -> None:
+        """full_item_fingerprint must change when a tag is added."""
+        import copy
+        from olo.m3.feeder import full_item_fingerprint
+
+        _, items = _build(tmp_path, "fipm_tag")
+        fip_orig = full_item_fingerprint(items)
+        mutated = copy.deepcopy(items)
+        mutated[0]["tags"] = mutated[0].get("tags", []) + ["extra:injected"]
+        assert full_item_fingerprint(mutated) != fip_orig, (
+            "Full-item fingerprint must change when a tag is added"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 2. entity_metadata populated with display names

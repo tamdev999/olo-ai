@@ -151,6 +151,8 @@ def build_hindsight_items(
     source: str = "hindsight_gate",
     *,
     raise_on_missing_blob: bool = True,
+    include_entity_links: bool = True,
+    include_name_enrichment: bool = True,
 ) -> list[dict]:
     """Build Hindsight retain items from olo.db signals + blobs.
 
@@ -160,6 +162,12 @@ def build_hindsight_items(
         raise_on_missing_blob: If True (default), raise FeedError when a blob is
                                absent or its sha256 doesn't match; set False only
                                for unit-testing the error path.
+        include_entity_links:  C3 ablation: if False, suppress entity links on all
+                               items (entities = []).  Isolates the entity-link
+                               contribution from name-enrichment contribution.
+        include_name_enrichment: C3 ablation: if False, omit display_name/company
+                               from context strings.  Isolates the name-context
+                               contribution from entity-link contribution.
 
     Returns:
         A list of Hindsight retain-item dicts, one per signal in olo.db.
@@ -316,9 +324,15 @@ def build_hindsight_items(
             _fallback_id = resolve_primary_entity_id_from_payload(doc_kind, payload)
             display_name, company = _get_entity_meta(_fallback_id, entity_cache)
 
+        # C3 ablation: suppress name enrichment when requested.
+        if not include_name_enrichment:
+            display_name = ""
+            company = ""
+
         # Entity link: canonical contact_id from CRM lookup.
         # Intentionally NOT using ent: tags or customer_name from payload.
-        if contact_id:
+        # C3 ablation: suppress entity links when requested.
+        if contact_id and include_entity_links:
             item["entities"] = [{"text": contact_id, "type": "person"}]
 
         # Map signal kinds to human-readable source descriptors
@@ -397,6 +411,50 @@ def build_hindsight_items(
             )
 
     return items
+
+
+def full_item_fingerprint(items: list[dict]) -> str:
+    """SHA-256 fingerprint over ALL Hindsight retain-item fields.
+
+    Covers document_id, body content, context string, entity links (type+text),
+    recall tags, and retain strategy.  Ordering is normalised where the API
+    treats order as semantically irrelevant (entities list, tags list).
+
+    This fingerprint detects differences in context enrichment and entity links
+    that the evidence-only corpus fingerprint (body-text + doc_id) does not:
+
+    - Corpus fingerprint stable   → body content and document IDs unchanged.
+    - Full-item fingerprint differs → context strings or entity links changed.
+
+    Example differences captured:
+        f99c5dd3a6:  entities=ULID, context="Email received · Alice Chen · Subject"
+        98a1e9ebd9:  entities=ULID (via ent: tag), same context (crm_tag path)
+        e20e72fda8:  entities=cid_..., context="Email received · Alice Chen (Acme Corp) · Subject"
+
+    Returns a 64-character hex SHA-256 string.
+    """
+    import json as _json
+    canon_items = []
+    for item in sorted(items, key=lambda i: i.get("document_id", "")):
+        entities_sorted = sorted(
+            [
+                {"text": e.get("text", ""), "type": e.get("type", "")}
+                for e in (item.get("entities") or [])
+            ],
+            key=lambda e: (e["text"], e["type"]),
+        )
+        canon_items.append({
+            "document_id": item.get("document_id", ""),
+            "content_sha256": (item.get("metadata") or {}).get("content_sha256", ""),
+            "context": item.get("context", ""),
+            "entities": entities_sorted,
+            "tags": sorted(item.get("tags") or []),
+            "strategy": item.get("strategy", ""),
+            "kind": (item.get("metadata") or {}).get("kind", ""),
+        })
+    canon = _json.dumps(canon_items, sort_keys=True, ensure_ascii=True,
+                        separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
 def populate_olo_db(

@@ -1,0 +1,29 @@
+{
+  "D": {
+    "links": true,
+    "names": true,
+    "bank_fp": "35a96ee5a6d39a4c",
+    "cases": {
+      "delivery_voice": {
+        "rank": 1,
+        "pass": true
+      },
+      "meeting_voice": {
+        "rank": 1,
+        "pass": true
+      },
+      "xent_voice": {
+        "rank": 1,
+        "pass": true
+      },
+      "email_dispute": {
+        "rank": 2,
+        "pass": true
+      },
+      "cross_customer": {
+        "rank": -1,
+        "pass": true
+      }
+    }
+  }
+}

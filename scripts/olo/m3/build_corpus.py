@@ -245,6 +245,12 @@ def build_corpus(
     item_fp_data = json.dumps(fingerprint_rows, separators=(",", ":"))
     item_fingerprint = hashlib.sha256(item_fp_data.encode()).hexdigest()
 
+    # Full-item fingerprint: covers context, entity links and tags in addition
+    # to document IDs and body hashes.  Detects context-enrichment and entity-
+    # link changes that the body-only item_fingerprint cannot.
+    from olo.m3.feeder import full_item_fingerprint as _full_fp
+    full_fingerprint = _full_fp(items)
+
     # --- Step 7: Identity and context coverage ---
     with_name = sum(
         1 for i in items
@@ -298,6 +304,7 @@ def build_corpus(
             "item_count": len(items),
             "fingerprint": expected_fp,
             "item_fingerprint": item_fingerprint,
+            "full_item_fingerprint": full_fingerprint,
             "benchmark_hash": expected_bh,
             "kind_counts": kind_counts,
         },
@@ -362,8 +369,9 @@ def main() -> int:
         json.dump(manifest, f, indent=2)
     print(f"\nBuild manifest written to: {out_path}")
     print(
-        f"\nCorpus fingerprint: {manifest['corpus']['fingerprint']}\n"
-        f"Item fingerprint:   {manifest['corpus']['item_fingerprint']}"
+        f"\nCorpus fingerprint:    {manifest['corpus']['fingerprint']}\n"
+        f"Item fingerprint:      {manifest['corpus']['item_fingerprint']}\n"
+        f"Full-item fingerprint: {manifest['corpus']['full_item_fingerprint']}"
     )
     print("\nCorpus built successfully.")
     return 0
