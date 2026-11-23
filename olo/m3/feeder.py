@@ -307,6 +307,13 @@ def build_hindsight_items(
             entity_id = resolve_primary_entity_id_from_payload(doc_kind, payload)
         display_name, company = _get_entity_meta(entity_id, entity_cache)
 
+        # Update the entities field to use the resolved entity_id.
+        # payload.get("entity_id") may be absent (production adapters and the
+        # production populate_olo_db do not store it); the entity_id variable is
+        # now reliably resolved from participant data above.
+        if entity_id:
+            item["entities"] = [{"text": entity_id, "type": "person"}]
+
         # Map signal kinds to human-readable source descriptors
         _KIND_DESCRIPTORS: dict[str, str] = {
             "email.received":           "Email received",
@@ -415,6 +422,15 @@ def populate_olo_db(
     def _flush(batch: list, cursor: str) -> None:
         nonlocal last_cursor
         ingest_batch(source, run_id, tuple(batch), cursor, last_cursor, conn)
+        # Extract entity contacts via the production path, same as run_source()
+        # in runner.py.  Best-effort: entity extraction failure does not abort
+        # corpus build.  Populates entity_metadata so build_hindsight_items can
+        # enrich context strings with contact names and company names.
+        try:
+            from olo.adapters.entity_extractor import upsert_entities
+            upsert_entities(tuple(batch), source, conn)
+        except Exception:
+            pass  # entity extraction is enrichment, not critical path
         last_cursor = cursor
 
     for sig in timeline:
@@ -438,6 +454,31 @@ def populate_olo_db(
         is_llm = sig.is_llm_eligible
         strategy = PROSE_STRATEGY if is_llm else STRUCTURED_STRATEGY
 
+        # Extract production-compatible participant data from sig.metadata so the
+        # entity extractor (upsert_entities → extract_entities) can populate
+        # entity_metadata with display names.  Production adapters (Gmail, Calendar)
+        # do NOT set entity_id in the payload; they store participant data in
+        # headers/attendees and let the feeder resolve the entity ID from that.
+        # Synthetic signals follow the same convention: participant data lives in
+        # the metadata dict under the production-compatible key structure.
+        _meta = sig.metadata or {}
+        _part_data: dict = {}
+        if sig.kind in ("email.received", "email.sent"):
+            # Gmail adapter output: payload["headers"]["from"/"to"] = [{name, email}]
+            if "headers" in _meta:
+                _part_data["headers"] = _meta["headers"]
+        elif sig.kind in (
+            "calendar.event.changed", "calendar.event.cancelled",
+            "calendar.event.created", "calendar.event.updated",
+        ):
+            # Calendar adapter output: payload["organizer_email"], payload["attendees"]
+            for _cal_f in (
+                "organizer_email", "organizer_display_name",
+                "organizer_self", "attendees",
+            ):
+                if _cal_f in _meta:
+                    _part_data[_cal_f] = _meta[_cal_f]
+
         ns = NormalizedSignal(
             source=source,
             external_id=sig.signal_id,
@@ -455,10 +496,17 @@ def populate_olo_db(
                 "source": sig.source,
                 "kind": sig.kind,
                 "content_sha256": sha256,
-                "entity_id": sig.entity_id,
+                # entity_id is intentionally NOT stored in the payload.  Production
+                # Gmail/Calendar adapters never set it; build_hindsight_items resolves
+                # it from participant data via resolve_primary_entity_id_from_payload,
+                # then looks it up in entity_metadata for context enrichment.
+                # Storing the synthetic ULID entity_id here would cause a lookup miss
+                # because entity_metadata is keyed by SHA-256-of-email IDs (the
+                # production format used by upsert_entities).
                 "tags": tags_with_ym,  # includes ym: tag
                 "is_llm_eligible": is_llm,
                 "strategy": strategy,
+                **_part_data,  # headers, organizer_*, attendees
             },
             blobs=(blob,),
         )

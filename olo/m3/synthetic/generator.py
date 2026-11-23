@@ -91,8 +91,9 @@ ENTITIES = [
     ),
 ]
 
-# Owner / business email (never sent to LLM as source of truth)
+# Owner / business email and display name (never sent to LLM as source of truth)
 OWNER_EMAIL = "owner@olo-business.example"
+OWNER_DISPLAY_NAME = "Owner"
 
 
 # ── Signal dataclass ──────────────────────────────────────────────────────────
@@ -387,7 +388,13 @@ def _add_entity_signals(
         entity_id=ent.entity_id,
         subject=f"Need to reschedule our delivery — {ent.company}",
         body_text=reschedule_body,
-        metadata={"from": ent.email, "to": OWNER_EMAIL, "thread_id": reschedule_thread},
+        metadata={
+            "headers": {
+                "from": [{"name": ent.display_name, "email": ent.email}],
+                "to": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+            },
+            "thread_id": reschedule_thread,
+        },
         tags=[f"src:gmail_owner", f"kind:email.received",
               f"ent:{ent.entity_id}", f"thread:{reschedule_thread}",
               "dc:gmail_restricted", _ym(day_90)],
@@ -459,8 +466,14 @@ def _add_entity_signals(
         entity_id=ent.entity_id,
         subject=f"RE: Invoice {invoice_id} — Billing Discrepancy",
         body_text=dispute_body,
-        metadata={"from": ent.email, "to": OWNER_EMAIL,
-                  "thread_id": dispute_thread, "invoice_id": invoice_id},
+        metadata={
+            "headers": {
+                "from": [{"name": ent.display_name, "email": ent.email}],
+                "to": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+            },
+            "thread_id": dispute_thread,
+            "invoice_id": invoice_id,
+        },
         tags=[f"src:gmail_owner", f"kind:email.received",
               f"ent:{ent.entity_id}", f"invoice:{invoice_id}",
               f"thread:{dispute_thread}", "dc:gmail_restricted", _ym(day_45)],
@@ -479,6 +492,8 @@ def _add_entity_signals(
         metadata={
             "invoice_id": invoice_id,
             "customer_id": ent.stripe_customer_id,
+            "customer_email": ent.email,
+            "customer_name": ent.display_name,
             "amount_due": amount_charged,
             "currency": "usd",
             "status": "open",
@@ -501,6 +516,8 @@ def _add_entity_signals(
         metadata={
             "invoice_id": invoice_id,
             "customer_id": ent.qbo_customer_id,
+            "customer_email": ent.email,
+            "customer_name": ent.display_name,
             "balance": amount_charged,
             "agreed_amount": amount_agreed,
             "status": "open",
@@ -562,7 +579,12 @@ def _add_entity_signals(
             f"Hi, just confirming our meeting is scheduled for {_p4_date_orig}. "
             f"Please add it to your calendar. Looking forward to it. {ent.display_name}"
         ),
-        metadata={"from": ent.email, "to": OWNER_EMAIL},
+        metadata={
+            "headers": {
+                "from": [{"name": ent.display_name, "email": ent.email}],
+                "to": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+            },
+        },
         tags=[f"src:gmail_owner", f"kind:email.received",
               f"ent:{ent.entity_id}", "dc:gmail_restricted", _ym(day_p4_1_orig)],
     ))
@@ -578,7 +600,12 @@ def _add_entity_signals(
             f"was incorrect. The confirmed date is {_p4_date_corr}. "
             f"Please update your calendar. Sorry for the confusion. {ent.display_name}"
         ),
-        metadata={"from": ent.email, "to": OWNER_EMAIL},
+        metadata={
+            "headers": {
+                "from": [{"name": ent.display_name, "email": ent.email}],
+                "to": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+            },
+        },
         tags=[f"src:gmail_owner", f"kind:email.received",
               f"ent:{ent.entity_id}", "dc:gmail_restricted", _ym(day_p4_1_corr)],
     ))
@@ -599,7 +626,12 @@ def _add_entity_signals(
             f"Dear {ent.display_name}, I can confirm your order will be "
             f"delivered by {_p4_del_orig}. This is our committed timeline. — Owner"
         ),
-        metadata={"from": OWNER_EMAIL, "to": ent.email},
+        metadata={
+            "headers": {
+                "from": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+                "to": [{"name": ent.display_name, "email": ent.email}],
+            },
+        },
         tags=[f"src:gmail_owner", f"kind:email.sent",
               f"ent:{ent.entity_id}", "dc:gmail_restricted", _ym(day_p4_2_orig)],
     ))
@@ -616,7 +648,12 @@ def _add_entity_signals(
             f"The revised confirmed delivery date is {_p4_del_corr}. "
             f"I apologise for the change. — Owner"
         ),
-        metadata={"from": OWNER_EMAIL, "to": ent.email},
+        metadata={
+            "headers": {
+                "from": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+                "to": [{"name": ent.display_name, "email": ent.email}],
+            },
+        },
         tags=[f"src:gmail_owner", f"kind:email.sent",
               f"ent:{ent.entity_id}", "dc:gmail_restricted", _ym(day_p4_2_corr)],
     ))
@@ -636,7 +673,13 @@ def _add_entity_signals(
         entity_id=ent.entity_id,
         subject=f"RE: Delivery for {date_orig} — {ent.company}",
         body_text=confirm_original_body,
-        metadata={"from": OWNER_EMAIL, "to": ent.email, "thread_id": reschedule_thread},
+        metadata={
+            "headers": {
+                "from": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+                "to": [{"name": ent.display_name, "email": ent.email}],
+            },
+            "thread_id": reschedule_thread,
+        },
         tags=[f"src:gmail_owner", f"kind:email.sent",
               f"ent:{ent.entity_id}", f"thread:{reschedule_thread}",
               "dc:gmail_restricted", _ym(day_91)],
@@ -663,8 +706,16 @@ def _add_entity_signals(
             body_text=ev_body,
             metadata={
                 "event_id": cal_id,
-                "organizer": OWNER_EMAIL,
-                "attendee": ent.email,
+                "organizer_email": OWNER_EMAIL,
+                "organizer_display_name": OWNER_DISPLAY_NAME,
+                "organizer_self": True,
+                "attendees": [{
+                    "email": ent.email,
+                    "display_name": ent.display_name,
+                    "response_status": "accepted",
+                    "organizer": False,
+                    "self": False,
+                }],
                 "start": ev_day.isoformat(),
                 "duration_minutes": ev_duration,
             },
@@ -704,15 +755,26 @@ def _add_entity_signals(
             body = f"Hi {ent.display_name}, please see my previous message. Owner"
 
         thread = f"thread_{ent.entity_id[:8]}_{i:03d}"
+        _email_kind = rng.choice(["email.received", "email.sent"])
+        if _email_kind == "email.received":
+            _email_headers = {
+                "from": [{"name": ent.display_name, "email": ent.email}],
+                "to": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+            }
+        else:
+            _email_headers = {
+                "from": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+                "to": [{"name": ent.display_name, "email": ent.email}],
+            }
         out.append(SyntheticSignal(
             signal_id=_sig_id(f"email_{ent.entity_id}_{i}"),
             source="gmail_owner",
-            kind=rng.choice(["email.received", "email.sent"]),
+            kind=_email_kind,
             occurred_at=dt,
             entity_id=ent.entity_id,
             subject=f"{rng.choice(['RE:', 'FWD:', ''])} {tmpl_name.replace('_', ' ').title()} — {ent.company}",
             body_text=body,
-            metadata={"from": ent.email, "to": OWNER_EMAIL, "thread_id": thread},
+            metadata={"headers": _email_headers, "thread_id": thread},
             tags=[f"src:gmail_owner", f"kind:email.received",
                   f"ent:{ent.entity_id}", f"thread:{thread}", "dc:gmail_restricted",
                   _ym(dt)],
@@ -739,6 +801,16 @@ def _add_entity_signals(
             spend_summary="within budget",
         )
         old_subj = subj_tmpl.format(company=ent.company, name=ent.display_name)
+        if "received" in kind:
+            _old_headers = {
+                "from": [{"name": ent.display_name, "email": ent.email}],
+                "to": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+            }
+        else:
+            _old_headers = {
+                "from": [{"name": OWNER_DISPLAY_NAME, "email": OWNER_EMAIL}],
+                "to": [{"name": ent.display_name, "email": ent.email}],
+            }
         out.append(SyntheticSignal(
             signal_id=_sig_id(f"{seed_sfx}_{ent.entity_id}"),
             source=src,
@@ -747,8 +819,7 @@ def _add_entity_signals(
             entity_id=ent.entity_id,
             subject=old_subj,
             body_text=old_body,
-            metadata={"from": ent.email if "received" in kind else OWNER_EMAIL,
-                      "to": OWNER_EMAIL if "received" in kind else ent.email},
+            metadata={"headers": _old_headers},
             tags=[f"src:{src}", f"kind:{kind}", f"ent:{ent.entity_id}",
                   "dc:gmail_restricted", _ym(old_day)],
             is_llm_eligible=is_llm,
