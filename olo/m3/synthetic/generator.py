@@ -417,7 +417,12 @@ def _add_entity_signals(
         entity_id=ent.entity_id,
         subject=f"Call: delivery reschedule — {ent.company}",
         body_text=transcript_body,
-        metadata={"phone": ent.phone, "duration_s": 180},
+        metadata={
+            "phone": ent.phone,
+            "duration_s": 180,
+            "customer_name": ent.display_name,
+            "customer_company": ent.company,
+        },
         tags=[f"src:voice_fixture", f"kind:call.transcript",
               f"ent:{ent.entity_id}", "dc:voice", _ym(day_92)],
     ))
@@ -437,7 +442,12 @@ def _add_entity_signals(
         entity_id=ent.entity_id,
         subject=f"Call: meeting reschedule — {ent.company}",
         body_text=meeting_transcript_body,
-        metadata={"phone": ent.phone, "duration_s": 150},
+        metadata={
+            "phone": ent.phone,
+            "duration_s": 150,
+            "customer_name": ent.display_name,
+            "customer_company": ent.company,
+        },
         tags=[f"src:voice_fixture", f"kind:call.transcript",
               f"ent:{ent.entity_id}", "dc:voice", _ym(day_93)],
     ))
@@ -548,7 +558,12 @@ def _add_entity_signals(
         entity_id=ent.entity_id,
         subject=f"Call: invoice dispute {invoice_id}",
         body_text=dispute_transcript,
-        metadata={"phone": ent.phone, "invoice_id": invoice_id},
+        metadata={
+            "phone": ent.phone,
+            "invoice_id": invoice_id,
+            "customer_name": ent.display_name,
+            "customer_company": ent.company,
+        },
         tags=[f"src:voice_fixture", f"kind:call.transcript",
               f"ent:{ent.entity_id}", f"invoice:{invoice_id}", "dc:voice",
               _ym(day_47)],

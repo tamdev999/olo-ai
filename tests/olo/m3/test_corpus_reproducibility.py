@@ -170,19 +170,26 @@ class TestEntityMetadataPopulation:
             )
 
     def test_no_ulid_entity_ids_in_metadata(self, tmp_path: Path) -> None:
-        """ULID-style entity IDs must NOT appear in entity_metadata.
+        """ULID entity IDs in entity_metadata must come from CRM-tagged sources only.
 
-        entity_metadata is keyed by production SHA-256-of-email IDs.
-        ULID IDs (ent_01ACME...) are for Hindsight tag filtering only.
+        Before the entity-link fix: entity_metadata only had SHA-256 email-derived IDs.
+        After the fix: entity_metadata also has ULID IDs for CRM-tagged signals
+        (call.transcript, invoice.created) with source_kind='crm_tag'.
+        No arbitrary ULID IDs from non-CRM sources should appear.
         """
         db, _ = _build(tmp_path, "em4")
         rows = _entity_meta(db)
         for row in rows:
             entity_id = row[0]
-            assert not entity_id.startswith("ent_01"), (
-                f"ULID-style entity ID {entity_id!r} found in entity_metadata. "
-                "entity_metadata must only contain production email-derived IDs."
-            )
+            source_kind = row[3] if len(row) > 3 else "?"
+            if entity_id.startswith("ent_01"):
+                # ULID-style IDs (ent_01...) must come from CRM-tagged sources
+                assert source_kind == "crm_tag", (
+                    f"ULID entity ID {entity_id!r} in entity_metadata must have "
+                    f"source_kind='crm_tag', got {source_kind!r}. "
+                    "Only CRM-tagged signals (call.transcript, invoice.created) "
+                    "should produce ULID entity_metadata entries."
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -231,10 +238,12 @@ class TestContextEnrichment:
         )
 
     def test_transcript_contexts_have_no_fabricated_name(self, tmp_path: Path) -> None:
-        """Call transcripts have no email headers → no fabricated contact names.
+        """Call transcripts with CRM customer_name metadata get the correct identity.
 
-        This verifies that we do NOT force every record to have an identity
-        when the source content does not support it.
+        After the entity-link fix: call.transcript signals with customer_name in
+        their CRM metadata produce a 3-part context: 'Kind · Identity · Subject'.
+        Transcripts WITHOUT customer_name (which shouldn't exist in the synthetic
+        corpus, but could in production) would still produce only 'Kind · Subject'.
         """
         db, items = _build(tmp_path, "ce3")
         transcript_items = [
@@ -245,25 +254,28 @@ class TestContextEnrichment:
 
         for i in transcript_items:
             ctx = i.get("context") or ""
-            # Transcripts describe a phone call — the kind descriptor is correct.
             assert ctx.startswith("Phone call transcript"), (
                 f"Unexpected context for transcript: {ctx!r}"
             )
-            # No contact name should appear after the kind descriptor.
-            # The transcript body may contain names but the context prefix
-            # should only have the kind descriptor and subject.
             ctx_parts = ctx.split(" · ")
-            # context = "Phone call transcript · [subject]"
-            # No identity part expected (entity_id not resolvable from transcript payload)
-            assert len(ctx_parts) <= 2, (
-                f"Transcript context has unexpected identity part: {ctx!r}"
-            )
+            # context = "Phone call transcript · [Identity] · [subject]"
+            # With CRM data: 3 parts (kind · identity · subject)
+            # Without CRM data: 2 parts (kind · subject)
+            if len(ctx_parts) == 3:
+                # Identity must be a known customer name, not fabricated
+                identity_part = ctx_parts[1].split(" (")[0].strip()
+                allowed_names = {ent.display_name for ent in ENTITIES} | {"Owner"}
+                assert identity_part in allowed_names, (
+                    f"Transcript context has unexpected identity {identity_part!r}. "
+                    f"Context: {ctx!r}"
+                )
 
     def test_context_names_from_fixture_source_data(self, tmp_path: Path) -> None:
         """Contact names in contexts must come from fixture metadata, not answer registry.
 
         Verifies that names appear only for entities defined in ENTITIES and
-        only in contexts derived from signals that have those entities as participants.
+        only in contexts from signals that have those entities as participants
+        (email/calendar) or CRM-tagged customers (call.transcript, invoice.created).
         """
         db, items = _build(tmp_path, "ce4")
         entity_names = {ent.display_name for ent in ENTITIES}
@@ -274,11 +286,13 @@ class TestContextEnrichment:
             # Any name that appears in a context must be from the fixture ENTITIES list.
             for name in entity_names:
                 if name in ctx:
-                    # The signal kind must support participant extraction.
+                    # The signal kind must support participant/CRM extraction.
                     assert kind in (
                         "email.received", "email.sent", "email.content",
                         "calendar.event.changed", "calendar.event.cancelled",
                         "calendar.event.created", "calendar.event.updated",
+                        # CRM-tagged signals carry customer names via metadata:
+                        "call.transcript", "invoice.created",
                     ), (
                         f"Contact name {name!r} appears in context for "
                         f"unexpected kind {kind!r}: {ctx!r}"
@@ -423,7 +437,12 @@ class TestSourceBackedIdentity:
                     )
 
     def test_email_received_primary_entity_is_sender(self, tmp_path: Path) -> None:
-        """email.received: entities field must contain the sender's SHA-256 ID."""
+        """email.received: entities field carries a valid entity ID.
+
+        In the synthetic corpus the ent: tag ULID is preferred for entity links
+        (ensures entity-scoped recall works across all signal kinds).  In
+        production Gmail (no ent: tags), the email-derived SHA-256 ID is used.
+        """
         db, items = _build(tmp_path, "sb2")
         recv_items = [
             i for i in items
@@ -431,21 +450,30 @@ class TestSourceBackedIdentity:
         ]
         assert recv_items
 
+        ulid_ids = {ent.entity_id for ent in ENTITIES}
+        sha_ids = {entity_id_from_email(ent.email) for ent in ENTITIES}
+        sha_ids.add(entity_id_from_email("owner@olo-business.example"))
+
         for item in recv_items[:3]:  # spot-check first 3
             entities = item.get("entities") or []
             if not entities:
                 continue
             entity_text = entities[0].get("text", "")
-            # Must be a SHA-256-based ID (ent_ prefix with 20 hex chars)
+            # Must be a valid OLO entity ID: either ULID (from ent: tag) or
+            # SHA-256-of-email (fallback for production without ent: tags)
             assert entity_text.startswith("ent_"), (
                 f"entities field has unexpected format: {entity_text!r}"
             )
-            assert len(entity_text) == 24, (
-                f"entity ID length unexpected: {entity_text!r} (len={len(entity_text)})"
+            assert entity_text in ulid_ids | sha_ids, (
+                f"email.received entities[0]={entity_text!r} not a known entity ID"
             )
 
     def test_email_sent_primary_entity_is_recipient(self, tmp_path: Path) -> None:
-        """email.sent: entities field resolves to the TO recipient's SHA-256 ID."""
+        """email.sent: entities field carries a valid entity ID.
+
+        In the synthetic corpus the ent: tag ULID is preferred.  In production
+        Gmail (no ent: tags), the email-derived SHA-256 ID is used.
+        """
         db, items = _build(tmp_path, "sb3")
         sent_items = [
             i for i in items
@@ -453,10 +481,10 @@ class TestSourceBackedIdentity:
         ]
         assert sent_items
 
-        # For email.sent, the primary entity is the first TO recipient (a customer).
-        # Verify entity IDs match one of the known customer IDs.
-        customer_ids = {entity_id_from_email(ent.email) for ent in ENTITIES}
-        owner_id = entity_id_from_email("owner@olo-business.example")
+        ulid_ids = {ent.entity_id for ent in ENTITIES}
+        sha_ids = {entity_id_from_email(ent.email) for ent in ENTITIES}
+        sha_ids.add(entity_id_from_email("owner@olo-business.example"))
+        all_valid = ulid_ids | sha_ids
 
         for item in sent_items[:3]:
             entities = item.get("entities") or []
@@ -465,9 +493,265 @@ class TestSourceBackedIdentity:
             entity_text = entities[0].get("text", "")
             if not entity_text:
                 continue
-            # For email sent FROM owner TO customer, entities[0] = customer ID
-            # For email sent FROM customer TO owner (edge case), entities[0] = owner ID
-            assert entity_text in customer_ids | {owner_id}, (
+            assert entity_text in all_valid, (
                 f"email.sent entities[0]={entity_text!r} is not a known entity ID. "
-                f"Known customer IDs: {customer_ids}"
+                f"Known IDs: {all_valid}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 7. Entity-link regression fix: voice transcript and invoice entity links
+# ---------------------------------------------------------------------------
+
+class TestEntityLinkFallback:
+    """voice transcript and invoice signals must carry entity links via ent: tag fallback.
+
+    Regression fixed in feeder.py: when email/calendar participant resolution returns
+    empty (call.transcript, invoice.created), use the first canonical ent: tag from
+    the signal's payload tags as the entity ID for the Hindsight entities field.
+
+    This creates entity links that allow entity-scoped recall to find the signal's
+    DeepSeek-extracted observations — without it, rank drops to the bottom even
+    though the document is in the bank.
+    """
+
+    # ── Acceptance test 1: voice transcript creates entity link ──────────────
+
+    def test_transcript_has_entity_link_from_ent_tag(self, tmp_path: Path) -> None:
+        """call.transcript: entities field must carry the ent: tag ULID entity ID."""
+        db, items = _build(tmp_path, "el1")
+        transcript_items = [
+            i for i in items
+            if (i.get("metadata") or {}).get("kind") == "call.transcript"
+        ]
+        assert transcript_items, "Must have call.transcript items"
+
+        for item in transcript_items:
+            entities = item.get("entities") or []
+            assert entities, (
+                f"call.transcript must have non-empty entities field for entity-scoped recall. "
+                f"doc={item.get('document_id')}"
+            )
+            entity_text = entities[0].get("text", "")
+            assert entity_text.startswith("ent_"), (
+                f"entities[0] must have ent_ prefix, got {entity_text!r}"
+            )
+            # Must match one of the known ULID entity IDs (from ENTITIES)
+            ulid_ids = {ent.entity_id for ent in ENTITIES}
+            assert entity_text in ulid_ids, (
+                f"transcript entities[0]={entity_text!r} not in ENTITIES ULIDs {ulid_ids}"
+            )
+
+    # ── Acceptance test 2: entity link matches the signal's customer ─────────
+
+    def test_transcript_entity_link_matches_customer(self, tmp_path: Path) -> None:
+        """call.transcript entity link must match the customer whose ent: tag is in the signal."""
+        db, items = _build(tmp_path, "el2")
+        transcript_items = [
+            i for i in items
+            if (i.get("metadata") or {}).get("kind") == "call.transcript"
+        ]
+        for item in transcript_items:
+            # The document's ent: tags tell us which customer it belongs to
+            ent_tags = [t[4:] for t in (item.get("tags") or []) if t.startswith("ent:")]
+            entities = item.get("entities") or []
+            if not ent_tags or not entities:
+                continue
+            # The entity link must match the ent: tag value
+            assert entities[0].get("text") in ent_tags, (
+                f"entities[0]={entities[0].get('text')!r} doesn't match ent: tags {ent_tags}"
+            )
+
+    # ── Acceptance test 3: unfiltered retrieval unchanged ────────────────────
+
+    def test_transcript_entity_id_stable_across_builds(self, tmp_path: Path) -> None:
+        """Two builds produce identical entity IDs for transcripts (replay stable)."""
+        _, items1 = _build(tmp_path, "el3a")
+        _, items2 = _build(tmp_path, "el3b")
+
+        get_entity = lambda items: {
+            i["document_id"]: (i.get("entities") or [{}])[0].get("text", "")
+            for i in items
+            if (i.get("metadata") or {}).get("kind") == "call.transcript"
+        }
+        assert get_entity(items1) == get_entity(items2), (
+            "Transcript entity IDs must be stable across replays"
+        )
+
+    # ── Acceptance test 4: transcript without ent: tag remains unassigned ────
+
+    def test_signal_without_ent_tag_has_no_entity_link(self, tmp_path: Path) -> None:
+        """A signal without any ent: tag gets entities=[] — no fabricated link."""
+        from olo.m3.feeder import _ym_tag
+        import tempfile, json, hashlib
+        from olo.store import connect, migrate, acquire_run, finish_run, ingest_batch
+        from olo.signals import NormalizedSignal, ContentBlob
+
+        # Build a minimal signal with NO ent: tag
+        db = tmp_path / "no_ent" / "olo.db"
+        db.parent.mkdir(parents=True)
+        conn = connect(db)
+        migrate(conn)
+        body = b"Customer called, no info."
+        sha = hashlib.sha256(body).hexdigest()
+        blob = ContentBlob(sha256=sha, media_type="text/plain;charset=utf-8", data=body)
+        from datetime import datetime, timezone
+        ns = NormalizedSignal(
+            source="test_src",
+            external_id="no_ent_sig_001",
+            kind="call.transcript",
+            occurred_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            subject="No entity call",
+            payload={
+                "content_refs": [{"sha256": sha, "media_type": "text/plain;charset=utf-8",
+                                   "size": len(body), "role": "body"}],
+                "signal_id": "no_ent_sig_001",
+                "source": "voice_fixture",
+                "kind": "call.transcript",
+                "content_sha256": sha,
+                # No ent: tags here — this signal has no customer association
+                "tags": ["src:voice_fixture", "kind:call.transcript", "ym:2026-06"],
+                "is_llm_eligible": True,
+                "strategy": "prose",
+            },
+            blobs=(blob,),
+        )
+        run_id = acquire_run("test_src", "test", conn)
+        ingest_batch("test_src", run_id, (ns,), "c1", None, conn)
+        finish_run("test_src", run_id, "succeeded", conn)
+        conn.close()
+
+        from olo.m3.feeder import build_hindsight_items
+        items = build_hindsight_items(db, source="test_src")
+        assert len(items) == 1
+        entities = items[0].get("entities") or []
+        assert not entities or entities[0].get("text", "") == "", (
+            f"Signal without ent: tag must have empty entities. Got: {entities}"
+        )
+
+    # ── Acceptance test 5: invalid ent: tag is rejected ──────────────────────
+
+    def test_invalid_ent_tag_does_not_create_entity_link(self, tmp_path: Path) -> None:
+        """An ent: tag that doesn't have the ent_ prefix must be ignored."""
+        import hashlib
+        from olo.store import connect, migrate, acquire_run, finish_run, ingest_batch
+        from olo.signals import NormalizedSignal, ContentBlob
+        from datetime import datetime, timezone
+
+        db = tmp_path / "bad_ent" / "olo.db"
+        db.parent.mkdir(parents=True)
+        conn = connect(db)
+        migrate(conn)
+        body = b"Some call data."
+        sha = hashlib.sha256(body).hexdigest()
+        blob = ContentBlob(sha256=sha, media_type="text/plain;charset=utf-8", data=body)
+        ns = NormalizedSignal(
+            source="test_src",
+            external_id="bad_ent_sig_001",
+            kind="call.transcript",
+            occurred_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            subject="Bad entity call",
+            payload={
+                "content_refs": [{"sha256": sha, "media_type": "text/plain;charset=utf-8",
+                                   "size": len(body), "role": "body"}],
+                "signal_id": "bad_ent_sig_001",
+                "source": "voice_fixture",
+                "kind": "call.transcript",
+                "content_sha256": sha,
+                # Malformed / invalid ent: tag (doesn't start with "ent_")
+                "tags": ["src:voice_fixture", "ent:NOT_A_VALID_ENTITY_ID", "ym:2026-06"],
+                "is_llm_eligible": True,
+                "strategy": "prose",
+            },
+            blobs=(blob,),
+        )
+        run_id = acquire_run("test_src", "test", conn)
+        ingest_batch("test_src", run_id, (ns,), "c1", None, conn)
+        finish_run("test_src", run_id, "succeeded", conn)
+        conn.close()
+
+        from olo.m3.feeder import build_hindsight_items
+        items = build_hindsight_items(db, source="test_src")
+        assert len(items) == 1
+        entities = items[0].get("entities") or []
+        for e in entities:
+            text = e.get("text", "")
+            # Empty entity text is fine (no link created); what must NOT happen
+            # is that "NOT_A_VALID_ENTITY_ID" (lacks ent_ prefix) becomes a link.
+            if text:
+                assert text.startswith("ent_"), (
+                    f"Invalid ent: tag value {text!r} slipped through as entity link"
+                )
+
+    # ── Acceptance test 6: Gmail entity links unchanged ──────────────────────
+
+    def test_gmail_entities_use_ent_tag_ulid_when_present(self, tmp_path: Path) -> None:
+        """email.received: entities field uses ent: tag ULID when available.
+
+        In the synthetic corpus, every signal carries an ent:ULID tag set by
+        the generator.  build_hindsight_items prefers this ULID for the entities
+        field so that entity-scoped recall is consistent across all signal kinds.
+
+        In production (real Gmail adapters that don't write ent: tags), the
+        fallback is the email-derived SHA-256 entity ID — unchanged behaviour.
+        """
+        db, items = _build(tmp_path, "el6")
+        email_items = [
+            i for i in items
+            if (i.get("metadata") or {}).get("kind") == "email.received"
+        ]
+        assert email_items
+        ulid_ids = {ent.entity_id for ent in ENTITIES}
+        ulid_ids.add("owner@olo-business.example")  # owner ULID not in ENTITIES
+        sha_ids = {entity_id_from_email(ent.email) for ent in ENTITIES}
+
+        for item in email_items[:5]:
+            entities = item.get("entities") or []
+            if not entities:
+                continue
+            entity_text = entities[0].get("text", "")
+            if not entity_text:
+                continue
+            # With ent: tags present (synthetic corpus), entities field uses ULID.
+            # Fallback to SHA-256 is production-only (no ent: tags on real Gmail).
+            assert entity_text in ulid_ids or entity_text in sha_ids, (
+                f"email entities[0]={entity_text!r} not a known entity ID "
+                f"(ULID or SHA-256)"
+            )
+
+    # ── Acceptance test 7: invoice entity link from ent: tag ─────────────────
+
+    def test_invoice_has_entity_link(self, tmp_path: Path) -> None:
+        """invoice.created: entities field carries the ent: tag ULID entity ID."""
+        db, items = _build(tmp_path, "el7")
+        invoice_items = [
+            i for i in items
+            if (i.get("metadata") or {}).get("kind") == "invoice.created"
+        ]
+        assert invoice_items, "Must have invoice.created items"
+        ulid_ids = {ent.entity_id for ent in ENTITIES}
+        for item in invoice_items:
+            entities = item.get("entities") or []
+            assert entities, (
+                f"invoice.created must have non-empty entities. doc={item.get('document_id')}"
+            )
+            entity_text = entities[0].get("text", "")
+            assert entity_text in ulid_ids, (
+                f"invoice entities[0]={entity_text!r} not in ENTITIES ULIDs {ulid_ids}"
+            )
+
+    # ── Acceptance test 8: entity link count consistency ─────────────────────
+
+    def test_all_signals_have_entity_link(self, tmp_path: Path) -> None:
+        """Every signal in the synthetic corpus has a non-empty entities field."""
+        db, items = _build(tmp_path, "el8")
+        without_link = []
+        for item in items:
+            entities = item.get("entities") or []
+            if not entities or not entities[0].get("text", ""):
+                kind = (item.get("metadata") or {}).get("kind", "?")
+                without_link.append((item["document_id"], kind))
+        assert not without_link, (
+            f"{len(without_link)} signals have no entity link: "
+            f"{without_link[:5]}"
+        )

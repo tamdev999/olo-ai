@@ -282,37 +282,63 @@ def build_hindsight_items(
             "strategy": strategy,
         }
 
-        # ── Context enrichment (Authorized by Opus audit §6 — Change A) ──────
-        # Builds a richer context string from: source kind descriptor, contact
-        # name, company name, and document subject.  Uses only facts from
-        # signal metadata — never from benchmark labels or expected answers.
+        # ── Context enrichment and entity link (Authorized by Opus audit §6 — Change A)
+        # Two separate entity ID concerns:
         #
-        # Authorized change A: uniform source descriptor for EVERY signal type.
-        # Format: "<Kind descriptor> · <Contact> (<Company>) · <subject>"
-        # This allows the reranker to distinguish signal types without relying
-        # on body text that may not contain the type name (e.g., calendar events
-        # never mention "Calendar" in their body text).
+        #   1. CONTEXT ENRICHMENT entity ID (context_entity_id):
+        #      SHA-256-of-email for Gmail/Calendar (matches entity_metadata which
+        #      is keyed by SHA-256).  Used only for display_name / company lookup.
         #
-        # Preserves contact, company, direction, document subject and other
-        # grounded attributes when present.  Does NOT fabricate metadata.
-        entity_id    = payload.get("entity_id", "")
+        #   2. ENTITY LINK ID (link_entity_id):
+        #      The ID stored in the Hindsight ``entities`` field.  Hindsight uses
+        #      entity links to associate extracted observations with a customer
+        #      entity; recall queries filtered by ``ent:ULID`` use these links to
+        #      boost relevance scores.  For the synthetic benchmark ALL signals
+        #      carry an ``ent:ULID`` tag, so using the ULID here makes entity-
+        #      scoped recall consistent across email, calendar, transcript and
+        #      invoice signals.  For production Gmail/Calendar adapters — which
+        #      do NOT write ``ent:`` tags into NormalizedSignal.payload — the
+        #      fallback is the email-derived SHA-256 entity ID (unchanged).
+        #
+        # Safety: the ``ent:`` tag lives in the STORED PAYLOAD (set at ingestion
+        # by the source system, not injected post-hoc).  Business isolation is
+        # structural (per-business olo.db).  Only ``ent_``-prefixed IDs accepted.
+
+        context_entity_id = payload.get("entity_id", "")
         subject      = row["subject"] or ""
         doc_kind     = payload.get("kind", row["kind"])
         source_tag   = payload.get("source", "")
-        if not entity_id:
+        if not context_entity_id:
             # Real adapters (Gmail, Calendar) do not set entity_id in payload.
-            # Resolve the primary counterparty using the same mechanism as ingestion,
-            # so the feeder and runner always produce consistent entity_ids.
+            # Resolve the primary counterparty using the same mechanism as ingestion.
             from olo.adapters.entity_extractor import resolve_primary_entity_id_from_payload
-            entity_id = resolve_primary_entity_id_from_payload(doc_kind, payload)
-        display_name, company = _get_entity_meta(entity_id, entity_cache)
+            context_entity_id = resolve_primary_entity_id_from_payload(doc_kind, payload)
+        display_name, company = _get_entity_meta(context_entity_id, entity_cache)
 
-        # Update the entities field to use the resolved entity_id.
-        # payload.get("entity_id") may be absent (production adapters and the
-        # production populate_olo_db do not store it); the entity_id variable is
-        # now reliably resolved from participant data above.
-        if entity_id:
-            item["entities"] = [{"text": entity_id, "type": "person"}]
+        # Determine entity link ID: prefer the ent: tag ULID when present.
+        # For production adapters that don't write ent: tags, fall back to the
+        # email-derived context_entity_id.
+        link_entity_id = ""
+        for tag in (payload.get("tags") or []):
+            if isinstance(tag, str) and tag.startswith("ent:"):
+                candidate = tag[4:]
+                if candidate.startswith("ent_") and len(candidate) > 5:
+                    link_entity_id = candidate
+                    break
+        if not link_entity_id:
+            link_entity_id = context_entity_id
+
+        # Second-pass enrichment for signals where the initial SHA-256 lookup
+        # returned no display_name (call.transcript, invoice without customer_email).
+        # If entity_metadata also has an entry keyed by the ULID (populated via
+        # crm_tag source from populate_olo_db for transcript/invoice signals),
+        # use that display_name for the context string.
+        if not display_name and link_entity_id:
+            display_name, company = _get_entity_meta(link_entity_id, entity_cache)
+
+        # Update entities field with the link entity ID.
+        if link_entity_id:
+            item["entities"] = [{"text": link_entity_id, "type": "person"}]
 
         # Map signal kinds to human-readable source descriptors
         _KIND_DESCRIPTORS: dict[str, str] = {
@@ -431,6 +457,53 @@ def populate_olo_db(
             upsert_entities(tuple(batch), source, conn)
         except Exception:
             pass  # entity extraction is enrichment, not critical path
+
+        # For CRM-tagged call transcripts and invoices, upsert the ULID entity
+        # into entity_metadata using the customer_name from the payload.
+        # Email/Calendar entities are upserted via upsert_entities above (SHA-256).
+        # Transcripts and invoices carry a CRM-assigned entity ID (the ULID from
+        # the ent: tag in their tags list) plus a customer_name in the payload.
+        # Without this step, entity_metadata would have no entry for the ULID,
+        # and context enrichment (display_name in context string) would fail.
+        try:
+            from datetime import datetime, timezone as _tz
+            _now = datetime.now(_tz.utc).isoformat()
+            conn.execute("BEGIN IMMEDIATE")
+            for ns in batch:
+                _cust_name = (ns.payload.get("customer_name") or "").strip()
+                if not _cust_name:
+                    continue
+                _ulid_id = ""
+                for _tag in (ns.payload.get("tags") or []):
+                    if isinstance(_tag, str) and _tag.startswith("ent:"):
+                        _cand = _tag[4:]
+                        if _cand.startswith("ent_") and len(_cand) > 5:
+                            _ulid_id = _cand
+                            break
+                if not _ulid_id:
+                    continue
+                _cust_co = (ns.payload.get("customer_company") or "").strip()
+                conn.execute(
+                    "INSERT INTO entity_metadata"
+                    "(source, entity_id, display_name, company, source_kind,"
+                    " created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?)"
+                    " ON CONFLICT(source, entity_id) DO UPDATE SET"
+                    "  display_name = CASE WHEN excluded.display_name != '' THEN"
+                    "    excluded.display_name ELSE entity_metadata.display_name END,"
+                    "  company = CASE WHEN excluded.company != '' THEN"
+                    "    excluded.company ELSE entity_metadata.company END,"
+                    "  updated_at = excluded.updated_at",
+                    (source, _ulid_id, _cust_name, _cust_co,
+                     "crm_tag", _now, _now),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+
         last_cursor = cursor
 
     for sig in timeline:
@@ -478,6 +551,14 @@ def populate_olo_db(
             ):
                 if _cal_f in _meta:
                     _part_data[_cal_f] = _meta[_cal_f]
+        elif sig.kind in ("call.transcript", "invoice.created"):
+            # CRM-tagged call transcripts and invoice records carry customer_name
+            # and customer_company in their metadata (set by the CRM/billing system).
+            # Pass these through so _flush can upsert the ULID entity into
+            # entity_metadata, enabling context enrichment for these signal types.
+            for _crm_f in ("customer_name", "customer_company"):
+                if _crm_f in _meta:
+                    _part_data[_crm_f] = _meta[_crm_f]
 
         ns = NormalizedSignal(
             source=source,
