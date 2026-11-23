@@ -131,17 +131,27 @@ def _enumerate_pg0_homes_under(root: Path) -> list[Path]:
     Uses ``os.walk`` with ``followlinks=False`` to avoid following the
     ``hindsight-venv`` symlink into the system venv tree.
 
+    **X1 fail-closed fix:** Any ``os.walk`` error on a subdirectory raises
+    ``Pg0StillRunningError``.  An unreadable subdirectory could contain a pg0
+    HOME and therefore a live database; silently skipping it would create a
+    false negative.
+
     Returns list of unique HOME paths sorted for deterministic order.
-    Silently skips unreadable subdirectories (best-effort; the proc scan in
-    ``safe_pg0_delete_home`` / ``safe_pg0_delete_tree`` provides a second line
-    of defence for instances that escape this enumeration).
+    Returns an empty list immediately when ``root`` does not exist.
     """
     if not root.exists():
         return []
     homes: set[Path] = set()
+    walk_errors: list[str] = []
+
+    def _walk_onerror(err: OSError) -> None:
+        walk_errors.append(
+            f"unreadable directory ({getattr(err, 'filename', '?')!r}): {err}"
+        )
+
     try:
         for dirpath, dirnames, _filenames in os.walk(
-            str(root), followlinks=False, onerror=None
+            str(root), followlinks=False, onerror=_walk_onerror
         ):
             # Look for a .pg0 subdirectory with an instances child
             if ".pg0" in dirnames:
@@ -150,8 +160,17 @@ def _enumerate_pg0_homes_under(root: Path) -> list[Path]:
                     homes.add(Path(dirpath))
                 # Do NOT recurse into .pg0 itself — pg0 never nests pg0 HOmes
                 dirnames.remove(".pg0")
-    except (PermissionError, OSError):
-        pass
+    except (PermissionError, OSError) as exc:
+        walk_errors.append(f"os.walk raised unexpectedly: {exc}")
+
+    if walk_errors:
+        raise Pg0StillRunningError(
+            f"_enumerate_pg0_homes_under({root}): "
+            f"{len(walk_errors)} filesystem error(s) prevent safe enumeration "
+            f"of pg0 HOME directories. Refusing to authorize deletion.\n"
+            + "\n".join(f"  {e}" for e in walk_errors[:5])
+        )
+
     return sorted(homes)
 
 
@@ -202,14 +221,42 @@ def _find_live_pg_pids_under(directory: Path) -> list[int]:
     2. ``/proc/*/cmdline`` scan for postgres processes with ``-D`` paths under
        ``directory`` (Linux only; silently skipped on other platforms).
 
-    Returns a sorted list of unique live PIDs.  Never raises; best-effort.
+    **X1 fail-closed fix:** Inspection failures are no longer silently ignored.
+
+    - Any unreadable directory during the ``os.walk`` is recorded; if any such
+      error occurred, ``Pg0StillRunningError`` is raised because the missed
+      subdirectory could contain a live database.
+    - If ``/proc`` enumeration fails entirely, ``Pg0StillRunningError`` is raised.
+    - Per-process cmdline read failures attempt a fallback to the comm name in
+      ``/proc/{pid}/status``.  If the process can be positively identified as
+      non-postgres, it is safely skipped.  If it cannot be identified or looks
+      like postgres, the error is recorded and ``Pg0StillRunningError`` is raised.
+    - ``FileNotFoundError`` for a process (process exited between enumeration and
+      read) is always safe to skip.
+
+    Raises ``Pg0StillRunningError`` if any inspection errors prevent a confident
+    "no live databases" determination.
     """
     live: set[int] = set()
+    scan_errors: list[str] = []
 
     # --- Method 1: recursive postmaster.pid scan ---
+    def _walk_onerror(err: OSError) -> None:
+        # An unreadable directory during the walk may hide a postmaster.pid
+        # and therefore a live database under the deletion root.
+        scan_errors.append(
+            f"unreadable directory during postmaster.pid scan "
+            f"({getattr(err, 'filename', '?')!r}): {err}"
+        )
+
+    # An absent root has no live databases — handle before walking to avoid
+    # platform differences in how os.walk reports missing root directories.
+    if not directory.exists():
+        return []
+
     try:
         for dirpath, _dirnames, filenames in os.walk(
-            str(directory), followlinks=False, onerror=None
+            str(directory), followlinks=False, onerror=_walk_onerror
         ):
             if "postmaster.pid" in filenames:
                 pid_file = Path(dirpath) / "postmaster.pid"
@@ -219,17 +266,23 @@ def _find_live_pg_pids_under(directory: Path) -> list[int]:
                         live.add(pid)
                 except (OSError, ValueError, IndexError):
                     continue
-    except (PermissionError, OSError):
-        pass
+    except (PermissionError, OSError) as exc:
+        scan_errors.append(f"os.walk raised unexpectedly: {exc}")
 
     # --- Method 2: /proc cmdline scan ---
     proc_dir = Path("/proc")
     if proc_dir.exists():
         directory_str = str(directory.resolve())
         try:
-            for pid_path in proc_dir.iterdir():
-                if not pid_path.name.isdigit():
-                    continue
+            pid_dirs = [p for p in proc_dir.iterdir() if p.name.isdigit()]
+        except (PermissionError, OSError) as exc:
+            # Cannot enumerate /proc at all — cannot confirm no live postgres process
+            # has a data directory under the deletion root.
+            scan_errors.append(f"/proc enumeration failed: {exc}")
+            pid_dirs = None
+
+        if pid_dirs is not None:
+            for pid_path in pid_dirs:
                 try:
                     cmdline_bytes = (pid_path / "cmdline").read_bytes()
                     if b"postgres" not in cmdline_bytes:
@@ -249,10 +302,40 @@ def _find_live_pg_pids_under(directory: Path) -> list[int]:
                             pid = int(pid_path.name)
                             if _process_exists(pid):
                                 live.add(pid)
-                except (PermissionError, FileNotFoundError, ValueError, OSError):
+                except FileNotFoundError:
+                    # Process exited between enumeration and read — always safe.
                     continue
-        except (PermissionError, OSError):
-            pass
+                except (PermissionError, OSError):
+                    # Cannot read this process's cmdline.
+                    # Try to identify it as non-postgres before skipping.
+                    is_known_safe = False
+                    try:
+                        status_text = (pid_path / "status").read_text(errors="replace")
+                        comm_lines = [
+                            ln for ln in status_text.splitlines()
+                            if ln.startswith("Name:")
+                        ]
+                        comm = comm_lines[0].split(":", 1)[1].strip() if comm_lines else ""
+                        if comm and "postgres" not in comm.lower() and "postmaster" not in comm.lower():
+                            # Positively identified as a different process — safe to skip.
+                            is_known_safe = True
+                    except (PermissionError, OSError, FileNotFoundError):
+                        pass  # Cannot read status either
+
+                    if not is_known_safe:
+                        # Cannot confirm this process is not postgres — conservative.
+                        scan_errors.append(
+                            f"process {pid_path.name}: cmdline unreadable and "
+                            "process cannot be confirmed as non-postgres"
+                        )
+
+    if scan_errors:
+        raise Pg0StillRunningError(
+            f"_find_live_pg_pids_under({directory}): "
+            f"{len(scan_errors)} inspection error(s) prevent a confident "
+            f"'no live databases' determination. Refusing to authorize deletion.\n"
+            + "\n".join(f"  {e}" for e in scan_errors[:5])
+        )
 
     return sorted(live)
 

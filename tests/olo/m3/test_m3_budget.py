@@ -1,11 +1,11 @@
-"""Olo M3 — Unit tests for the DeepSeek budget guard.
+﻿"""Olo M3 â€” Unit tests for the DeepSeek budget guard.
 
 Audit D1 (fix 1): real financial hard stop.
 Tests:
   1. parse_stats extracts tokens correctly from buckets[].tokens.input/output
   2. parse_stats handles empty buckets as $0 spend
   3. parse_stats raises StatsUnavailableError on malformed data
-  4. UsageGuard.check raises BudgetExceededError when delta ≥ budget
+  4. UsageGuard.check raises BudgetExceededError when delta â‰¥ budget
   5. UsageGuard.check raises StatsUnavailableError when endpoint returns 404
   6. BudgetExceededError carries correct spend and token counts
 """
@@ -24,11 +24,11 @@ from olo.m3.hindsight.budget import (
 )
 
 
-# ── parse_stats tests ─────────────────────────────────────────────────────────
+# â”€â”€ parse_stats tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestParseStats:
     def test_empty_buckets_returns_zero(self) -> None:
-        """Empty bucket list → $0 spend (no calls yet)."""
+        """Empty bucket list â†’ $0 spend (no calls yet)."""
         snap = parse_stats({"bank_id": "main-v1", "buckets": []})
         assert snap.input_tokens == 0
         assert snap.output_tokens == 0
@@ -61,34 +61,34 @@ class TestParseStats:
         assert snap.output_tokens == 18_000
 
     def test_bucket_without_tokens_key_treated_as_zero(self) -> None:
-        """Bucket with no 'tokens' key → 0 tokens (tolerate sparse data)."""
+        """Bucket with no 'tokens' key â†’ 0 tokens (tolerate sparse data)."""
         stats = {"buckets": [{"total": 1}, {"total": 2, "tokens": {"input": 1000, "output": 200}}]}
         snap = parse_stats(stats)
         assert snap.input_tokens == 1000
         assert snap.output_tokens == 200
 
     def test_missing_buckets_key_raises(self) -> None:
-        """Response without 'buckets' key → StatsUnavailableError."""
+        """Response without 'buckets' key â†’ StatsUnavailableError."""
         with pytest.raises(StatsUnavailableError, match="missing 'buckets'"):
             parse_stats({"bank_id": "main-v1", "total": 42})
 
     def test_non_dict_raises(self) -> None:
-        """Non-dict response → StatsUnavailableError."""
+        """Non-dict response â†’ StatsUnavailableError."""
         with pytest.raises(StatsUnavailableError, match="not a dict"):
             parse_stats([{"buckets": []}])  # list, not dict
 
     def test_buckets_not_list_raises(self) -> None:
-        """'buckets' that is not a list → StatsUnavailableError."""
+        """'buckets' that is not a list â†’ StatsUnavailableError."""
         with pytest.raises(StatsUnavailableError, match="must be a list"):
             parse_stats({"buckets": {"day1": {"total": 1}}})
 
     def test_bucket_not_dict_raises(self) -> None:
-        """Bucket item that is not a dict → StatsUnavailableError."""
+        """Bucket item that is not a dict â†’ StatsUnavailableError."""
         with pytest.raises(StatsUnavailableError):
             parse_stats({"buckets": ["not_a_dict"]})
 
 
-# ── TokenSnapshot tests ───────────────────────────────────────────────────────
+# â”€â”€ TokenSnapshot tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestTokenSnapshot:
     def test_cost_calculation(self) -> None:
@@ -112,7 +112,7 @@ class TestTokenSnapshot:
         assert delta.output_tokens == 0
 
 
-# ── UsageGuard tests ──────────────────────────────────────────────────────────
+# â”€â”€ UsageGuard tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _FakeHindsightClient:
     """Minimal fake client for testing UsageGuard without a real server."""
@@ -135,7 +135,7 @@ class _FakeGuard(UsageGuard):
         stats_responses: list,
         budget_usd: float = 8.0,
     ) -> None:
-        # Don't call super().__init__ — inject our own client
+        # Don't call super().__init__ â€” inject our own client
         self._client = _FakeHindsightClient(stats_responses)
         self._bank_id = "main-v1"
         self._budget_usd = budget_usd
@@ -154,7 +154,7 @@ class _FakeGuard(UsageGuard):
 
 class TestUsageGuard:
     def test_no_spend_does_not_raise(self) -> None:
-        """Zero delta → no exception."""
+        """Zero delta â†’ no exception."""
         empty = {"buckets": []}
         guard = _FakeGuard([empty, empty])
         baseline = guard.snapshot()
@@ -162,9 +162,9 @@ class TestUsageGuard:
 
     def test_raises_when_budget_exceeded(self) -> None:
         """Spend > $8 raises BudgetExceededError with correct amounts."""
-        # 50M input tokens costs 50 × $0.14 = $7.00 at input rate
-        # but $8 budget → need more than 57M input tokens or some output
-        # Use: 50M input ($7.00) + 4M output ($1.12) = $8.12 → exceeds $8
+        # 50M input tokens costs 50 Ã— $0.14 = $7.00 at input rate
+        # but $8 budget â†’ need more than 57M input tokens or some output
+        # Use: 50M input ($7.00) + 4M output ($1.12) = $8.12 â†’ exceeds $8
         before = {"buckets": [{"total": 0, "tokens": {"input": 0, "output": 0}}]}
         after = {
             "buckets": [
@@ -207,7 +207,7 @@ class TestUsageGuard:
             guard.check(baseline)
 
     def test_just_under_budget_does_not_raise(self) -> None:
-        """Spend < budget → no exception."""
+        """Spend < budget â†’ no exception."""
         # $7.99 worth of tokens
         in_tok = int(7.99 / COST_INPUT_PER_M * 1_000_000)
         before = {"buckets": [{"tokens": {"input": 0, "output": 0}}]}
@@ -217,7 +217,7 @@ class TestUsageGuard:
         guard.check(baseline)  # must not raise
 
 
-# ── batch_retain_to_hindsight budget_guard enforcement ────────────────────────
+# â”€â”€ batch_retain_to_hindsight budget_guard enforcement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestBudgetGuardMandatory:
     """batch_retain_to_hindsight and reconcile_hindsight_projection require a guard."""
@@ -243,7 +243,7 @@ class TestBudgetGuardMandatory:
         client.patch_bank_config = MagicMock(return_value={})
         items = [{"content": "test", "document_id": "sig:test",
                   "strategy": "structured-no-llm"}]
-        # Must NOT raise ValueError — explicit None is the deliberate test bypass
+        # Must NOT raise ValueError â€” explicit None is the deliberate test bypass
         with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
             result = batch_retain_to_hindsight(
                 items, client, bank_id="test", budget_guard=None
@@ -262,7 +262,7 @@ class TestBudgetGuardMandatory:
             reconcile_hindsight_projection(db, client, bank_id="test")
 
     def test_budget_guard_none_does_not_enforce_budget(self) -> None:
-        """With budget_guard=None, no stats check runs — budget is unguarded."""
+        """With budget_guard=None, no stats check runs â€” budget is unguarded."""
         from olo.m3.feeder import batch_retain_to_hindsight
         from unittest.mock import MagicMock, patch
 
@@ -315,7 +315,7 @@ class TestBudgetGuardMandatory:
         mock_client.retain.assert_not_called()
 
 
-# ── P0.4 async budget enforcement ────────────────────────────────────────────
+# â”€â”€ P0.4 async budget enforcement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TestAsyncBudgetEnforcement:
     """Async retains must wait for operation completion before budget checks."""
@@ -524,26 +524,144 @@ class TestFreshBankInitialization:
 
     def test_deploy_strategies_before_retain(self) -> None:
         """deploy() must register strategies before the first retain operation."""
+
+
+# ── B1: Operation-wait fail-closed ───────────────────────────────────────────
+
+class TestOperationWaitFailClosed:
+    """B1: timeout, failed operation and unknown status must stop further batches."""
+
+    def _make_retain_client(self, op_id="op-123", wait_side_effect=None,
+                             wait_return=None):
+        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
+        from unittest.mock import MagicMock
+        cfg = HindsightConfig(host="127.0.0.1", port=19999)
+        client = HindsightClient(cfg)
+        client.retain = MagicMock(return_value={"operation_id": op_id, "status": "queued"})
+        client._cfg = cfg
+        if wait_side_effect is not None:
+            client.wait_for_operation = MagicMock(side_effect=wait_side_effect)
+        elif wait_return is not None:
+            client.wait_for_operation = MagicMock(return_value=wait_return)
+        return client
+
+    def _guard_no_check(self):
+        from unittest.mock import MagicMock
+        guard = MagicMock()
+        guard.snapshot.return_value = MagicMock()
+        guard.check = MagicMock()
+        return guard
+
+    def test_timeout_stops_further_batches(self) -> None:
+        """B1: TimeoutError from wait_for_operation stops ingestion."""
+        from olo.m3.feeder import batch_retain_to_hindsight, FeedError
+        from unittest.mock import patch
+        client = self._make_retain_client(wait_side_effect=TimeoutError("timed out"))
+        guard = self._guard_no_check()
+        items = [{"content": "x", "document_id": "sig:x", "strategy": "structured-no-llm"}]
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            with pytest.raises(FeedError, match="Cannot confirm completion"):
+                batch_retain_to_hindsight(items, client, bank_id="test",
+                                          budget_guard=guard, async_=True)
+        guard.check.assert_not_called()
+
+    def test_failed_operation_status_stops_further_batches(self) -> None:
+        """B1: failed operation status stops ingestion."""
+        from olo.m3.feeder import batch_retain_to_hindsight, FeedError
+        from unittest.mock import patch
+        client = self._make_retain_client(wait_return={"status": "failed"})
+        guard = self._guard_no_check()
+        items = [{"content": "x", "document_id": "sig:x", "strategy": "structured-no-llm"}]
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            with pytest.raises(FeedError, match="unexpected status"):
+                batch_retain_to_hindsight(items, client, bank_id="test",
+                                          budget_guard=guard, async_=True)
+
+    def test_unknown_operation_status_stops_further_batches(self) -> None:
+        """B1: unknown/non-terminal operation status stops ingestion."""
+        from olo.m3.feeder import batch_retain_to_hindsight, FeedError
+        from unittest.mock import patch
+        client = self._make_retain_client(wait_return={"status": "in_progress"})
+        guard = self._guard_no_check()
+        items = [{"content": "x", "document_id": "sig:x", "strategy": "structured-no-llm"}]
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            with pytest.raises(FeedError, match="unexpected status"):
+                batch_retain_to_hindsight(items, client, bank_id="test",
+                                          budget_guard=guard, async_=True)
+
+    def test_successful_completed_operation_runs_guard_check(self) -> None:
+        """B1 positive: completed operation proceeds to guard check."""
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from unittest.mock import patch
+        client = self._make_retain_client(wait_return={"status": "completed"})
+        guard = self._guard_no_check()
+        items = [{"content": "x", "document_id": "sig:x", "strategy": "structured-no-llm"}]
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            batch_retain_to_hindsight(items, client, bank_id="test",
+                                      budget_guard=guard, async_=True)
+        guard.check.assert_called_once()
+
+    def test_sync_retain_does_not_wait(self) -> None:
+        """sync retain does not call wait_for_operation."""
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from unittest.mock import MagicMock, patch
+        client = self._make_retain_client()
+        wait_calls = []
+        client.wait_for_operation = MagicMock(side_effect=wait_calls.append)
+        guard = self._guard_no_check()
+        items = [{"content": "x", "document_id": "sig:x", "strategy": "structured-no-llm"}]
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            batch_retain_to_hindsight(items, client, bank_id="test",
+                                      budget_guard=guard, async_=False)
+        assert not wait_calls
+
+
+# ── B2: Configurable budget and batch size ────────────────────────────────────
+
+class TestConfigurableBudget:
+    """B2: deploy_granite budget and batch size are configurable and validated."""
+
+    def test_invalid_budget_rejected(self) -> None:
+        """Invalid budget values raise ValueError before any deployment action."""
+        from olo.m3.deploy_granite import deploy
+        import math
+        with pytest.raises(ValueError, match="budget_usd"):
+            deploy(bank_id="test", budget_usd=0.0)
+        with pytest.raises(ValueError, match="budget_usd"):
+            deploy(bank_id="test", budget_usd=-5.0)
+        with pytest.raises(ValueError, match="budget_usd"):
+            deploy(bank_id="test", budget_usd=math.inf)
+        with pytest.raises(ValueError, match="budget_usd"):
+            deploy(bank_id="test", budget_usd=math.nan)
+
+    def test_invalid_batch_size_rejected(self) -> None:
+        """Invalid batch size values raise ValueError."""
+        from olo.m3.deploy_granite import deploy, MAX_BATCH_SIZE
+        with pytest.raises(ValueError, match="batch_size"):
+            deploy(bank_id="test", batch_size=0)
+        with pytest.raises(ValueError, match="batch_size"):
+            deploy(bank_id="test", batch_size=-1)
+        with pytest.raises(ValueError, match="batch_size"):
+            deploy(bank_id="test", batch_size=MAX_BATCH_SIZE + 1)
+
+    def test_default_config_is_backward_compatible(self) -> None:
+        """Default budget and batch size match previous hard-coded values."""
+        from olo.m3.deploy_granite import DEFAULT_BUDGET_USD, DEFAULT_BATCH_SIZE
+        assert DEFAULT_BUDGET_USD == 8.0
+        assert DEFAULT_BATCH_SIZE == 50
+
+    def test_custom_batch_size_passed_to_retain(self) -> None:
+        """Custom batch_size is forwarded to batch_retain_to_hindsight."""
         from olo.m3.deploy_granite import deploy
         from unittest.mock import MagicMock, patch
-
-        call_order = []
-        mock_client = MagicMock()
-        mock_client.wait_until_ready = MagicMock()
-
-        def mock_prepare_bank(client, bank_id):
-            call_order.append("prepare_bank")
-            return True
-
-        def mock_batch_retain(items, client, *, bank_id, batch_size, budget_guard,
-                              async_, prepare_bank):
-            call_order.append("batch_retain")
+        captured = []
+        def mock_retain(items, client, *, bank_id, batch_size, budget_guard, async_, prepare_bank):
+            captured.append(batch_size)
             return {"total": 1, "prose": 0, "structured": 1, "batches": 1}
-
         mock_guard = MagicMock()
         mock_guard.snapshot.return_value = MagicMock()
         mock_guard.check = MagicMock()
-
+        mock_client = MagicMock()
         with patch("olo.m3.deploy_granite.HindsightClient", return_value=mock_client), \
              patch("olo.m3.deploy_granite.HindsightConfig"), \
              patch("olo.m3.deploy_granite._check_server"), \
@@ -553,99 +671,9 @@ class TestFreshBankInitialization:
              patch("olo.m3.deploy_granite.build_hindsight_items",
                    return_value=[{"content": "x", "document_id": "sig:x",
                                   "strategy": "structured-no-llm"}]), \
-             patch("olo.m3.deploy_granite.prepare_hindsight_bank",
-                   side_effect=mock_prepare_bank), \
-             patch("olo.m3.feeder.batch_retain_to_hindsight",
-                   side_effect=mock_batch_retain), \
+             patch("olo.m3.deploy_granite.prepare_hindsight_bank", return_value=True), \
+             patch("olo.m3.feeder.batch_retain_to_hindsight", side_effect=mock_retain), \
              patch("olo.m3.hindsight.budget.UsageGuard", return_value=mock_guard), \
              patch("pathlib.Path.exists", return_value=True):
-            deploy(bank_id="test", host="127.0.0.1", port=19999)
-
-        prep_idx = call_order.index("prepare_bank")
-        retain_idx = call_order.index("batch_retain")
-        assert prep_idx < retain_idx, (
-            f"prepare_bank (pos {prep_idx}) must precede batch_retain (pos {retain_idx}). "
-            f"Order: {call_order}"
-        )
-
-
-class TestConsolidationBudgetCheck:
-    """Consolidation rounds must be budget-checked after each completes."""
-
-    def test_consolidation_checks_budget_after_each_round(self) -> None:
-        """_wait_for_consolidation calls budget_guard.check after each round."""
-        from olo.m3.deploy_granite import _wait_for_consolidation
-        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
-        from unittest.mock import MagicMock, patch
-
-        cfg = HindsightConfig(host="127.0.0.1", port=19999)
-        client = HindsightClient(cfg)
-        client._cfg = cfg
-
-        rounds_triggered = []
-        budget_checks = []
-
-        def mock_trigger_consolidation(bank_id=None):
-            rounds_triggered.append(len(rounds_triggered) + 1)
-            if len(rounds_triggered) <= 2:
-                return {"operation_id": f"op-round-{len(rounds_triggered)}"}
-            return {}  # no work left on 3rd round
-
-        def mock_wait_for_op(op_id, timeout_s=60.0, bank_id=None):
-            return {"status": "completed"}
-
-        client.trigger_consolidation = mock_trigger_consolidation
-        client.wait_for_operation = mock_wait_for_op
-        client.bank_id = "test"
-
-        guard = MagicMock()
-        baseline = MagicMock()
-
-        def mock_check(bl):
-            budget_checks.append(len(budget_checks) + 1)
-
-        guard.check = mock_check
-
-        _wait_for_consolidation(
-            client, "test",
-            rounds=3, timeout=10.0,
-            budget_guard=guard, budget_baseline=baseline,
-        )
-
-        assert len(budget_checks) >= 2, (
-            f"Budget must be checked after each round with work. "
-            f"Got {len(budget_checks)} checks, expected ≥2."
-        )
-
-    def test_consolidation_stops_on_budget_exceeded(self) -> None:
-        """_wait_for_consolidation raises BudgetExceededError when budget hit."""
-        from olo.m3.deploy_granite import _wait_for_consolidation
-        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
-        from olo.m3.hindsight.budget import BudgetExceededError, TokenSnapshot
-        from unittest.mock import MagicMock
-
-        cfg = HindsightConfig(host="127.0.0.1", port=19999)
-        client = HindsightClient(cfg)
-        client._cfg = cfg
-
-        client.trigger_consolidation = MagicMock(
-            return_value={"operation_id": "op-123"}
-        )
-        client.wait_for_operation = MagicMock(return_value={"status": "completed"})
-
-        guard = MagicMock()
-        baseline = TokenSnapshot(0, 0)
-
-        guard.check.side_effect = BudgetExceededError(
-            spent=8.01, budget=8.0, in_tok=50_000_000, out_tok=4_000_000
-        )
-
-        with pytest.raises(BudgetExceededError):
-            _wait_for_consolidation(
-                client, "test",
-                rounds=5, timeout=10.0,
-                budget_guard=guard, budget_baseline=baseline,
-            )
-
-        # Only one round should have been triggered before the budget stopped it
-        assert client.trigger_consolidation.call_count == 1
+            deploy(bank_id="test", host="127.0.0.1", port=19999, batch_size=5)
+        assert captured == [5]

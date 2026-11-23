@@ -650,11 +650,16 @@ def batch_retain_to_hindsight(
                 counters["structured"] += len(batch)
             counters["total"] += len(batch)
 
-            # P0.4 async fix: wait for the operation to complete before checking
-            # the budget.  async=True submissions queue work but do not execute
-            # LLM extraction immediately; a budget check immediately after
-            # client.retain(async_=True) always sees $0 spent because the
+            # P0.4 async fix + B1 hardening: wait for the operation to complete
+            # before checking the budget.  async=True submissions queue work but
+            # do not execute LLM extraction immediately; a budget check immediately
+            # after client.retain(async_=True) always sees $0 spent because the
             # background worker has not yet run.
+            #
+            # B1: A timeout, failed operation, or unknown completion status is
+            # treated as a BLOCKING condition.  The previous batch's spend and
+            # completion state are unknown; authorizing further cost-bearing work
+            # would be unsafe.  Raise FeedError to stop the ingestion loop.
             #
             # Only wait when both conditions apply:
             #   1. A budget guard is active (guard=None → no cost tracking needed)
@@ -668,20 +673,35 @@ def batch_retain_to_hindsight(
                     else None
                 ) or op_id
                 try:
-                    client.wait_for_operation(
+                    wait_result = client.wait_for_operation(
                         returned_op_id,
                         timeout_s=180.0,
                         bank_id=bank_id,
                     )
+                    # Also treat a failed or unknown-status operation as blocking.
+                    op_status = wait_result.get("status", "") if isinstance(wait_result, dict) else ""
+                    _WAIT_TERMINAL_OK = frozenset({"completed", "succeeded", "done"})
+                    if op_status not in _WAIT_TERMINAL_OK:
+                        raise FeedError(
+                            f"Retain operation {returned_op_id!r} ended with "
+                            f"unexpected status {op_status!r}. Cannot authorize "
+                            "further cost-bearing batches after an unresolved operation."
+                        )
+                except FeedError:
+                    raise
                 except (TimeoutError, HindsightAPIError, HindsightUnavailable) as _we:
-                    # Operation wait failed: budget check will still run but
-                    # may undercount due to incomplete trace data.  Log and
-                    # continue; the budget guard fails closed on unavailable stats.
-                    import logging as _log
-                    _log.getLogger(__name__).warning(
-                        "batch_retain_to_hindsight: wait_for_operation timed out "
-                        "or failed (%s); budget check may undercount costs", _we
-                    )
+                    raise FeedError(
+                        f"Cannot confirm completion of retain operation "
+                        f"{returned_op_id!r}: {type(_we).__name__}: {_we}. "
+                        "The operation may still be running server-side. "
+                        "Refusing to authorize further cost-bearing batches."
+                    ) from _we
+                except Exception as _we:
+                    raise FeedError(
+                        f"Unexpected error waiting for retain operation "
+                        f"{returned_op_id!r}: {type(_we).__name__}: {_we}. "
+                        "Refusing to authorize further cost-bearing batches."
+                    ) from _we
 
             # Check budget after each completed batch — always fail closed on unavailable
             # statistics (C6 fix: removed the OLO_GATE_STRICT guard so production

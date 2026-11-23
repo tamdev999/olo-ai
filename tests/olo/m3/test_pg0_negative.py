@@ -1068,3 +1068,248 @@ class TestSafeDeleteHome:
             with pytest.raises(Pg0StillRunningError):
                 safe_pg0_stop_all(home, exit_wait_s=0.001)
         assert home.exists(), "HOME must survive a failed stop_all"
+
+
+# ── X1: fail-closed on scanner errors ────────────────────────────────────────
+
+class TestScannerFailClosed:
+    """X1: inspection errors must prevent deletion, not silently authorize it.
+
+    Opus reproduced an edge case where an unreadable nested directory and a
+    denied /proc enumeration both caused the safety scanners to silently return
+    empty results, allowing cleanup to proceed and delete live database data.
+    """
+
+    def test_find_live_pids_raises_on_walk_permission_error(
+        self, tmp_path: Path
+    ) -> None:
+        """X1a: unreadable nested directory during postmaster.pid walk → raises."""
+        root = tmp_path / "root"
+        root.mkdir()
+        # Create a directory structure that triggers an onerror callback
+        subdir = root / "unreadable_subdir"
+        subdir.mkdir()
+        (subdir / "postmaster.pid").write_text("99999\n")
+
+        # Simulate a PermissionError on the subdirectory during walk
+        walk_errors_captured: list = []
+        original_walk = __import__("os").walk
+
+        def _walk_with_error(path, followlinks, onerror):
+            # First yield root normally, then trigger an error
+            yield str(root), [subdir.name], []
+            if onerror:
+                err = PermissionError(13, "Permission denied", str(subdir))
+                onerror(err)
+            # Do not yield subdir — simulating it being unreadable
+
+        import os
+        with patch.object(os, "walk", side_effect=_walk_with_error):
+            with pytest.raises(Pg0StillRunningError, match="inspection error"):
+                _find_live_pg_pids_under(root)
+
+    def test_find_live_pids_raises_on_proc_enumeration_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """X1b: /proc enumeration failure → raises."""
+        root = tmp_path / "root"
+        root.mkdir()
+
+        def _fake_proc_iterdir():
+            raise PermissionError(13, "Permission denied", "/proc")
+
+        fake_proc = MagicMock()
+        fake_proc.exists.return_value = True
+        fake_proc.iterdir.side_effect = _fake_proc_iterdir
+
+        import olo.m3.pg0_lifecycle as _lc
+
+        # Patch Path() calls that return the proc dir
+        original_path = _lc.Path
+
+        def _patched_path(*args):
+            if args == ("/proc",):
+                return fake_proc
+            return original_path(*args)
+
+        with patch.object(_lc, "Path", side_effect=_patched_path):
+            with pytest.raises(Pg0StillRunningError, match="inspection error"):
+                _find_live_pg_pids_under(root)
+
+    def test_find_live_pids_raises_on_both_failures_x1(
+        self, tmp_path: Path
+    ) -> None:
+        """X1 combined: both filesystem walk error AND /proc denied → raises.
+
+        This directly replicates Opus's X1 scenario: nested directory is
+        unreadable AND /proc enumeration is denied.  The scanner must raise
+        rather than returning empty and silently authorizing deletion.
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+
+        import os
+        import olo.m3.pg0_lifecycle as _lc
+
+        def _walk_with_error(path, followlinks, onerror):
+            yield str(root), [], []
+            if onerror:
+                onerror(PermissionError(13, "Permission denied", str(root / "subdir")))
+
+        fake_proc = MagicMock()
+        fake_proc.exists.return_value = True
+        fake_proc.iterdir.side_effect = PermissionError(13, "Permission denied", "/proc")
+
+        original_path = _lc.Path
+
+        def _patched_path(*args):
+            if args == ("/proc",):
+                return fake_proc
+            return original_path(*args)
+
+        with patch.object(os, "walk", side_effect=_walk_with_error), \
+             patch.object(_lc, "Path", side_effect=_patched_path):
+            with pytest.raises(Pg0StillRunningError, match="inspection error"):
+                _find_live_pg_pids_under(root)
+
+    def test_find_live_pids_absent_directory_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
+        """A genuinely absent directory produces an empty result without error.
+
+        X1 fix must not cause false failures for the normal 'directory does
+        not exist' case (e.g. first-ever benchmark run, no pg0 HOME yet).
+        """
+        nonexistent = tmp_path / "does_not_exist"
+        # Should NOT raise — genuinely absent directory is safe
+        result = _find_live_pg_pids_under(nonexistent)
+        assert result == []
+
+    def test_enumerate_homes_raises_on_walk_error(self, tmp_path: Path) -> None:
+        """_enumerate_pg0_homes_under raises when os.walk reports a permission error."""
+        root = tmp_path / "root"
+        root.mkdir()
+
+        import os
+
+        def _walk_with_error(path, followlinks, onerror):
+            yield str(root), [], []
+            if onerror:
+                onerror(PermissionError(13, "Permission denied", str(root / "unreadable")))
+
+        with patch.object(os, "walk", side_effect=_walk_with_error):
+            with pytest.raises(Pg0StillRunningError, match="filesystem error"):
+                _enumerate_pg0_homes_under(root)
+
+    def test_enumerate_homes_absent_root_returns_empty(self, tmp_path: Path) -> None:
+        """_enumerate_pg0_homes_under on absent root returns [] without error."""
+        nonexistent = tmp_path / "absent"
+        result = _enumerate_pg0_homes_under(nonexistent)
+        assert result == []
+
+    def test_safe_pg0_delete_home_aborts_on_scan_error(
+        self, tmp_path: Path
+    ) -> None:
+        """X1 integration: safe_pg0_delete_home cannot proceed when scanner raises."""
+        home = tmp_path / "home"
+        home.mkdir()
+        data_dir = _pg0_instance_data_dir(home, "hs")
+        data_dir.mkdir(parents=True)
+        (data_dir / "postmaster.pid").write_text("99999\n")
+        sentinel = data_dir / "PG_VERSION"
+        sentinel.write_text("14")
+
+        import os
+        import olo.m3.pg0_lifecycle as _lc
+
+        # Simulate an unreadable subdirectory during the proc scan
+        def _walk_with_error(path, followlinks, onerror):
+            yield str(home), [], []
+            if onerror:
+                onerror(PermissionError(13, "Permission denied", str(home / "sub")))
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", return_value=stop_result), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False), \
+             patch.object(os, "walk", side_effect=_walk_with_error):
+            # Even though stop succeeds, the proc scan raises → delete is blocked
+            with pytest.raises(Pg0StillRunningError):
+                safe_pg0_delete_home(home)
+
+        assert sentinel.exists(), "Data must not be deleted when scanner raises"
+
+    def test_unstoppable_postmaster_prevents_deletion(self, tmp_path: Path) -> None:
+        """An unstoppable postmaster → safe_pg0_delete_home raises, no deletion."""
+        home = tmp_path / "home"
+        home.mkdir()
+        data_dir = _pg0_instance_data_dir(home, "hs")
+        data_dir.mkdir(parents=True)
+        (data_dir / "postmaster.pid").write_text("77777\n")
+        sentinel = data_dir / "PG_VERSION"
+        sentinel.write_text("14")
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", return_value=stop_result), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
+            with pytest.raises(Pg0StillRunningError):
+                safe_pg0_delete_home(home, exit_wait_s=0.001)
+        assert sentinel.exists()
+
+    def test_two_stopped_instances_deletion_succeeds(self, tmp_path: Path) -> None:
+        """Two successfully stopped instances → safe deletion completes."""
+        import shutil
+        home = tmp_path / "home"
+        home.mkdir()
+        for inst in ("hs1", "hs2"):
+            d = _pg0_instance_data_dir(home, inst)
+            d.mkdir(parents=True)
+            (d / "postmaster.pid").write_text("11111\n")
+
+        def fake_rm(cmd, **kw):
+            m = MagicMock(); m.returncode = 0
+            if "rm" in cmd:
+                target = cmd[-1]
+                if Path(target).exists():
+                    if Path(target).is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        Path(target).unlink(missing_ok=True)
+            return m
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", side_effect=fake_rm), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
+            safe_pg0_delete_home(home)
+        assert not home.exists()
+
+    def test_nested_business_pg0_dirs_stopped_before_deletion(
+        self, tmp_path: Path
+    ) -> None:
+        """Nested business pg0 directories are stopped or preserved."""
+        import shutil
+        hermes = tmp_path / "hermes"
+        biz = hermes / "businesses" / "biz_a"
+        data = _pg0_instance_data_dir(biz, "hs")
+        data.mkdir(parents=True)
+        (data / "postmaster.pid").write_text("22222\n")
+
+        def fake_rm(cmd, **kw):
+            m = MagicMock(); m.returncode = 0
+            if "rm" in cmd:
+                target = cmd[-1]
+                if Path(target).exists():
+                    if Path(target).is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        Path(target).unlink(missing_ok=True)
+            return m
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", side_effect=fake_rm), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
+            safe_pg0_delete_tree(hermes)
+        assert not hermes.exists()

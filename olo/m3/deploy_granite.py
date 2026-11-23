@@ -62,6 +62,17 @@ E5_BANK_ID      = "main-v1"
 CONSOLIDATION_ROUNDS  = 4   # max rounds of trigger+wait; usually 2 suffice
 CONSOLIDATION_TIMEOUT = 600.0  # seconds per consolidation round
 
+#: Default DeepSeek budget for bank deployment.
+DEFAULT_BUDGET_USD: float = 8.0
+
+#: Default items per retain call.
+#: Smaller values reduce the maximum spend per authorized retain operation
+#: (the "one batch" overspend window) at the cost of more round-trips.
+DEFAULT_BATCH_SIZE: int = 50
+
+#: Maximum accepted batch size (server-side constraint).
+MAX_BATCH_SIZE: int = 500
+
 ROLLBACK_HELP = """
 === Rollback instructions ===
 The E5 bank '{e5}' is unmodified and can be used immediately.
@@ -204,8 +215,39 @@ def deploy(
     db_path: Path | None = None,
     host: str = "127.0.0.1",
     port: int = 18800,
+    budget_usd: float = DEFAULT_BUDGET_USD,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> None:
-    """Create or replace *bank_id* with Granite-embedded, LLM-consolidated data."""
+    """Create or replace *bank_id* with Granite-embedded, LLM-consolidated data.
+
+    Args:
+        bank_id:    Target bank name.
+        db_path:    Path to gate_olo.db.
+        host:       Hindsight server host.
+        port:       Hindsight server port.
+        budget_usd: Maximum DeepSeek spend in USD.  Must be positive and finite.
+        batch_size: Items per retain call.  Must be in [1, MAX_BATCH_SIZE].
+
+    **Overspend exposure notice:**
+    The budget guard operates at batch granularity after each completed retain
+    operation and after each consolidation round.  The remaining overspend window
+    is bounded by:
+
+    - One already-authorized retain batch (up to ``batch_size`` items).
+    - Any automatic server-side consolidation triggered by that batch.
+    - Trace-recording delay between operation completion and stats endpoint update.
+    - Potentially one completed consolidation round before its subsequent check.
+
+    Reducing ``batch_size`` narrows the per-batch exposure.  No strict monetary
+    cap can be guaranteed without a synchronous server-side flush endpoint.
+    """
+    import math
+    if not isinstance(budget_usd, (int, float)) or math.isnan(budget_usd) or math.isinf(budget_usd) or budget_usd <= 0:
+        raise ValueError(f"budget_usd must be a positive finite number, got {budget_usd!r}")
+    if not isinstance(batch_size, int) or batch_size < 1 or batch_size > MAX_BATCH_SIZE:
+        raise ValueError(
+            f"batch_size must be an integer in [1, {MAX_BATCH_SIZE}], got {batch_size!r}"
+        )
 
     cfg = HindsightConfig(host=host, port=port, bank_id=bank_id)
     client = HindsightClient(cfg)
@@ -281,17 +323,12 @@ def deploy(
     #    snapshot() also invokes _require_tracing() — fails closed if tracing is
     #    disabled or the /version endpoint is unreachable.
     #
-    #    NOTE ON ASYNC TRACE LAG: LLM usage records arrive asynchronously
-    #    (typically within 1-10 s of a completed retain/consolidation call).
-    #    The budget guard therefore cannot claim a strict per-batch monetary cap.
-    #    After the first batch exceeds the budget, up to one additional batch
-    #    worth of spend may occur before the check catches it.  At the $8 budget
-    #    and typical DeepSeek V3 rates (~$0.001 per prose batch), the worst-case
-    #    overshoot is ~$0.001 per batch, well within the guard's purpose of
-    #    preventing runaway multi-dollar overruns.
-    print("Verifying LLM tracing and taking budget snapshot…")
+    #    OVERSPEND EXPOSURE: see deploy() docstring for the documented window.
+    #    No specific per-batch monetary amount is claimed here because the actual
+    #    cost depends on batch_size, item count, and server-side consolidation.
+    print(f"Verifying LLM tracing and taking budget snapshot… (budget ${budget_usd:.2f})")
     from olo.m3.hindsight.budget import UsageGuard, StatsUnavailableError as _SUA, BudgetExceededError
-    _guard = UsageGuard(client, bank_id=bank_id, budget_usd=8.0)
+    _guard = UsageGuard(client, bank_id=bank_id, budget_usd=budget_usd)
     try:
         _baseline = _guard.snapshot()
     except _SUA as exc:
@@ -300,14 +337,15 @@ def deploy(
             f"spending limits.  Set HINDSIGHT_API_LLM_TRACE_ENABLED=true and "
             f"restart the server before deploying.  Error: {exc}"
         ) from exc
-    print("[ok] Budget guard active (tracing confirmed, budget $8.00)")
+    print(f"[ok] Budget guard active (tracing confirmed, budget ${budget_usd:.2f})")
 
     # 8. Retain items via batch_retain_to_hindsight which:
     #    - validates strategies before sending
     #    - waits for each operation to complete (async_=True + wait_for_operation)
     #      BEFORE checking the budget so costs are reflected
-    #    - fails closed if budget is exceeded or stats are unavailable
-    print("Ingesting evidence…")
+    #    - fails closed if budget is exceeded, stats are unavailable, or the
+    #      operation wait times out or returns an unexpected status (B1 hardening)
+    print(f"Ingesting evidence… (batch_size={batch_size})")
     t_start = time.monotonic()
     from olo.m3.feeder import batch_retain_to_hindsight, FeedError
     try:
@@ -315,7 +353,7 @@ def deploy(
             items,
             client,
             bank_id=bank_id,
-            batch_size=50,
+            batch_size=batch_size,
             budget_guard=_guard,
             async_=True,       # async + wait_for_operation per batch
             prepare_bank=False,  # already prepared in step 6
@@ -370,6 +408,13 @@ def main() -> None:
                         help="Path to gate_olo.db (default: OLO_DB_PATH env or /root/gate_olo.db)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18800)
+    parser.add_argument("--budget-usd", type=float, default=DEFAULT_BUDGET_USD,
+                        help=f"Maximum DeepSeek budget in USD (default: {DEFAULT_BUDGET_USD}). "
+                             "Must be positive and finite.")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
+                        help=f"Items per retain call (default: {DEFAULT_BATCH_SIZE}). "
+                             f"Smaller values reduce per-batch overspend exposure. "
+                             f"Range: 1–{MAX_BATCH_SIZE}.")
     parser.add_argument("--verify-only", action="store_true",
                         help="Check current state without modifying anything")
     parser.add_argument("--rollback", action="store_true",
@@ -385,7 +430,8 @@ def main() -> None:
         sys.exit(0)
 
     db_path = Path(args.db_path) if args.db_path else None
-    deploy(args.bank_id, db_path, args.host, args.port)
+    deploy(args.bank_id, db_path, args.host, args.port,
+           budget_usd=args.budget_usd, batch_size=args.batch_size)
 
 
 if __name__ == "__main__":
