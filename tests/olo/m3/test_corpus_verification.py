@@ -39,7 +39,9 @@ from scripts.olo.m3.run_live_benchmark import (
     CorpusMismatchError,
     verify_corpus_match,
     _check_no_pending_operations,
-    _TERMINAL_OP_STATUSES,
+    _SUCCESSFUL_OP_STATUSES,
+    _PENDING_OP_STATUSES,
+    _OPS_PAGE_SIZE,
 )
 from olo.m3.hindsight.client import HindsightConfig, HindsightClient
 
@@ -68,8 +70,11 @@ def _client_with_docs(
 
 
 def _ops_response(ops: list[dict]) -> dict:
-    """Build the operations endpoint response dict for patching."""
-    return {"items": ops, "total": len(ops)}
+    """Build the operations endpoint response dict for patching.
+    
+    Uses "operations" key to match the actual Hindsight 1.2.1 response schema.
+    """
+    return {"operations": ops, "total": len(ops)}
 
 
 def _op(status: str, op_type: str = "consolidation") -> dict:
@@ -96,28 +101,39 @@ def _expected_docs_correct() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 class TestCheckNoPendingOperations:
-    """Unit tests for _check_no_pending_operations."""
+    """Unit tests for _check_no_pending_operations (P0.2 final corrections)."""
 
     def _make_client(self) -> HindsightClient:
         cfg = HindsightConfig(host="127.0.0.1", port=19999)
         return HindsightClient(cfg)
 
+    # ── Page size limit ────────────────────────────────────────────────────
+
+    def test_page_size_is_at_most_100(self) -> None:
+        """_OPS_PAGE_SIZE must be ≤100 (Hindsight 1.2.1 returns HTTP 422 for >100)."""
+        assert _OPS_PAGE_SIZE <= 100, (
+            f"_OPS_PAGE_SIZE={_OPS_PAGE_SIZE} exceeds the pinned server limit of 100; "
+            "requests for >100 return HTTP 422."
+        )
+
+    # ── Basic terminal/non-terminal classification ─────────────────────────
+
     def test_empty_ops_list_passes(self) -> None:
         """Zero operations (new bank, never retained) — passes immediately."""
         client = self._make_client()
         with patch("olo.m3.hindsight.client._request",
-                   return_value={"items": [], "total": 0}):
+                   return_value={"operations": [], "total": 0}):
             count = _check_no_pending_operations(client, "test-bank")
         assert count == 0
 
-    def test_all_terminal_ops_pass(self) -> None:
-        """All operations in terminal status — passes."""
+    def test_all_completed_ops_pass(self) -> None:
+        """All operations in known-successful status — passes."""
         client = self._make_client()
-        ops = [_op("completed"), _op("failed"), _op("succeeded"), _op("done")]
+        ops = [_op("completed"), _op("succeeded"), _op("done")]
         with patch("olo.m3.hindsight.client._request",
                    return_value=_ops_response(ops)):
             count = _check_no_pending_operations(client, "test-bank")
-        assert count == 4
+        assert count == 3
 
     def test_pending_op_raises(self) -> None:
         """A single pending operation causes rejection."""
@@ -125,7 +141,7 @@ class TestCheckNoPendingOperations:
         ops = [_op("completed"), _op("pending"), _op("completed")]
         with patch("olo.m3.hindsight.client._request",
                    return_value=_ops_response(ops)):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError, match="pending"):
                 _check_no_pending_operations(client, "test-bank")
 
     def test_processing_op_raises(self) -> None:
@@ -134,51 +150,171 @@ class TestCheckNoPendingOperations:
         ops = [_op("completed"), _op("processing", "retain")]
         with patch("olo.m3.hindsight.client._request",
                    return_value=_ops_response(ops)):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError, match="pending"):
                 _check_no_pending_operations(client, "test-bank")
 
     def test_p0_2_root_cause_two_pending_plus_newer_completed(self) -> None:
         """P0.2 root cause: two pending ops hidden behind a newer completed one.
 
-        The old implementation used limit=1, which returned only the newest
-        (completed) op.  This test verifies the fix sees ALL ops across pages
-        and rejects the bank when older pending ops exist.
-
-        In the actual pg0_negative_v4 live scenario:
-        - ops endpoint with limit=1 → ["completed"]    (old verifier passes)
-        - ops endpoint with limit=500 → ["completed", "pending", "pending"]
-
-        The mock here simulates limit=500 returning all three.
+        Replicates pending_live2.py P2: a newer completed re-retain is at
+        offset 0; two older pending consolidation operations are on the same page.
+        With limit=100, all three are visible and the verifier correctly rejects.
         """
         client = self._make_client()
-        # Newest first (server returns newest at index 0)
         ops = [
-            _op("completed", "retain"),          # newest: a quick re-retain
-            _op("pending", "consolidation"),      # older: consolidation 1
-            _op("pending", "consolidation"),      # older: consolidation 2
+            _op("completed", "retain"),          # newest
+            _op("pending", "consolidation"),
+            _op("pending", "consolidation"),
         ]
         with patch("olo.m3.hindsight.client._request",
                    return_value=_ops_response(ops)):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError, match="pending"):
                 _check_no_pending_operations(client, "test-bank")
 
-    def test_unknown_status_raises(self) -> None:
-        """Unknown status (not in terminal set) → fail closed."""
+    # ── Failed operations ──────────────────────────────────────────────────
+
+    def test_failed_op_raises(self) -> None:
+        """P5: A 'failed' consolidation operation causes rejection.
+
+        A failed consolidation can leave observations incomplete.
+        The verifier conservatively blocks certification.
+        """
         client = self._make_client()
-        ops = [_op("queued"), _op("completed")]   # "queued" is not terminal
+        ops = [_op("failed", "consolidation"), _op("completed")]
         with patch("olo.m3.hindsight.client._request",
                    return_value=_ops_response(ops)):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError, match="failed"):
+                _check_no_pending_operations(client, "test-bank")
+
+    def test_error_op_raises(self) -> None:
+        """An 'error' status operation causes rejection."""
+        client = self._make_client()
+        ops = [_op("error", "consolidation"), _op("completed")]
+        with patch("olo.m3.hindsight.client._request",
+                   return_value=_ops_response(ops)):
+            with pytest.raises(CorpusMismatchError, match="failed"):
+                _check_no_pending_operations(client, "test-bank")
+
+    def test_failed_message_mentions_limitation(self) -> None:
+        """Failed op error message must mention the LIMITATION of the check."""
+        client = self._make_client()
+        ops = [_op("failed", "consolidation"), _op("completed")]
+        with patch("olo.m3.hindsight.client._request",
+                   return_value=_ops_response(ops)):
+            try:
+                _check_no_pending_operations(client, "test-bank")
+                assert False, "Should have raised"
+            except CorpusMismatchError as exc:
+                assert "LIMITATION" in str(exc), (
+                    "Failed-op rejection must document the LIMITATION so operators "
+                    "understand why a repaired bank may still be rejected."
+                )
+
+    def test_failed_message_distinct_from_pending_message(self) -> None:
+        """Failed and pending ops produce distinct error messages."""
+        client = self._make_client()
+        failed_ops = [_op("failed"), _op("completed")]
+        pending_ops = [_op("pending"), _op("completed")]
+
+        failed_msg = ""
+        pending_msg = ""
+
+        with patch("olo.m3.hindsight.client._request",
+                   return_value=_ops_response(failed_ops)):
+            try:
+                _check_no_pending_operations(client, "test-bank")
+            except CorpusMismatchError as e:
+                failed_msg = str(e)
+
+        with patch("olo.m3.hindsight.client._request",
+                   return_value=_ops_response(pending_ops)):
+            try:
+                _check_no_pending_operations(client, "test-bank")
+            except CorpusMismatchError as e:
+                pending_msg = str(e)
+
+        assert "LIMITATION" in failed_msg, "Failed msg must include LIMITATION"
+        assert "LIMITATION" not in pending_msg, "Pending msg must not include LIMITATION"
+        assert failed_msg != pending_msg, "Messages must differ"
+
+    # ── Unknown statuses ───────────────────────────────────────────────────
+
+    def test_unknown_status_raises(self) -> None:
+        """Unknown status (not in successful set) → fail closed."""
+        client = self._make_client()
+        ops = [_op("queued"), _op("completed")]
+        with patch("olo.m3.hindsight.client._request",
+                   return_value=_ops_response(ops)):
+            with pytest.raises(CorpusMismatchError):
                 _check_no_pending_operations(client, "test-bank")
 
     def test_missing_status_raises(self) -> None:
         """Operation with no status key → fail closed."""
         client = self._make_client()
-        ops = [{"task_type": "retain", "id": "op-nostatus"}]  # no "status" key
+        ops = [{"task_type": "retain", "id": "op-nostatus"}]
         with patch("olo.m3.hindsight.client._request",
                    return_value=_ops_response(ops)):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError):
                 _check_no_pending_operations(client, "test-bank")
+
+    # ── Pagination correctness (P3/P4 scenarios) ───────────────────────────
+
+    def test_correct_bank_260_ops_passes(self) -> None:
+        """P3: >100 completed ops across 3 pages — must PASS.
+
+        With _OPS_PAGE_SIZE=100, three pages (100+100+60) are fetched.
+        All 260 are 'completed' → passes.
+        """
+        client = self._make_client()
+        all_ops = [_op("completed") for _ in range(260)]
+
+        def mock_request(cfg, method, path, body=None, params=None):
+            offset = int((params or {}).get("offset", "0"))
+            limit = int((params or {}).get("limit", "100"))
+            page = all_ops[offset:offset + limit]
+            return {"operations": page, "total": 260}
+
+        with patch("olo.m3.hindsight.client._request", side_effect=mock_request):
+            count = _check_no_pending_operations(client, "test-bank")
+        assert count == 260
+
+    def test_pending_on_second_page_rejects(self) -> None:
+        """P4: pending op at offset>100 (behind newer completed ops) → REJECTED.
+
+        Replicates pending_live2.py P4: a pending consolidation is older than
+        >100 newer completed quick-ops and requires pagination to detect.
+        """
+        client = self._make_client()
+        page1 = [_op("completed") for _ in range(100)]
+        page2 = [_op("completed") for _ in range(30)] + [_op("pending", "consolidation")]
+
+        def mock_request(cfg, method, path, body=None, params=None):
+            offset = int((params or {}).get("offset", "0"))
+            if offset == 0:
+                return {"operations": page1, "total": 131}
+            return {"operations": page2, "total": 131}
+
+        with patch("olo.m3.hindsight.client._request", side_effect=mock_request):
+            with pytest.raises(CorpusMismatchError, match="pending"):
+                _check_no_pending_operations(client, "test-bank")
+
+    def test_failed_on_second_page_rejects(self) -> None:
+        """Failed op discovered on page 2 via pagination → REJECTED."""
+        client = self._make_client()
+        page1 = [_op("completed") for _ in range(100)]
+        page2 = [_op("failed", "consolidation"), _op("completed")]
+
+        def mock_request(cfg, method, path, body=None, params=None):
+            offset = int((params or {}).get("offset", "0"))
+            if offset == 0:
+                return {"operations": page1, "total": 102}
+            return {"operations": page2, "total": 102}
+
+        with patch("olo.m3.hindsight.client._request", side_effect=mock_request):
+            with pytest.raises(CorpusMismatchError, match="failed"):
+                _check_no_pending_operations(client, "test-bank")
+
+    # ── API error handling ─────────────────────────────────────────────────
 
     def test_unreachable_endpoint_raises(self) -> None:
         """Network error → CorpusMismatchError, never swallowed."""
@@ -189,8 +325,17 @@ class TestCheckNoPendingOperations:
             with pytest.raises(CorpusMismatchError, match="unreachable"):
                 _check_no_pending_operations(client, "test-bank")
 
-    def test_http_4xx_raises(self) -> None:
-        """HTTP 4xx (e.g. 401 Unauthorized) → CorpusMismatchError."""
+    def test_http_422_raises(self) -> None:
+        """HTTP 422 (from server rejecting limit>100) → CorpusMismatchError."""
+        from olo.m3.hindsight.client import HindsightAPIError
+        client = self._make_client()
+        err = HindsightAPIError("Unprocessable Entity", status_code=422)
+        with patch("olo.m3.hindsight.client._request", side_effect=err):
+            with pytest.raises(CorpusMismatchError, match="HTTP 422"):
+                _check_no_pending_operations(client, "test-bank")
+
+    def test_http_401_raises(self) -> None:
+        """HTTP 401 Unauthorized → CorpusMismatchError."""
         from olo.m3.hindsight.client import HindsightAPIError
         client = self._make_client()
         err = HindsightAPIError("Unauthorized", status_code=401)
@@ -198,11 +343,11 @@ class TestCheckNoPendingOperations:
             with pytest.raises(CorpusMismatchError, match="HTTP 401"):
                 _check_no_pending_operations(client, "test-bank")
 
-    def test_malformed_response_no_items_key_raises(self) -> None:
-        """Response missing 'items'/'operations' key with total > 0 → rejected."""
+    def test_malformed_response_no_ops_key_raises(self) -> None:
+        """Response missing 'operations'/'items' key with total > 0 → rejected."""
         client = self._make_client()
         with patch("olo.m3.hindsight.client._request",
-                   return_value={"total": 5}):  # no items key
+                   return_value={"total": 5}):
             with pytest.raises(CorpusMismatchError):
                 _check_no_pending_operations(client, "test-bank")
 
@@ -210,19 +355,34 @@ class TestCheckNoPendingOperations:
         """Non-dict response → rejected."""
         client = self._make_client()
         with patch("olo.m3.hindsight.client._request",
-                   return_value=[{"status": "completed"}]):  # list, not dict
+                   return_value=[{"status": "completed"}]):
             with pytest.raises(CorpusMismatchError, match="malformed"):
                 _check_no_pending_operations(client, "test-bank")
 
-    def test_terminal_statuses_are_complete(self) -> None:
-        """All expected terminal statuses are in _TERMINAL_OP_STATUSES."""
-        for s in ("completed", "failed", "succeeded", "done", "error"):
-            assert s in _TERMINAL_OP_STATUSES, f"{s!r} must be terminal"
+    def test_empty_ops_key_present_passes(self) -> None:
+        """'operations' key present but empty list → passes."""
+        client = self._make_client()
+        with patch("olo.m3.hindsight.client._request",
+                   return_value={"operations": [], "total": 0}):
+            count = _check_no_pending_operations(client, "test-bank")
+        assert count == 0
 
-    def test_pending_and_processing_are_non_terminal(self) -> None:
-        """'pending' and 'processing' must NOT be in terminal set."""
-        assert "pending" not in _TERMINAL_OP_STATUSES
-        assert "processing" not in _TERMINAL_OP_STATUSES
+    # ── Status set constants ───────────────────────────────────────────────
+
+    def test_successful_statuses_set(self) -> None:
+        """Successful statuses are completed, succeeded, done."""
+        for s in ("completed", "succeeded", "done"):
+            assert s in _SUCCESSFUL_OP_STATUSES
+
+    def test_failed_not_in_successful_statuses(self) -> None:
+        """'failed' and 'error' are NOT in successful set."""
+        assert "failed" not in _SUCCESSFUL_OP_STATUSES
+        assert "error" not in _SUCCESSFUL_OP_STATUSES
+
+    def test_pending_and_processing_in_pending_set(self) -> None:
+        """'pending' and 'processing' are in _PENDING_OP_STATUSES."""
+        assert "pending" in _PENDING_OP_STATUSES
+        assert "processing" in _PENDING_OP_STATUSES
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +393,7 @@ class TestVerifyCorpusMatchOperations:
     """verify_corpus_match rejects banks with pending operations."""
 
     def _all_ops_done(self) -> dict:
-        return {"items": [], "total": 0}
+        return {"operations": [], "total": 0}
 
     def test_correct_bank_all_ops_done_passes(self) -> None:
         """Correct docs + no pending ops → verification passes, returns fingerprint."""
@@ -256,20 +416,16 @@ class TestVerifyCorpusMatchOperations:
         docs = _expected_docs_correct()
         client = _client_with_docs(docs)
 
-        ops_with_pending = {"items": [_op("pending", "consolidation")], "total": 1}
+        ops_with_pending = {"operations": [_op("pending", "consolidation")], "total": 1}
         with patch("olo.m3.hindsight.client._request",
                    return_value=ops_with_pending):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError, match="pending"):
                 verify_corpus_match(client, fp)
 
     def test_p0_2_two_pending_behind_completed_rejected(self) -> None:
         """P0.2 exact scenario: newest op is completed; two older ones are pending.
 
-        This replicates Opus's pending_live.py audit:
-        - Two consolidation operations still pending.
-        - One newer, quickly-completed re-retain operation.
-        - limit=1 would return only the completed one (old bug passes).
-        - limit=500 returns all three; fix correctly rejects.
+        Replicates Opus's pending_live2.py P2 scenario.
         """
         from olo.m3.synthetic.generator import corpus_fingerprint, generate_timeline
         tl = generate_timeline()
@@ -278,15 +434,15 @@ class TestVerifyCorpusMatchOperations:
         client = _client_with_docs(docs)
 
         all_ops = {
-            "items": [
-                _op("completed", "retain"),       # newest: quick re-retain
-                _op("pending", "consolidation"),  # older: consolidation 1
-                _op("pending", "consolidation"),  # older: consolidation 2
+            "operations": [
+                _op("completed", "retain"),
+                _op("pending", "consolidation"),
+                _op("pending", "consolidation"),
             ],
             "total": 3,
         }
         with patch("olo.m3.hindsight.client._request", return_value=all_ops):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError, match="pending"):
                 verify_corpus_match(client, fp)
 
     def test_processing_op_prevents_verification(self) -> None:
@@ -298,11 +454,24 @@ class TestVerifyCorpusMatchOperations:
         client = _client_with_docs(docs)
 
         ops_processing = {
-            "items": [_op("processing", "consolidation")], "total": 1
+            "operations": [_op("processing", "consolidation")], "total": 1
         }
         with patch("olo.m3.hindsight.client._request",
                    return_value=ops_processing):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError, match="pending"):
+                verify_corpus_match(client, fp)
+
+    def test_failed_op_prevents_verification(self) -> None:
+        """P5: failed consolidation → rejected (conservative rule)."""
+        from olo.m3.synthetic.generator import corpus_fingerprint, generate_timeline
+        tl = generate_timeline()
+        fp = corpus_fingerprint(tl)
+        docs = _expected_docs_correct()
+        client = _client_with_docs(docs)
+
+        ops_failed = {"operations": [_op("failed", "consolidation")], "total": 1}
+        with patch("olo.m3.hindsight.client._request", return_value=ops_failed):
+            with pytest.raises(CorpusMismatchError, match="failed"):
                 verify_corpus_match(client, fp)
 
     def test_ops_endpoint_unreachable_prevents_verification(self) -> None:
@@ -334,37 +503,29 @@ class TestVerifyCorpusMatchOperations:
                 verify_corpus_match(client, fp)
 
     def test_race_guard_new_pending_op_after_enum_rejected(self) -> None:
-        """Race guard: ops clear before doc enumeration, new pending after → rejected.
-
-        verify_corpus_match calls _check_no_pending_operations TWICE:
-        once before and once after document enumeration.  This test verifies
-        the second call catches a pending operation that appeared during
-        document enumeration.
-        """
+        """Race guard: ops clear before doc enumeration, new pending after → rejected."""
         from olo.m3.synthetic.generator import corpus_fingerprint, generate_timeline
         tl = generate_timeline()
         fp = corpus_fingerprint(tl)
         docs = _expected_docs_correct()
         client = _client_with_docs(docs)
 
-        all_clear = {"items": [], "total": 0}
-        new_pending = {"items": [_op("pending", "consolidation")], "total": 1}
+        all_clear = {"operations": [], "total": 0}
+        new_pending = {"operations": [_op("pending", "consolidation")], "total": 1}
 
         call_count = {"n": 0}
 
         def _side_effect(cfg, method, path, body=None, params=None):
             call_count["n"] += 1
-            # First ops check (pre-enum): all clear
-            # Second ops check (post-enum): new pending op appeared
             if "operations" in path:
                 if call_count["n"] == 1:
                     return all_clear
                 else:
                     return new_pending
-            return {"items": [], "total": 0}
+            return {"operations": [], "total": 0}
 
         with patch("olo.m3.hindsight.client._request", side_effect=_side_effect):
-            with pytest.raises(CorpusMismatchError, match="non-terminal"):
+            with pytest.raises(CorpusMismatchError, match="pending"):
                 verify_corpus_match(client, fp)
 
 
@@ -376,7 +537,7 @@ class TestCorpusVerification:
     """Document-level verification: content hashes, missing/extra docs, fingerprint."""
 
     def _all_ops_done(self) -> dict:
-        return {"items": [], "total": 0}
+        return {"operations": [], "total": 0}
 
     def test_correct_bank_passes(self) -> None:
         from olo.m3.synthetic.generator import corpus_fingerprint, generate_timeline

@@ -110,14 +110,28 @@ class CorpusMismatchError(Exception):
 # Operations-state check (P0.2)
 # ---------------------------------------------------------------------------
 
-#: Operation statuses considered terminal (processing complete or permanently failed).
-#: ANY status not in this set is treated as non-terminal — fail closed.
-_TERMINAL_OP_STATUSES = frozenset({
-    "completed", "succeeded", "done", "failed", "error",
-})
+#: Operation statuses considered successfully completed.
+#: Anything outside this set causes the bank to be rejected — fail closed.
+#:
+#: Intentionally excludes ``"failed"`` and ``"error"``:
+#:   A failed consolidation can leave observations incomplete; there is no way
+#:   via the pinned Hindsight 1.2.1 API to distinguish a failure that was later
+#:   superseded by a successful re-operation from one that left the bank in an
+#:   inconsistent state.  The conservative rule is to block certification until
+#:   no failed operations appear in the history.  Banks whose failures were
+#:   repaired by a later successful run will pass once the original failed
+#:   records are no longer returned by the operations endpoint.
+#:   LIMITATION: a bank that was correctly repaired but still has historical
+#:   ``failed`` records will be rejected.  This is intentional and documented.
+_SUCCESSFUL_OP_STATUSES = frozenset({"completed", "succeeded", "done"})
 
-#: Maximum operations to fetch per page when paginating.
-_OPS_PAGE_SIZE = 500
+#: Statuses known to represent actively running (non-terminal) work.
+_PENDING_OP_STATUSES = frozenset({"pending", "processing"})
+
+#: Maximum operations to fetch per page.
+#: The pinned Hindsight 1.2.1 server enforces a maximum of 100 per request;
+#: requests for 500 return HTTP 422.
+_OPS_PAGE_SIZE = 100
 
 
 def _check_no_pending_operations(
@@ -125,28 +139,24 @@ def _check_no_pending_operations(
     bank_id: str,
     context: str = "verify_corpus_match",
 ) -> int:
-    """Verify every operation in the bank is in a terminal state.
+    """Verify every operation in the bank is in a known-successful state.
 
-    Root cause of the P0.2 audit failure: the previous check used
-    ``GET /operations?limit=1``, which returned only the NEWEST operation
-    (a just-completed re-retain).  Two older pending consolidation operations
-    were invisible, and the verifier incorrectly declared the bank ready.
+    Paginate through ALL operations.  Raise ``CorpusMismatchError`` if:
 
-    This function:
-    1. Uses authenticated ``_request`` (API key forwarded via Authorization header).
-    2. Paginates through ALL operations using offset until the page is smaller
-       than the limit or the ``total`` count is exhausted.
-    3. Treats ONLY ``_TERMINAL_OP_STATUSES`` as safe; every other status
-       (``pending``, ``processing``, unknown, or missing) causes rejection.
-    4. Never swallows exceptions — any network, auth, or parse error becomes
-       a ``CorpusMismatchError``.
+    - Any operation is pending or processing (bank not yet stable).
+    - Any operation is failed, errored, or has an unknown status.
+      A failed consolidation can leave observations incomplete; the pinned
+      Hindsight 1.2.1 API does not expose whether a failure was later
+      superseded by a successful re-run, so the check is conservatively
+      blocking.  See ``_SUCCESSFUL_OP_STATUSES`` for the documented limitation.
+    - The endpoint returns HTTP 4xx/5xx, is unreachable, or times out.
+    - The response is malformed or missing the operations list.
 
-    Returns the total number of operations seen (useful for logging).
+    Returns the total operations seen across all pages.
 
-    Raises ``CorpusMismatchError`` if:
-    - any operation is non-terminal (pending, processing, or unknown status)
-    - the endpoint is unreachable, returns HTTP 4xx/5xx, or times out
-    - the response is missing ``items``/``operations`` or is malformed
+    Pagination note: Hindsight 1.2.1 enforces a maximum page size of 100.
+    Requests for >100 return HTTP 422.  ``_OPS_PAGE_SIZE = 100`` is the
+    correct upper bound.
     """
     from olo.m3.hindsight.client import _request, HindsightAPIError, HindsightUnavailable
 
@@ -182,10 +192,17 @@ def _check_no_pending_operations(
                 "expected dict. Response is malformed."
             )
 
-        ops = data.get("items") or data.get("operations")
+        # Accept both "operations" (Hindsight 1.2.1) and "items" (alternate schema).
+        # Explicitly check key presence to distinguish "key absent" from "key = []".
+        if "operations" in data:
+            ops: object = data["operations"]
+        elif "items" in data:
+            ops = data["items"]
+        else:
+            ops = None
+
         if ops is None:
-            # Empty bank / no operations recorded is fine — zero pending
-            # Only fail if the key is missing AND total suggests operations exist
+            # Neither key present.  Only fail if total indicates operations exist.
             total_hdr = data.get("total")
             if total_hdr and total_hdr > 0:
                 raise CorpusMismatchError(
@@ -199,24 +216,42 @@ def _check_no_pending_operations(
                 f"{context}: operations list is {type(ops).__name__}, expected list."
             )
 
-        # --- Check every operation on this page ---
-        non_terminal: list[dict] = []
+        # --- Classify every operation on this page ---
+        # Pending/processing: bank is not yet stable.
+        # Failed/error/unknown: may indicate incomplete bank state.
+        # Both categories block certification.
+        active: list[dict] = []    # pending or processing
+        failures: list[dict] = []  # failed, error, or unrecognised status
         for op in ops:
             status = op.get("status")
-            if status not in _TERMINAL_OP_STATUSES:
-                non_terminal.append(op)
+            if status in _PENDING_OP_STATUSES:
+                active.append(op)
+            elif status not in _SUCCESSFUL_OP_STATUSES:
+                failures.append(op)
 
-        if non_terminal:
-            detail_parts = []
-            for op in non_terminal[:5]:
-                s = op.get("status", "<missing>")
-                t = op.get("task_type") or op.get("type") or op.get("operation_type", "?")
-                detail_parts.append(f"{s}/{t}")
+        if active:
+            detail_parts = [
+                f"{op.get('status', '<missing>')}/{op.get('task_type') or op.get('type', '?')}"
+                for op in active[:5]
+            ]
             raise CorpusMismatchError(
-                f"{context}: bank {bank_id!r} has {len(non_terminal)} non-terminal "
-                f"operation(s) on page (offset={offset}): "
-                f"{', '.join(detail_parts[:5])}. "
+                f"{context}: bank {bank_id!r} has {len(active)} pending/processing "
+                f"operation(s) at offset={offset}: {', '.join(detail_parts)}. "
                 "Corpus cannot be verified while operations are pending or processing."
+            )
+
+        if failures:
+            detail_parts = [
+                f"{op.get('status', '<missing>')}/{op.get('task_type') or op.get('type', '?')}"
+                for op in failures[:5]
+            ]
+            raise CorpusMismatchError(
+                f"{context}: bank {bank_id!r} has {len(failures)} failed/unrecognised "
+                f"operation(s) at offset={offset}: {', '.join(detail_parts)}. "
+                "Failed operations may have left the bank in an inconsistent state. "
+                "LIMITATION: the Hindsight 1.2.1 API does not distinguish historical "
+                "failures that were later superseded; this check conservatively blocks "
+                "certification until the operations history contains no failures."
             )
 
         total_seen += len(ops)
