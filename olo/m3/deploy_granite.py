@@ -184,6 +184,17 @@ def _wait_for_consolidation(
                 budget_guard.check(budget_baseline)
             except BudgetExceededError as exc:
                 print(f"\n  Budget exhausted after consolidation round {round_num}: {exc}")
+                # Cancel any consolidation operations still pending for this bank.
+                from olo.m3.feeder import _cancel_outstanding_operations
+                try:
+                    sweep = _cancel_outstanding_operations(client, bank_id)
+                    print(
+                        f"  Cancellation sweep: "
+                        f"sweep_cancelled={sweep.get('bank_sweep_cancelled', 0)} "
+                        f"unresolved={len(sweep.get('unresolved', []))}"
+                    )
+                except Exception as _ce:
+                    print(f"  Cancellation sweep error: {_ce}")
                 raise
             except StatsUnavailableError as exc:
                 raise RuntimeError(
@@ -337,7 +348,12 @@ def deploy(
             f"spending limits.  Set HINDSIGHT_API_LLM_TRACE_ENABLED=true and "
             f"restart the server before deploying.  Error: {exc}"
         ) from exc
+    # Log the effective retry limit so the deployment record is auditable.
+    _llm_max_retries = os.environ.get("HINDSIGHT_API_LLM_MAX_RETRIES", "3 (server default)")
+    _retain_max_retries = os.environ.get("HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES", "unset → LLM_MAX_RETRIES")
+    _consol_max_retries = os.environ.get("HINDSIGHT_API_CONSOLIDATION_LLM_MAX_RETRIES", "unset → LLM_MAX_RETRIES")
     print(f"[ok] Budget guard active (tracing confirmed, budget ${budget_usd:.2f})")
+    print(f"[ok] LLM retry limits: global={_llm_max_retries} retain={_retain_max_retries} consolidation={_consol_max_retries}")
 
     # 8. Retain items via batch_retain_to_hindsight which:
     #    - validates strategies before sending
@@ -345,9 +361,11 @@ def deploy(
     #      BEFORE checking the budget so costs are reflected
     #    - fails closed if budget is exceeded, stats are unavailable, or the
     #      operation wait times out or returns an unexpected status (B1 hardening)
+    #    - cancels outstanding server-side operations on abort so the server does
+    #      not continue retrying LLM calls after the client has stopped accepting work
     print(f"Ingesting evidence… (batch_size={batch_size})")
     t_start = time.monotonic()
-    from olo.m3.feeder import batch_retain_to_hindsight, FeedError
+    from olo.m3.feeder import batch_retain_to_hindsight, FeedError, _cancel_outstanding_operations
     try:
         counters = batch_retain_to_hindsight(
             items,
@@ -359,6 +377,36 @@ def deploy(
             prepare_bank=False,  # already prepared in step 6
         )
     except (FeedError, BudgetExceededError) as exc:
+        # batch_retain_to_hindsight already attempted cancellation of the
+        # immediately-failing operation.  Do a final bank-wide sweep here in
+        # case any earlier batches' server-side consolidation is still running.
+        print(f"\n[deploy] Ingestion aborted: {exc}")
+        print(f"[deploy] Sweeping {bank_id!r} for any remaining pending operations…")
+        try:
+            _sweep = _cancel_outstanding_operations(client, bank_id)
+            print(
+                f"[deploy] Cancellation sweep: "
+                f"specific={_sweep.get('specific_op_cancelled')} "
+                f"sweep_cancelled={_sweep.get('bank_sweep_cancelled', 0)} "
+                f"unresolved={len(_sweep.get('unresolved', []))}"
+            )
+            if _sweep.get("unresolved"):
+                print(f"[deploy] WARNING: {len(_sweep['unresolved'])} operation(s) could not "
+                      f"be confirmed cancelled; they may still be running server-side.")
+        except Exception as _ce:
+            print(f"[deploy] Cancellation sweep error: {_ce}")
+        # Reconcile final spend before aborting
+        try:
+            final_snap = _guard.snapshot()
+            print(
+                f"[deploy] Final usage snapshot: "
+                f"input_tokens={final_snap.input_tokens:,} "
+                f"output_tokens={final_snap.output_tokens:,} "
+                f"cost≈${final_snap.cost_usd():.4f} "
+                f"(trace records may still be pending)"
+            )
+        except Exception as _se:
+            print(f"[deploy] Could not obtain final usage snapshot: {_se}")
         raise RuntimeError(f"[deploy] Ingestion failed: {exc}") from exc
     elapsed = time.monotonic() - t_start
     print(f"  {counters['total']} items retained in {elapsed:.0f}s "

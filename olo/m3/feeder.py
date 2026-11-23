@@ -524,6 +524,79 @@ def prepare_hindsight_bank(
 _UNGUARDED = object()
 
 
+# ── Abort-and-cancel helper ───────────────────────────────────────────────────
+
+def _cancel_outstanding_operations(
+    client,  # HindsightClient
+    bank_id: str,
+    timed_out_op_id: Optional[str] = None,
+) -> dict:
+    """Cancel outstanding pending/processing operations for *bank_id* on abort.
+
+    Called when batch_retain_to_hindsight raises due to an operation timeout,
+    failed status, or budget exhaustion.  Cancels the specific timed-out
+    operation first, then sweeps the bank for any remaining pending work.
+
+    Returns a summary dict for logging:
+        {
+            "specific_op_cancelled": bool,
+            "bank_sweep_cancelled": int,  # additional ops cancelled
+            "unresolved": [op_id, ...],   # cancel requests that errored
+            "errors": [(tag, msg), ...],
+        }
+    Only cancels operations belonging to *bank_id*.  Never touches other banks.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+    from olo.m3.hindsight.client import HindsightAPIError, HindsightUnavailable
+
+    summary: dict = {
+        "specific_op_cancelled": False,
+        "bank_sweep_cancelled": 0,
+        "unresolved": [],
+        "errors": [],
+    }
+
+    # 1. Cancel the specific timed-out operation (if any).
+    if timed_out_op_id:
+        try:
+            client.cancel_operation(timed_out_op_id, bank_id=bank_id)
+            summary["specific_op_cancelled"] = True
+            _logger.info(
+                "_cancel_outstanding_operations: cancelled timed-out op %s in bank %r",
+                timed_out_op_id, bank_id,
+            )
+        except (HindsightAPIError, HindsightUnavailable, Exception) as exc:
+            summary["errors"].append(("cancel_specific", str(exc)))
+            summary["unresolved"].append(timed_out_op_id)
+            _logger.warning(
+                "_cancel_outstanding_operations: could not cancel op %s: %s",
+                timed_out_op_id, exc,
+            )
+
+    # 2. Sweep the bank for any remaining pending/processing operations.
+    try:
+        sweep = client.cancel_bank_pending_operations(bank_id=bank_id)
+        summary["bank_sweep_cancelled"] = len(sweep.get("cancelled", []))
+        for op_id, err in sweep.get("errors", []):
+            summary["errors"].append(("sweep", f"{op_id}: {err}"))
+            summary["unresolved"].append(op_id)
+        _logger.info(
+            "_cancel_outstanding_operations: bank sweep for %r cancelled=%d unresolved=%d",
+            bank_id,
+            summary["bank_sweep_cancelled"],
+            len(summary["unresolved"]),
+        )
+    except Exception as exc:
+        summary["errors"].append(("sweep", str(exc)))
+        _logger.warning(
+            "_cancel_outstanding_operations: bank sweep failed for %r: %s",
+            bank_id, exc,
+        )
+
+    return summary
+
+
 # ── Production retain pipeline with budget guard ──────────────────────────────
 
 def batch_retain_to_hindsight(
@@ -615,8 +688,12 @@ def batch_retain_to_hindsight(
     total_sent = 0
     batch_num = 0
     counters = {"total": 0, "prose": 0, "structured": 0, "batches": 0}
+    # Track the most-recently submitted (possibly timed-out) operation ID so
+    # _cancel_outstanding_operations can target it specifically on abort.
+    _last_submitted_op_id: Optional[str] = None
 
-    for label, item_list in [("prose", prose_items), ("structured", struct_items)]:
+    try:
+      for label, item_list in [("prose", prose_items), ("structured", struct_items)]:
         for start in range(0, len(item_list), batch_size):
             batch = item_list[start:start + batch_size]
             if not batch:
@@ -640,6 +717,10 @@ def batch_retain_to_hindsight(
             retain_result = client.retain(
                 batch, operation_id=op_id, async_=async_, bank_id=bank_id
             )
+            _last_submitted_op_id = (
+                retain_result.get("operation_id") if isinstance(retain_result, dict)
+                else None
+            ) or op_id
 
             total_sent += len(batch)
             batch_num += 1
@@ -668,10 +749,7 @@ def batch_retain_to_hindsight(
             # extraction by the time retain() returns.
             if budget_guard is not None and async_:
                 from olo.m3.hindsight.client import HindsightAPIError, HindsightUnavailable
-                returned_op_id = (
-                    retain_result.get("operation_id") if isinstance(retain_result, dict)
-                    else None
-                ) or op_id
+                returned_op_id = _last_submitted_op_id
                 try:
                     wait_result = client.wait_for_operation(
                         returned_op_id,
@@ -716,6 +794,45 @@ def batch_retain_to_hindsight(
                         f"(fails closed — missing statistics must never mean "
                         f"unchecked spending): {exc}"
                     ) from exc
+
+    except (FeedError, Exception) as _abort_exc:
+        # Cancel any outstanding server-side operations before propagating the
+        # abort.  This prevents the server continuing to retry LLM calls (and
+        # accumulating spend) after the client has stopped accepting work.
+        # The cancel is best-effort: a failed cancel is logged but never hides
+        # the original error.
+        if budget_guard is not None:
+            # Only cancel when a budget guard is active; guard=None callers
+            # (benchmark, test) are using LLM_PROVIDER=none — no live spend.
+            import logging as _flog
+            _flog.getLogger(__name__).info(
+                "batch_retain_to_hindsight: aborting after %d batches — "
+                "cancelling outstanding operations in bank %r "
+                "(last op: %s)",
+                batch_num, bank_id, _last_submitted_op_id or "none",
+            )
+            try:
+                cancel_summary = _cancel_outstanding_operations(
+                    client, bank_id,
+                    timed_out_op_id=_last_submitted_op_id,
+                )
+                _flog.getLogger(__name__).info(
+                    "batch_retain_to_hindsight: cancellation result for %r: "
+                    "specific=%s sweep_cancelled=%d unresolved=%d",
+                    bank_id,
+                    cancel_summary.get("specific_op_cancelled"),
+                    cancel_summary.get("bank_sweep_cancelled", 0),
+                    len(cancel_summary.get("unresolved", [])),
+                )
+            except Exception as _ce:
+                _flog.getLogger(__name__).warning(
+                    "batch_retain_to_hindsight: cancellation attempt failed for %r: %s",
+                    bank_id, _ce,
+                )
+        from olo.m3.hindsight.budget import BudgetExceededError
+        if isinstance(_abort_exc, (FeedError, BudgetExceededError)):
+            raise
+        raise
 
     # With auto-consolidation enabled and structured items using the
     # 'structured-no-llm' strategy (enable_observations=False), prose items

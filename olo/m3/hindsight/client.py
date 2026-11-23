@@ -357,6 +357,23 @@ class HindsightClient:
             bank_id,
         )
         return _request(self._cfg, "GET", path)
+
+    def cancel_operation(self, operation_id: str, bank_id: Optional[str] = None) -> dict:
+        """Request cancellation of a pending or processing retain operation.
+        DELETE /v1/default/banks/{bank_id}/operations/{operation_id}
+        Returns the server's response (operation record or 404 body).
+        Raises HindsightAPIError on 5xx; silently accepts 404 (already done).
+        """
+        path = self._bank_path(
+            f"/operations/{urllib.parse.quote(operation_id, safe='')}",
+            bank_id,
+        )
+        try:
+            return _request(self._cfg, "DELETE", path)
+        except HindsightAPIError as exc:
+            if exc.status_code == 404:
+                return {"status": "not_found", "operation_id": operation_id}
+            raise
     def wait_for_operation(
         self,
         operation_id: str,
@@ -373,6 +390,74 @@ class HindsightClient:
                 return status
             time.sleep(poll_interval)
         raise TimeoutError(f"Operation {operation_id} not complete after {timeout_s}s")
+
+    def cancel_bank_pending_operations(
+        self,
+        bank_id: Optional[str] = None,
+        *,
+        statuses: tuple = ("pending", "processing"),
+        page_size: int = 100,
+    ) -> dict:
+        """Cancel all pending/processing operations for a specific bank.
+
+        Paginates through the operations list and issues DELETE for each
+        matching operation.  Only cancels operations belonging to *this* bank;
+        never touches other banks.
+
+        Returns a summary dict::
+            {
+              "cancelled": [op_id, ...],
+              "already_terminal": [op_id, ...],
+              "errors": [(op_id, error_str), ...],
+              "unresolved": [op_id, ...],   # op_ids whose cancel failed (subset of errors)
+              "total_found": int,
+            }
+        """
+        result: dict = {
+            "cancelled": [],
+            "already_terminal": [],
+            "errors": [],
+            "unresolved": [],
+            "total_found": 0,
+        }
+        offset = 0
+        while True:
+            try:
+                resp = self.list_operations(
+                    limit=page_size, bank_id=bank_id
+                )
+            except (HindsightAPIError, HindsightUnavailable, Exception) as exc:
+                result["errors"].append(("list_page", str(exc)))
+                break
+
+            ops = resp.get("operations") or resp.get("items") or []
+            total = resp.get("total", len(ops))
+            result["total_found"] = total
+
+            for op in ops:
+                op_id = (
+                    op.get("operation_id")
+                    or op.get("id")
+                    or ""
+                )
+                if not op_id:
+                    continue
+                op_status = op.get("status", "")
+                if op_status not in statuses:
+                    result["already_terminal"].append(op_id)
+                    continue
+                try:
+                    self.cancel_operation(op_id, bank_id=bank_id)
+                    result["cancelled"].append(op_id)
+                except (HindsightAPIError, HindsightUnavailable, Exception) as exc:
+                    result["errors"].append((op_id, str(exc)))
+                    result["unresolved"].append(op_id)
+
+            if len(ops) < page_size or offset + len(ops) >= total:
+                break
+            offset += page_size
+
+        return result
     # ── Recall ────────────────────────────────────────────────────────────────
     def recall(
         self,
