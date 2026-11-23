@@ -106,18 +106,147 @@ class CorpusMismatchError(Exception):
     """Raised when the bank's evidence does not match the expected corpus."""
 
 
+# ---------------------------------------------------------------------------
+# Operations-state check (P0.2)
+# ---------------------------------------------------------------------------
+
+#: Operation statuses considered terminal (processing complete or permanently failed).
+#: ANY status not in this set is treated as non-terminal — fail closed.
+_TERMINAL_OP_STATUSES = frozenset({
+    "completed", "succeeded", "done", "failed", "error",
+})
+
+#: Maximum operations to fetch per page when paginating.
+_OPS_PAGE_SIZE = 500
+
+
+def _check_no_pending_operations(
+    client: "HindsightClient",
+    bank_id: str,
+    context: str = "verify_corpus_match",
+) -> int:
+    """Verify every operation in the bank is in a terminal state.
+
+    Root cause of the P0.2 audit failure: the previous check used
+    ``GET /operations?limit=1``, which returned only the NEWEST operation
+    (a just-completed re-retain).  Two older pending consolidation operations
+    were invisible, and the verifier incorrectly declared the bank ready.
+
+    This function:
+    1. Uses authenticated ``_request`` (API key forwarded via Authorization header).
+    2. Paginates through ALL operations using offset until the page is smaller
+       than the limit or the ``total`` count is exhausted.
+    3. Treats ONLY ``_TERMINAL_OP_STATUSES`` as safe; every other status
+       (``pending``, ``processing``, unknown, or missing) causes rejection.
+    4. Never swallows exceptions — any network, auth, or parse error becomes
+       a ``CorpusMismatchError``.
+
+    Returns the total number of operations seen (useful for logging).
+
+    Raises ``CorpusMismatchError`` if:
+    - any operation is non-terminal (pending, processing, or unknown status)
+    - the endpoint is unreachable, returns HTTP 4xx/5xx, or times out
+    - the response is missing ``items``/``operations`` or is malformed
+    """
+    from olo.m3.hindsight.client import _request, HindsightAPIError, HindsightUnavailable
+
+    offset = 0
+    total_seen = 0
+
+    while True:
+        path = client._bank_path("/operations", bank_id)
+        params = {"limit": str(_OPS_PAGE_SIZE), "offset": str(offset)}
+        try:
+            data = _request(client._cfg, "GET", path, params=params)
+        except HindsightAPIError as exc:
+            raise CorpusMismatchError(
+                f"{context}: operations endpoint returned HTTP {exc.status_code} "
+                f"for bank {bank_id!r}. "
+                "Cannot certify corpus without confirmed operation state."
+            ) from exc
+        except HindsightUnavailable as exc:
+            raise CorpusMismatchError(
+                f"{context}: operations endpoint unreachable for bank {bank_id!r}: {exc}. "
+                "Cannot certify corpus without confirmed operation state."
+            ) from exc
+        except Exception as exc:
+            raise CorpusMismatchError(
+                f"{context}: unexpected error querying operations for bank {bank_id!r}: "
+                f"{type(exc).__name__}: {exc}. "
+                "Cannot certify corpus without confirmed operation state."
+            ) from exc
+
+        if not isinstance(data, dict):
+            raise CorpusMismatchError(
+                f"{context}: operations endpoint returned {type(data).__name__}, "
+                "expected dict. Response is malformed."
+            )
+
+        ops = data.get("items") or data.get("operations")
+        if ops is None:
+            # Empty bank / no operations recorded is fine — zero pending
+            # Only fail if the key is missing AND total suggests operations exist
+            total_hdr = data.get("total")
+            if total_hdr and total_hdr > 0:
+                raise CorpusMismatchError(
+                    f"{context}: operations response has total={total_hdr} but "
+                    "no 'items' or 'operations' key. Response is malformed."
+                )
+            break
+
+        if not isinstance(ops, list):
+            raise CorpusMismatchError(
+                f"{context}: operations list is {type(ops).__name__}, expected list."
+            )
+
+        # --- Check every operation on this page ---
+        non_terminal: list[dict] = []
+        for op in ops:
+            status = op.get("status")
+            if status not in _TERMINAL_OP_STATUSES:
+                non_terminal.append(op)
+
+        if non_terminal:
+            detail_parts = []
+            for op in non_terminal[:5]:
+                s = op.get("status", "<missing>")
+                t = op.get("task_type") or op.get("type") or op.get("operation_type", "?")
+                detail_parts.append(f"{s}/{t}")
+            raise CorpusMismatchError(
+                f"{context}: bank {bank_id!r} has {len(non_terminal)} non-terminal "
+                f"operation(s) on page (offset={offset}): "
+                f"{', '.join(detail_parts[:5])}. "
+                "Corpus cannot be verified while operations are pending or processing."
+            )
+
+        total_seen += len(ops)
+
+        # --- Pagination ---
+        total_declared = data.get("total")
+        if len(ops) < _OPS_PAGE_SIZE:
+            break  # This page was smaller — we have all operations
+        if total_declared is not None and total_seen >= total_declared:
+            break  # Covered all operations per total field
+        offset += _OPS_PAGE_SIZE
+
+    return total_seen
+
+
 def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> str:
     """Verify the bank contains ALL expected source documents with correct content.
 
-    Per Opus fifth-remediation audit:
+    Per Opus sixth-remediation P0.2 audit:
     1. Verifies corpus fingerprint (generator vs frozen expectation).
-    2. Enumerates every bank document through all pagination pages.
-    3. Counts ALL documents (not just sig: prefix) when checking for extras.
-    4. Compares the sig: document set with the authoritative corpus.
-    5. Rejects missing IDs, extra IDs (any prefix), content-hash mismatches,
+    2. Checks ALL operations are terminal BEFORE document enumeration (P0.2 fix).
+       Uses authenticated, paginated requests — never swallows exceptions.
+    3. Enumerates every bank document through all pagination pages.
+    4. Counts ALL documents (not just sig: prefix) when checking for extras.
+    5. Compares the sig: document set with the authoritative corpus.
+    6. Rejects missing IDs, extra IDs (any prefix), content-hash mismatches,
        missing/empty hashes.
-    6. Requires zero pending or in-progress operations.
-    7. Generates and returns a deterministic bank fingerprint from sorted
+    7. Checks ALL operations are still terminal AFTER document enumeration
+       (race guard: catches operations started during the enumeration window).
+    8. Generates and returns a deterministic bank fingerprint from sorted
        (document_id, content_hash) pairs.
 
     Returns the bank fingerprint string on success.
@@ -125,7 +254,6 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> str:
     """
     import hashlib
     from olo.m3.synthetic.generator import generate_timeline, corpus_fingerprint
-    from olo.m3.hindsight.client import HindsightAPIError
 
     tl = generate_timeline()
     actual_fp = corpus_fingerprint(tl)
@@ -144,36 +272,13 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> str:
         body_sha = hashlib.sha256(sig.body_text.encode("utf-8")).hexdigest()
         expected_hashes[sig_id] = body_sha
 
-    # Check for pending operations BEFORE examining documents.
-    # An in-progress retain may leave the bank in a partially-updated state.
-    try:
-        import urllib.request, urllib.error
-        ops_url = f"{client._cfg.base_url}/v1/default/banks/{BANK_ID}/operations?limit=1"
-        with urllib.request.urlopen(ops_url, timeout=10) as _resp:
-            import json as _json
-            ops_data = _json.loads(_resp.read())
-        # Accept both 'items' and 'operations' keys; some API versions differ
-        pending_items = ops_data.get("items") or ops_data.get("operations") or []
-        # Filter for non-terminal statuses
-        pending = [
-            op for op in pending_items
-            if op.get("status") not in ("completed", "failed", "succeeded", "done")
-        ]
-        total_pending = ops_data.get("total", len(pending_items))
-        if pending or (pending_items and total_pending > 0 and all(
-            op.get("status") not in ("completed", "failed", "succeeded", "done")
-            for op in pending_items
-        )):
-            raise CorpusMismatchError(
-                f"Bank has pending/in-progress operations (total={total_pending}). "
-                "Corpus cannot be verified until all operations complete. "
-                "Wait for consolidation to finish before scoring."
-            )
-    except CorpusMismatchError:
-        raise
-    except Exception:
-        # Operations endpoint may not be available on all server versions; skip check
-        pass
+    # --- P0.2 fix: Check 1 of 2 — all operations terminal BEFORE enumeration ---
+    # Uses authenticated _request with pagination; never swallows exceptions.
+    # Previous implementation used limit=1 (missed older pending ops) and
+    # swallowed ALL exceptions with `except Exception: pass`.
+    n_ops_before = _check_no_pending_operations(
+        client, BANK_ID, context="verify_corpus_match[pre-enum]"
+    )
 
     # Enumerate ALL bank documents through all pagination pages.
     # Track ALL doc IDs (not just sig:) to detect contamination from gate tests.
@@ -256,12 +361,19 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> str:
             "\n".join(f"  {e}" for e in errors)
         )
 
+    # --- P0.2 fix: Check 2 of 2 — all operations still terminal AFTER enumeration ---
+    # Catches a new pending operation started during the document-enumeration window.
+    n_ops_after = _check_no_pending_operations(
+        client, BANK_ID, context="verify_corpus_match[post-enum]"
+    )
+
     # Generate deterministic bank fingerprint from sorted (doc_id, content_hash)
     bank_fingerprint_rows.sort()
     bank_fp_data = json.dumps(bank_fingerprint_rows, separators=(",", ":"))
     bank_fp = hashlib.sha256(bank_fp_data.encode()).hexdigest()
 
     print(f"Corpus verified: {len(tl)} signals, {len(actual_ids_sig)} in bank, "
+          f"ops_seen={n_ops_before}/{n_ops_after}, "
           f"corpus_fp={actual_fp[:16]}..., bank_fp={bank_fp[:16]}...")
     return bank_fp
 
