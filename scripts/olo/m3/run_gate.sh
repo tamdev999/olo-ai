@@ -33,6 +33,10 @@ fi
 source /root/olo_linux_venv/bin/activate
 
 export PYTHONPATH=/mnt/c/oloai
+# Include Hindsight venv site-packages so hindsight_api is importable in the
+# test interpreter (olo_linux_venv) without installing the full package there.
+# Required by test_none_llm_raises_on_call and test_none_llm_verify_connection_is_noop.
+export PYTHONPATH=/root/olo_m3_hindsight_venv/lib/python3.14/site-packages:/mnt/c/oloai
 export HINDSIGHT_HOST=127.0.0.1
 export HINDSIGHT_PORT="${PORT}"
 export HINDSIGHT_BANK_ID="${BANK_ID}"
@@ -43,11 +47,14 @@ export HINDSIGHT_API_LLM_API_KEY
 
 cd /mnt/c/oloai
 
-# Exclude the slow V10 benchmark comparison to prevent gate timeout.
-# V10 is run separately by __run_gate_v10.sh.
+# Run ALL gate tests (integration + structural).  -m integration would exclude
+# the non-integration tests (synthetic-data correctness, benchmark freeze, V9
+# NoneLLM, V8 provenance structural) that are still required for a complete gate.
+# V10 benchmark comparison is excluded separately — it starts three isolated
+# Hindsight instances and belongs in its own gate run (__run_gate_v10.sh).
 python3 -m pytest tests/olo/m3/test_m3_gate.py \
-    -m integration \
     -k "not test_embedding_model_comparison" \
+    --override-ini='addopts=' \
     -v --tb=short \
     --junit-xml=/tmp/gate_granite.xml \
     2>&1

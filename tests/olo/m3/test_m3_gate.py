@@ -517,7 +517,9 @@ class TestV9NoGenerativeCalls:
         import asyncio
 
         async def _run():
-            llm = NoneLLM()
+            # NoneLLM inherits LLMInterface.__init__ which requires these four
+            # positional args in Hindsight 1.2.1; it ignores them at runtime.
+            llm = NoneLLM(provider="none", api_key="", base_url="", model="none")
             await llm.call(messages=[{"role": "user", "content": "test"}])
 
         with pytest.raises(LLMNotAvailableError, match="provider is set to 'none'"):
@@ -529,7 +531,9 @@ class TestV9NoGenerativeCalls:
         except ImportError:
             pytest.skip("hindsight_api not installed in this venv")
         import asyncio
-        asyncio.run(NoneLLM().verify_connection())
+        # NoneLLM inherits LLMInterface.__init__ which requires four positional
+        # args in Hindsight 1.2.1; they are ignored — verify_connection is a no-op.
+        asyncio.run(NoneLLM(provider="none", api_key="", base_url="", model="none").verify_connection())
 
     def test_no_llm_imports_in_olo_m3_memory(self) -> None:
         """AC10: No LLM client imports in olo/m3/ (except the client wrapper)."""
@@ -734,6 +738,12 @@ class TestV9NoGenerativeCalls:
         Correction #8: "Missing or zero usage in the negative control must FAIL,
         including in strict mode." This NC fails (not skips) when usage evidence
         is absent.
+
+        ENVIRONMENT REQUIREMENT: HINDSIGHT_BANK_ID must be set to the deployment
+        bank (e.g. ``main-v1-granite``) before running in strict mode.  The default
+        ``main-v1`` bank accumulates ONNX reranker recall records with NULL token
+        counts; those inflate the call count while leaving input_tokens=0, causing
+        this NC to fail even when DeepSeek tracing is fully functional.
         """
         from olo.m3.hindsight.budget import parse_stats, StatsUnavailableError
         import re as _re
@@ -743,6 +753,21 @@ class TestV9NoGenerativeCalls:
             client.wait_until_ready(timeout_s=30.0)
         except HindsightUnavailable:
             _strict_skip("Hindsight server not running for P9 NC test")
+
+        # Guard: surface a misconfigured gate environment early rather than
+        # producing a confusing "0 calls" failure.
+        # main-v1 is the default fallback bank; it only accumulates ONNX reranker
+        # calls (operation='recall', provider='onnx', input_tokens=NULL) which the
+        # stats endpoint reports as 0 tokens — not a tracing defect.
+        if cfg.bank_id == "main-v1" and os.environ.get("OLO_GATE_STRICT"):
+            pytest.fail(
+                "P9 NC FAIL: HINDSIGHT_BANK_ID is unset or resolves to the default "
+                "'main-v1' bank.  That bank only records ONNX reranker recall calls "
+                "with NULL token counts, so the stats endpoint always returns 0 tokens. "
+                "Set HINDSIGHT_BANK_ID=main-v1-granite (the deployment bank with "
+                "DeepSeek extraction records) before running the strict gate. "
+                "Use scripts/olo/m3/run_gate.sh which sets this automatically."
+            )
 
         # Strategy 1: check the stats endpoint for accumulated tokens
         try:
