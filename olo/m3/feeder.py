@@ -200,6 +200,13 @@ def build_hindsight_items(
     for row in rows:
         payload = json.loads(row["payload"])
         sha256 = payload.get("content_sha256", "")
+        if not sha256:
+            # Real adapter signals (gmail_full, gcal) store the content hash in
+            # content_refs, not at the top level.  The synthetic generator sets
+            # both; production adapters set only content_refs.
+            refs = payload.get("content_refs") or []
+            if refs and isinstance(refs[0], dict):
+                sha256 = refs[0].get("sha256", "")
         signal_id = row["external_id"]
 
         if not sha256:
@@ -289,10 +296,16 @@ def build_hindsight_items(
         # Preserves contact, company, direction, document subject and other
         # grounded attributes when present.  Does NOT fabricate metadata.
         entity_id    = payload.get("entity_id", "")
-        display_name, company = _get_entity_meta(entity_id, entity_cache)
         subject      = row["subject"] or ""
         doc_kind     = payload.get("kind", row["kind"])
         source_tag   = payload.get("source", "")
+        if not entity_id:
+            # Real adapters (Gmail, Calendar) do not set entity_id in payload.
+            # Resolve the primary counterparty using the same mechanism as ingestion,
+            # so the feeder and runner always produce consistent entity_ids.
+            from olo.adapters.entity_extractor import resolve_primary_entity_id_from_payload
+            entity_id = resolve_primary_entity_id_from_payload(doc_kind, payload)
+        display_name, company = _get_entity_meta(entity_id, entity_cache)
 
         # Map signal kinds to human-readable source descriptors
         _KIND_DESCRIPTORS: dict[str, str] = {

@@ -160,9 +160,11 @@ def _event_to_signal(
         "created": event.get("created", ""),
         "updated": updated_raw,
         "organizer_email": organizer.get("email", ""),
+        "organizer_display_name": organizer.get("displayName", ""),
         "attendees": [
             {
                 "email": a.get("email", ""),
+                "display_name": a.get("displayName", ""),
                 "response_status": a.get("responseStatus", ""),
                 "organizer": a.get("organizer", False),
                 "self": a.get("self", False),
