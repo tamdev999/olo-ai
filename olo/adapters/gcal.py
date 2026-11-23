@@ -161,6 +161,7 @@ def _event_to_signal(
         "updated": updated_raw,
         "organizer_email": organizer.get("email", ""),
         "organizer_display_name": organizer.get("displayName", ""),
+        "organizer_self": bool(organizer.get("self", False)),
         "attendees": [
             {
                 "email": a.get("email", ""),

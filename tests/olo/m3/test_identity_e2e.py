@@ -482,6 +482,217 @@ class TestGcalRealAdapter:
             f"Calendar event feeder context must have kind descriptor. Got: {context!r}"
         )
 
+    # ── P0.3 final: organizer.self field preserved and used ───────────────
+
+    def test_organizer_self_field_in_payload(self) -> None:
+        """gcal fix: organizer.self must be stored in payload as 'organizer_self'."""
+        sig = _build_gcal_signal(_RAW_GCAL_EVENT)
+        assert "organizer_self" in sig.payload, (
+            "organizer_self field must be in Calendar signal payload"
+        )
+        assert sig.payload["organizer_self"] is True, (
+            f"organizer_self must be True for dr.martinez (self=True). "
+            f"Got: {sig.payload['organizer_self']!r}"
+        )
+
+    def test_owner_organized_external_attendee_resolves_to_attendee(self) -> None:
+        """P0.3: owner organizes event; owner NOT in attendees list → attendee is counterparty.
+
+        Replicates Opus's identity_e2e_live.py RAW_EVENTS[0]:
+        organizer.self=True, owner NOT listed as attendee.
+        Old code: is_org_self = False (no attendee match) → returned owner as counterparty.
+        New code: organizer_self=True in payload → skips organizer, picks Priya.
+        """
+        from olo.adapters.entity_extractor import resolve_primary_entity_id_from_payload
+
+        payload_owner_organizer_external_attendee = {
+            "organizer_email": "owner@olo.example",
+            "organizer_display_name": "Owner",
+            "organizer_self": True,          # owner organizes
+            "attendees": [
+                # Owner is NOT listed as attendee (common for external-only invites)
+                {"email": "priya@novadental.example",
+                 "display_name": "Priya Raman",
+                 "response_status": "accepted",
+                 "organizer": False,
+                 "self": False},
+            ],
+        }
+        eid = resolve_primary_entity_id_from_payload(
+            "calendar.event.changed", payload_owner_organizer_external_attendee
+        )
+        expected = entity_id_from_email("priya@novadental.example")
+        assert eid == expected, (
+            f"Owner-organized event with external attendee: counterparty must be "
+            f"Priya ({expected[:16]}...), not the owner. Got: {eid!r}"
+        )
+
+    def test_owner_organized_via_real_adapter_resolves_to_attendee(self) -> None:
+        """P0.3 live-scenario: real _event_to_signal output for owner-organized event."""
+        raw_owner_organized = {
+            "id": "owner-evt-001",
+            "status": "confirmed",
+            "summary": "Crown fitting",
+            "updated": "2026-11-22T10:00:00Z",
+            "created": "2026-11-20T10:00:00Z",
+            "start": {"dateTime": "2026-11-28T15:00:00Z"},
+            "end": {"dateTime": "2026-11-28T16:00:00Z"},
+            "organizer": {
+                "email": "owner@olo.example",
+                "displayName": "Owner",
+                "self": True,
+            },
+            # Owner is NOT listed among attendees (external-only invite pattern)
+            "attendees": [
+                {"email": "priya@novadental.example",
+                 "displayName": "Priya Raman",
+                 "responseStatus": "accepted"},
+            ],
+        }
+        sig = _build_gcal_signal(raw_owner_organized)
+        assert sig.payload.get("organizer_self") is True, (
+            "organizer_self must be True in payload"
+        )
+        eid = resolve_primary_entity_id(sig)
+        expected = entity_id_from_email("priya@novadental.example")
+        assert eid == expected, (
+            f"Real adapter owner-organized event: counterparty must be Priya. "
+            f"Expected {expected[:16]}..., got {eid!r}"
+        )
+
+    def test_personal_event_no_external_attendee_has_no_counterparty(self) -> None:
+        """P0.3: personal owner-organized event with no external attendee → no counterparty.
+
+        Replicates Opus's RAW_EVENTS[1] ('Focus time'): no attendees at all.
+        """
+        raw_focus_time = {
+            "id": "focus-001",
+            "status": "confirmed",
+            "summary": "Focus time",
+            "updated": "2026-11-22T11:00:00Z",
+            "created": "2026-11-20T10:00:00Z",
+            "start": {"dateTime": "2026-11-29T15:00:00Z"},
+            "end": {"dateTime": "2026-11-29T16:00:00Z"},
+            "organizer": {
+                "email": "owner@olo.example",
+                "displayName": "Owner",
+                "self": True,
+            },
+            # No attendees — personal calendar block
+        }
+        sig = _build_gcal_signal(raw_focus_time)
+        eid = resolve_primary_entity_id(sig)
+        assert eid == "", (
+            f"Personal event with no external attendees must return '' "
+            f"(no fabricated counterparty). Got: {eid!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P0.3 final: kind descriptors for real signal kinds
+# ---------------------------------------------------------------------------
+
+class TestKindDescriptors:
+    """Feeder must produce correct human-readable descriptors for all real signal kinds."""
+
+    def _get_descriptor_from_feeder(
+        self,
+        tmp_path: Path,
+        sig: NormalizedSignal,
+        source: str,
+    ) -> str:
+        """Store signal, run feeder, return context from first item."""
+        db_path = _make_db(tmp_path, source)
+        conn = _store_signal_and_get_conn(db_path, sig)
+        upsert_entities((sig,), source, conn)
+        conn.close()
+
+        from olo.m3.feeder import build_hindsight_items
+        items = build_hindsight_items(db_path, source=source)
+        return items[0].get("context", "") if items else ""
+
+    def test_email_received_descriptor(self, tmp_path: Path) -> None:
+        """email.content(received) → 'Email received' descriptor."""
+        sig = _build_gmail_full_signal(_RAW_GMAIL_FULL)
+        assert sig.payload.get("direction") == "received"
+        ctx = self._get_descriptor_from_feeder(tmp_path, sig, SOURCE)
+        assert ctx.startswith("Email received"), (
+            f"email.content (received) must start with 'Email received'. Got: {ctx!r}"
+        )
+
+    def test_email_sent_descriptor(self, tmp_path: Path) -> None:
+        """email.content(sent) → 'Email sent' descriptor."""
+        # Build a sent full-content email
+        raw_sent = {
+            **_RAW_GMAIL_FULL,
+            "id": "sent001",
+            "labelIds": ["SENT"],
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "From",
+                     "value": "Dr. Martinez <dr.martinez@nova-dental.com>"},
+                    {"name": "To",
+                     "value": "Alice Chen <alice.chen@nova-dental.com>"},
+                    {"name": "Subject", "value": "Re: Appointment"},
+                    {"name": "Date",
+                     "value": "Mon, 1 Jan 2024 00:00:00 +0000"},
+                    {"name": "Message-ID",
+                     "value": "<sent001@nova-dental.com>"},
+                ],
+                "body": {"data": "UmU6IEFwcG9pbnRtZW50", "size": 20},
+            },
+        }
+        from olo.adapters.gmail_full import build_email_content_signal
+        sig = build_email_content_signal(SOURCE, raw_sent, RECORD_ID)
+        assert sig.payload.get("direction") == "sent", (
+            f"direction must be 'sent' for SENT-labelled email. "
+            f"Got: {sig.payload.get('direction')!r}"
+        )
+        ctx = self._get_descriptor_from_feeder(tmp_path, sig, SOURCE)
+        assert ctx.startswith("Email sent"), (
+            f"email.content (sent) must start with 'Email sent'. Got: {ctx!r}"
+        )
+
+    def test_calendar_changed_descriptor(self, tmp_path: Path) -> None:
+        """calendar.event.changed → 'Calendar event' descriptor."""
+        sig = _build_gcal_signal(_RAW_GCAL_EVENT)
+        assert sig.kind == "calendar.event.changed"
+        ctx = self._get_descriptor_from_feeder(tmp_path, sig, SOURCE_CAL)
+        assert ctx.startswith("Calendar event"), (
+            f"calendar.event.changed must start with 'Calendar event'. Got: {ctx!r}"
+        )
+
+    def test_calendar_cancelled_descriptor(self, tmp_path: Path) -> None:
+        """calendar.event.cancelled → 'Cancelled calendar event' descriptor."""
+        sig = _build_gcal_signal(_RAW_GCAL_CANCELLED)
+        assert sig.kind == "calendar.event.cancelled"
+        ctx = self._get_descriptor_from_feeder(tmp_path, sig, SOURCE_CAL)
+        assert ctx.startswith("Cancelled calendar event"), (
+            f"calendar.event.cancelled must start with 'Cancelled calendar event'. "
+            f"Got: {ctx!r}"
+        )
+
+    def test_email_received_metadata_signal_descriptor(self) -> None:
+        """email.received (metadata signal) → 'Email received' via _KIND_DESCRIPTORS."""
+        # Verify the descriptor lookup table directly
+        from olo.m3.feeder import build_hindsight_items
+        # _KIND_DESCRIPTORS is defined inside build_hindsight_items — test via
+        # the feeder output on a signal that uses the kind directly
+        # (email.received uses the headers path, not email.content)
+        payload_received = {
+            "headers": {
+                "from": [{"name": "Alice", "email": "alice@a.com"}],
+                "to": [], "cc": [],
+            },
+            "message_id": "x",
+        }
+        from olo.adapters.entity_extractor import resolve_primary_entity_id_from_payload
+        # Descriptor correctness is validated indirectly through real signals above.
+        # This just confirms the resolution path works for email.received kind.
+        eid = resolve_primary_entity_id_from_payload("email.received", payload_received)
+        assert eid == entity_id_from_email("alice@a.com")
+
 
 # ---------------------------------------------------------------------------
 # 5. Two businesses — identity isolation

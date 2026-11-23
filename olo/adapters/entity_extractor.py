@@ -347,16 +347,22 @@ def resolve_primary_entity_id_from_payload(kind: str, payload: dict) -> str:
         # "self" = the account owner whose calendar this is.
         org_email = (payload.get("organizer_email") or "").strip().lower()
         if org_email:
-            # Check if any attendee has self=True AND the same email as the organizer
-            is_org_self = any(
-                att.get("self") and (att.get("email") or "").lower() == org_email
-                for att in (payload.get("attendees") or [])
-                if isinstance(att, dict)
-            )
+            # Prefer the explicit organizer_self flag stored by the gcal adapter
+            # (organizer.self from the Google API).  Fall back to searching attendees
+            # for a matching self=True entry for older payloads that pre-date this field.
+            is_org_self: bool = bool(payload.get("organizer_self", False))
             if not is_org_self:
+                is_org_self = any(
+                    att.get("self") and (att.get("email") or "").lower() == org_email
+                    for att in (payload.get("attendees") or [])
+                    if isinstance(att, dict)
+                )
+            if not is_org_self:
+                # Organizer is external — they are the counterparty.
                 return entity_id_from_email(org_email)
+            # Organizer is the business owner → skip them and use first non-self attendee.
 
-        # Fall back to first non-self attendee
+        # Find first non-self attendee as the counterparty.
         for att in payload.get("attendees") or []:
             if not isinstance(att, dict):
                 continue

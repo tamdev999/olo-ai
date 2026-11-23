@@ -309,14 +309,21 @@ def build_hindsight_items(
 
         # Map signal kinds to human-readable source descriptors
         _KIND_DESCRIPTORS: dict[str, str] = {
-            "email.received":         "Email received",
-            "email.sent":             "Email sent",
-            "call.transcript":        "Phone call transcript",
-            "calendar.event.created": "Calendar event",
-            "invoice.created":        "Invoice record",
+            "email.received":           "Email received",
+            "email.sent":               "Email sent",
+            "call.transcript":          "Phone call transcript",
+            "calendar.event.created":   "Calendar event",
+            "calendar.event.changed":   "Calendar event",
+            "calendar.event.cancelled": "Cancelled calendar event",
+            "invoice.created":          "Invoice record",
         }
+        # For email.content, use the authoritative direction field from the payload
+        # rather than inferring it from authorship.
+        if doc_kind == "email.content":
+            direction = payload.get("direction", "received")
+            kind_descriptor = "Email sent" if direction == "sent" else "Email received"
         # For invoice.created, prefer the specific payment system name
-        if doc_kind == "invoice.created":
+        elif doc_kind == "invoice.created":
             if "stripe" in source_tag.lower():
                 kind_descriptor = "Stripe invoice record"
             elif "qbo" in source_tag.lower():
