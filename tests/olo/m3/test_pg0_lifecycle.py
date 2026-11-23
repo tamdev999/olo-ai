@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
-from tests.olo.m3._pg0_lifecycle import (
+from olo.m3.pg0_lifecycle import (
     pg0_stop, pg0_stop_and_clean, Pg0StillRunningError, _pg0_instance_data_dir,
 )
 
@@ -26,7 +26,7 @@ class TestPg0StopBeforeDelete:
         sentinel.write_text("14")
 
         # Simulate stop failure
-        with patch("tests.olo.m3._pg0_lifecycle.pg0_stop", return_value=False):
+        with patch("olo.m3.pg0_lifecycle.pg0_stop", return_value=False):
             with pytest.raises(Pg0StillRunningError):
                 pg0_stop_and_clean(
                     instance_name="test-instance",
@@ -42,7 +42,7 @@ class TestPg0StopBeforeDelete:
         socket_dir = tmp_path / "pg0_socket"
         socket_dir.mkdir()
 
-        with patch("tests.olo.m3._pg0_lifecycle.pg0_stop", return_value=False):
+        with patch("olo.m3.pg0_lifecycle.pg0_stop", return_value=False):
             # Raises even with socket_dir provided — stop failure is fatal
             with pytest.raises(Pg0StillRunningError):
                 pg0_stop_and_clean(
@@ -68,7 +68,7 @@ class TestPg0StopBeforeDelete:
                 shutil.rmtree(str(data_dir), ignore_errors=True)
             return m
 
-        with patch("tests.olo.m3._pg0_lifecycle.pg0_stop", return_value=True), \
+        with patch("olo.m3.pg0_lifecycle.pg0_stop", return_value=True), \
              patch("subprocess.run", side_effect=fake_run):
             pg0_stop_and_clean(
                 instance_name="test-instance",
@@ -91,7 +91,7 @@ class TestPg0StopBeforeDelete:
                 deleted_paths.append(cmd[-1])
             return m
 
-        with patch("tests.olo.m3._pg0_lifecycle.pg0_stop", return_value=True), \
+        with patch("olo.m3.pg0_lifecycle.pg0_stop", return_value=True), \
              patch("subprocess.run", side_effect=fake_run):
             pg0_stop_and_clean(
                 instance_name="my-inst",
@@ -103,3 +103,4 @@ class TestPg0StopBeforeDelete:
             f"Expected {expected!r} to be deleted, got {deleted_paths}. "
             "pg0_stop_and_clean must use canonical layout path."
         )
+

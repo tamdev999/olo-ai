@@ -28,14 +28,17 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
-from tests.olo.m3._pg0_lifecycle import (
+from olo.m3.pg0_lifecycle import (
     pg0_stop,
     pg0_stop_and_clean,
     Pg0StillRunningError,
     _pg0_instance_data_dir,
+    _list_pg0_instances,
     _read_postmaster_pid,
     _process_exists,
     _wait_for_postmaster_exit,
+    safe_pg0_stop_all,
+    safe_pg0_delete_home,
 )
 
 
@@ -154,7 +157,7 @@ class TestWrongHomeStop:
         result = _make_pg0_stop_result(1, b"No running instance found")
         with patch("subprocess.run", return_value=result), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists", return_value=True):
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
             with pytest.raises(Pg0StillRunningError):
                 pg0_stop_and_clean(
                     instance_name="test",
@@ -252,7 +255,7 @@ class TestN1WrongInstanceSameHome:
         stop_result = _make_pg0_stop_result(0)
         with patch("subprocess.run", side_effect=fake_rm), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists", return_value=False):
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
             pg0_stop_and_clean(instance_name="hs", home_dir=home)
         assert not data_dir.exists(), "Correct instance data must be deleted after stop"
 
@@ -274,7 +277,7 @@ class TestN2StopMismatch:
         stop_result = _make_pg0_stop_result(0)
         with patch("subprocess.run", return_value=stop_result), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists", return_value=True):
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
             stopped = pg0_stop(instance_name="hs_mismatch", home_dir=home,
                                exit_wait_s=0.001)
         assert not stopped, "Must return False when postmaster PID is still alive"
@@ -299,7 +302,7 @@ class TestN2bLostStateFile:
         result = _make_pg0_stop_result(1, b"not running")
         with patch("subprocess.run", return_value=result), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists", return_value=True):
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
             with pytest.raises(Pg0StillRunningError):
                 pg0_stop_and_clean(
                     instance_name="hs",
@@ -333,7 +336,7 @@ class TestN4WrongDataDirPath:
         result = _make_pg0_stop_result(0)
         with patch("subprocess.run", return_value=result), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists", return_value=True):
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
             stopped = pg0_stop(instance_name="hs", home_dir=home,
                                exit_wait_s=0.001)
         # Postmaster still alive → stop returns False
@@ -388,7 +391,7 @@ class TestN6PreCleanWithLeftover:
         with patch("subprocess.run",
                    return_value=_make_pg0_stop_result(0)), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists", return_value=True):
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
             with pytest.raises(Pg0StillRunningError):
                 pg0_stop_and_clean(
                     instance_name="hs",
@@ -418,7 +421,7 @@ class TestKillHindsightPg0Lives:
         stop_result = _make_pg0_stop_result(0)
         with patch("subprocess.run", return_value=stop_result), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists",
+             patch("olo.m3.pg0_lifecycle._process_exists",
                    return_value=True):
             with pytest.raises(Pg0StillRunningError):
                 pg0_stop_and_clean(
@@ -455,7 +458,7 @@ class TestKillHindsightPg0Lives:
         stop_result = _make_pg0_stop_result(0)
         with patch("subprocess.run", side_effect=fake_rm), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists",
+             patch("olo.m3.pg0_lifecycle._process_exists",
                    return_value=False):
             pg0_stop_and_clean(
                 instance_name="olo-v5gate",
@@ -482,7 +485,7 @@ class TestReturnCodeInsufficient:
         stop_result = _make_pg0_stop_result(0)
         with patch("subprocess.run", return_value=stop_result), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists",
+             patch("olo.m3.pg0_lifecycle._process_exists",
                    return_value=True):
             stopped = pg0_stop(instance_name="my-instance", home_dir=home,
                                exit_wait_s=0.001)
@@ -503,7 +506,7 @@ class TestReturnCodeInsufficient:
         stop_result = _make_pg0_stop_result(0)
         with patch("subprocess.run", return_value=stop_result), \
              patch("time.sleep"), \
-             patch("tests.olo.m3._pg0_lifecycle._process_exists",
+             patch("olo.m3.pg0_lifecycle._process_exists",
                    return_value=False):
             stopped = pg0_stop(instance_name="my-instance", home_dir=home)
         assert stopped
@@ -590,3 +593,192 @@ class TestCrossHomeDeletionPrevention:
         )
         assert not a.is_relative_to(home_b), "home_a path must not be inside home_b"
         assert not b.is_relative_to(home_a), "home_b path must not be inside home_a"
+
+
+# ── safe_pg0_stop_all / safe_pg0_delete_home N2/N9/N5/N7/N6 ─────────────────
+
+class TestSafeDeleteHome:
+    """safe_pg0_delete_home enumerates ALL instances — no guessed names (N2/N7/N9).
+
+    These are the cases that the previous pg0_stop(configured_name) approach
+    left open: a wrong or guessed name caused the helper to miss live postmasters.
+    """
+
+    def test_enumerates_all_instances(self, tmp_path: Path) -> None:
+        """_list_pg0_instances finds every instance by scanning the directory."""
+        home = tmp_path / "home"
+        home.mkdir()
+        for name in ("inst-a", "inst-b"):
+            d = _pg0_instance_data_dir(home, name)
+            d.mkdir(parents=True)
+        found = _list_pg0_instances(home)
+        assert set(found) == {"inst-a", "inst-b"}, (
+            f"Expected {{inst-a, inst-b}}, got {set(found)}"
+        )
+
+    def test_no_instances_returns_empty(self, tmp_path: Path) -> None:
+        """When HOME/.pg0/instances/ is absent, list is empty."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert _list_pg0_instances(home) == []
+
+    def test_n2_name_mismatch_still_stops_real_instance(
+        self, tmp_path: Path
+    ) -> None:
+        """N2: even when the configured name is wrong, safe_pg0_stop_all
+        discovers and stops the REAL instance by enumerating the directory.
+
+        Before the fix: pg0_stop("hs_configured") found no data dir for
+        "hs_configured" → returned True → HOME deleted with "hs" live.
+        After the fix: safe_pg0_stop_all enumerates and finds "hs", stops it.
+        """
+        import shutil
+        home = tmp_path / "n2home"
+        home.mkdir()
+        # Real instance is "hs"
+        real_data = _pg0_instance_data_dir(home, "hs")
+        real_data.mkdir(parents=True)
+        (real_data / "postmaster.pid").write_text("77777\n")
+        sentinel = real_data / "PG_VERSION"
+        sentinel.write_text("14")
+
+        def fake_rm(cmd, **kw):
+            m = MagicMock(); m.returncode = 0
+            if "rm" in cmd:
+                target = cmd[-1]
+                if Path(target).exists():
+                    if Path(target).is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        Path(target).unlink(missing_ok=True)
+            return m
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", side_effect=fake_rm), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
+            # safe_pg0_delete_home enumerates and finds "hs", stops and deletes
+            safe_pg0_delete_home(home)
+        # HOME should be gone (deleted after verified stop)
+        assert not home.exists(), (
+            "safe_pg0_delete_home must delete HOME after stopping all instances"
+        )
+
+    def test_n9_two_instances_both_stopped(self, tmp_path: Path) -> None:
+        """N9: two instances in the same HOME are both stopped before deletion."""
+        import shutil
+        home = tmp_path / "n9home"
+        home.mkdir()
+        for inst in ("hs", "hs2"):
+            d = _pg0_instance_data_dir(home, inst)
+            d.mkdir(parents=True)
+            (d / "postmaster.pid").write_text("99999\n")
+        sentinel_hs2 = _pg0_instance_data_dir(home, "hs2") / "PG_VERSION"
+        sentinel_hs2.write_text("14")
+
+        def fake_rm(cmd, **kw):
+            m = MagicMock(); m.returncode = 0
+            if "rm" in cmd:
+                target = cmd[-1]
+                if Path(target).exists():
+                    if Path(target).is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        Path(target).unlink(missing_ok=True)
+            return m
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", side_effect=fake_rm), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
+            safe_pg0_delete_home(home)
+        assert not home.exists(), "HOME must be deleted after all instances stopped"
+
+    def test_n5_failed_stop_refuses_home_deletion(self, tmp_path: Path) -> None:
+        """N5: if any instance cannot be stopped, HOME is not deleted.
+
+        V7-style teardown: pg0_stop_and_clean raises, except: pass, then rm -rf HOME.
+        After the fix: safe_pg0_delete_home raises and nothing is deleted.
+        """
+        home = tmp_path / "n5home"
+        home.mkdir()
+        data = _pg0_instance_data_dir(home, "hs")
+        data.mkdir(parents=True)
+        (data / "postmaster.pid").write_text("55555\n")
+        sentinel = data / "PG_VERSION"
+        sentinel.write_text("14")
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", return_value=stop_result), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True,
+                   exit_wait_s=0.001):
+            # We need exit_wait_s=0.001 but it's passed to safe_pg0_delete_home
+            with pytest.raises(Pg0StillRunningError):
+                safe_pg0_delete_home(home, exit_wait_s=0.001)
+        assert home.exists(), "HOME must NOT be deleted when stop fails"
+        assert sentinel.exists(), "Data must survive a failed stop"
+
+    def test_n7_no_instances_does_not_fail(self, tmp_path: Path) -> None:
+        """N7-equivalent: when HOME has no pg0 instances, deletion proceeds safely.
+
+        Before fix: pg0_stop(guessed_name) returned True (no data dir found),
+        rm -rf HOME ran — which happened to be correct behavior if no instances
+        were left, but the code path didn't verify it.
+        After fix: safe_pg0_delete_home with an empty instances list is a no-op
+        for stop and then deletes the HOME safely.
+        """
+        import shutil
+        home = tmp_path / "n7home"
+        home.mkdir()
+        (home / "some_file.txt").write_text("data")
+        # No pg0 instances created
+
+        def fake_rm(cmd, **kw):
+            m = MagicMock(); m.returncode = 0
+            if "rm" in cmd:
+                target = cmd[-1]
+                if Path(target).exists():
+                    if Path(target).is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        Path(target).unlink(missing_ok=True)
+            return m
+
+        with patch("subprocess.run", side_effect=fake_rm):
+            safe_pg0_delete_home(home)
+        assert not home.exists(), "Empty HOME should be deleted safely"
+
+    def test_safe_pg0_stop_all_does_not_delete(self, tmp_path: Path) -> None:
+        """safe_pg0_stop_all stops instances but does NOT delete the HOME."""
+        home = tmp_path / "stop_all_home"
+        home.mkdir()
+        data = _pg0_instance_data_dir(home, "hs")
+        data.mkdir(parents=True)
+        (data / "postmaster.pid").write_text("12345\n")
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", return_value=stop_result), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
+            stopped = safe_pg0_stop_all(home)
+        assert home.exists(), "safe_pg0_stop_all must NOT delete the home directory"
+        assert "hs" in stopped
+
+    def test_safe_pg0_stop_all_raises_on_live_postmaster(
+        self, tmp_path: Path
+    ) -> None:
+        """safe_pg0_stop_all raises when a postmaster cannot be verified stopped."""
+        home = tmp_path / "stop_fail_home"
+        home.mkdir()
+        data = _pg0_instance_data_dir(home, "hs")
+        data.mkdir(parents=True)
+        (data / "postmaster.pid").write_text("12345\n")
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", return_value=stop_result), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
+            with pytest.raises(Pg0StillRunningError):
+                safe_pg0_stop_all(home, exit_wait_s=0.001)
+        assert home.exists(), "HOME must survive a failed stop_all"

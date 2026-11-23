@@ -1780,25 +1780,33 @@ class TestV5CrashRecovery:
                 # (name-pattern kill) is unreliable.  pg0 stop uses the state
                 # file it wrote during start — it always finds the right PID.
                 _pg0_bin = "/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/pg0/bin/pg0"
-                # Use verified stop-and-clean to prevent live-database deletion.
-                # pg0_stop() now verifies postmaster exit via pidfile + /proc polling.
-                from tests.olo.m3._pg0_lifecycle import (
-                    pg0_stop_and_clean, pg0_stop, Pg0StillRunningError
+                # N2/N9 fix: use safe_pg0_delete_home/safe_pg0_stop_all which
+                # ENUMERATE all pg0 instances rather than trusting pg0_instance
+                # (the configured name that may not match what's actually running).
+                from olo.m3.pg0_lifecycle import (
+                    safe_pg0_delete_home, safe_pg0_stop_all, Pg0StillRunningError
                 )
                 if not preserve_pg0_data:
                     try:
-                        from tests.olo.m3._pg0_lifecycle import _pg0_instance_data_dir
-                        pg0_stop_and_clean(
-                            instance_name=pg0_instance,
-                            home_dir=v5_home,
-                            socket_dir=v5_socket_dir,
-                        )
+                        safe_pg0_delete_home(v5_home)
                     except Pg0StillRunningError as _e:
-                        _strict_skip(f"V5: pg0 instance still running after stop: {_e}")
+                        pytest.fail(
+                            f"V5 fresh start: cannot stop all pg0 instances: {_e}"
+                        )
+                    subprocess.run(
+                        ["sudo", "-u", "olo_hs", "mkdir", "-p", str(v5_home)],
+                        check=False, capture_output=True,
+                    )
                 else:
-                    # preserve_pg0_data=True: stop but keep data (crash recovery test)
-                    pg0_stop(instance_name=pg0_instance, home_dir=v5_home)
-                    # Only clean socket dir so a fresh socket path is available
+                    # preserve_pg0_data=True: stop all instances but keep data
+                    # (crash recovery test — pg0 must replay its WAL)
+                    try:
+                        safe_pg0_stop_all(v5_home)
+                    except Pg0StillRunningError as _e:
+                        pytest.fail(
+                            f"V5 crash recovery restart: cannot stop all pg0 instances: {_e}"
+                        )
+                    # Clean only socket dir; data must be preserved for WAL replay
                     subprocess.run(
                         ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_socket_dir)],
                         check=False, capture_output=True,
@@ -1959,21 +1967,18 @@ class TestV5CrashRecovery:
             # Kill only the processes this test started.
             for _p in _procs_started:
                 _kill_process_group(_p)
-            # Stop pg0 with verified exit before deleting the home directory.
-            # This prevents the live-database deletion bug reproduced by Opus T1/T2.
-            from tests.olo.m3._pg0_lifecycle import pg0_stop, Pg0StillRunningError
-            _v5_stopped = pg0_stop(instance_name=pg0_instance, home_dir=v5_home)
-            if not _v5_stopped:
-                # pg0 not confirmed stopped — only delete socket dir, not data
-                subprocess.run(
-                    ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_socket_dir)],
-                    check=False, capture_output=True,
-                )
-            else:
-                # Postmaster confirmed gone — safe to remove the full test directory
-                subprocess.run(
-                    ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_home)],
-                    check=False, capture_output=True,
+            # N2/N9 fix: use safe_pg0_delete_home which ENUMERATES all pg0
+            # instances rather than trusting the configured name.  The old
+            # pg0_stop(instance_name=pg0_instance) returned True when the
+            # configured name did not match any running instance, then
+            # unconditionally deleted the HOME — a live database was deleted.
+            from olo.m3.pg0_lifecycle import safe_pg0_delete_home, Pg0StillRunningError
+            try:
+                safe_pg0_delete_home(v5_home)
+            except Pg0StillRunningError as _e5:
+                pytest.fail(
+                    f"V5 teardown: cannot verify all pg0 instances stopped "
+                    f"before home deletion: {_e5}"
                 )
 
 
@@ -2349,42 +2354,23 @@ class TestV7IsolationIntegration:
             client_local = HindsightClient(cfg_local)
 
             for _attempt in range(3):
-                # Stop any stale pg0 instance using pg0's own stop command.
-                # PostgreSQL renames its process after startup, making pkill
-                # unreliable. pg0 stop uses state file tracking instead.
+                # N2/N9 fix: use safe_pg0_stop_all which ENUMERATES all pg0
+                # instances — not just the one named in DATABASE_URL.
                 _pg0_bin = "/root/olo_m3_hindsight_venv/lib/python3.14/site-packages/pg0/bin/pg0"
-                _db_url = env_vars_local.get("HINDSIGHT_API_DATABASE_URL", "")
-                if _db_url.startswith("pg0://"):
-                    _pg0_inst = _db_url[6:].split("?")[0].split("/")[0]
-                    if _pg0_inst:
-                        # Use verified stop-and-clean to prevent live-database deletion.
-                        # Import _pg0_instance_data_dir to use the correct pg0 0.17.0 layout.
-                        from tests.olo.m3._pg0_lifecycle import (
-                            pg0_stop_and_clean, Pg0StillRunningError,
-                            _pg0_instance_data_dir,
-                        )
-                        try:
-                            pg0_stop_and_clean(
-                                instance_name=_pg0_inst,
-                                home_dir=biz_home,
-                                socket_dir=Path(socket_dir),
-                            )
-                        except Pg0StillRunningError as _e:
-                            # pg0 not stopped — only clean socket, not data
-                            subprocess.run(
-                                ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
-                                check=False, capture_output=True,
-                            )
-                    else:
-                        subprocess.run(
-                            ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
-                            check=False, capture_output=True,
-                        )
-                else:
-                    subprocess.run(
-                        ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
-                        check=False, capture_output=True,
+                from olo.m3.pg0_lifecycle import (
+                    safe_pg0_stop_all, Pg0StillRunningError,
+                )
+                try:
+                    safe_pg0_stop_all(biz_home)
+                except Pg0StillRunningError as _e:
+                    pytest.fail(
+                        f"V7 _start_biz: cannot stop all pg0 instances in "
+                        f"{biz_home}: {_e}"
                     )
+                subprocess.run(
+                    ["sudo", "-u", "olo_hs", "rm", "-rf", socket_dir],
+                    check=False, capture_output=True,
+                )
                 subprocess.run(
                     ["sudo", "-u", "olo_hs", "mkdir", "-p", socket_dir],
                     check=False, capture_output=True,
@@ -2512,38 +2498,20 @@ class TestV7IsolationIntegration:
                 _kill_process_group(_p)
             except Exception:
                 pass
-        # N5 fix: stop pg0 for each business before deleting their home directories.
-        # Killing the Hindsight process group does NOT stop the detached pg0 postmaster.
-        # Deleting the HOME while pg0 is running corrupts or orphans the database.
-        from tests.olo.m3._pg0_lifecycle import (
-            pg0_stop, pg0_stop_and_clean, Pg0StillRunningError,
-            _pg0_instance_data_dir,
-        )
-        for _biz_id, _hermes_home, _port in [
-            (biz_a, hermes_home_a, port_a),
-            (biz_b, hermes_home_b, port_b),
-        ]:
+        # N5/N9 fix: use safe_pg0_delete_home for each business HOME, then delete
+        # the hermes homes.  This enumerates ALL pg0 instances rather than relying
+        # on a configured name that may not match what's running.
+        from olo.m3.pg0_lifecycle import safe_pg0_delete_home, Pg0StillRunningError
+        for _biz_id, _hermes_home in [(biz_a, hermes_home_a), (biz_b, hermes_home_b)]:
             _biz_home = _hermes_home / "businesses" / _biz_id
-            # Derive the pg0 instance name from the business env file
-            _biz_env_file = _biz_home / ".env"
-            _biz_pg0_inst = None
-            if _biz_env_file.exists():
-                for _line in _biz_env_file.read_text().splitlines():
-                    if "HINDSIGHT_API_DATABASE_URL" in _line:
-                        _db_val = _line.partition("=")[2].strip()
-                        if _db_val.startswith("pg0://"):
-                            _biz_pg0_inst = _db_val[6:].split("?")[0].split("/")[0]
-                        break
-            if _biz_pg0_inst:
+            if _biz_home.exists():
                 try:
-                    pg0_stop_and_clean(
-                        instance_name=_biz_pg0_inst,
-                        home_dir=_biz_home,
-                        settle_s=0,
+                    safe_pg0_delete_home(_biz_home)
+                except Pg0StillRunningError as _e:
+                    pytest.fail(
+                        f"V7 teardown: cannot safely delete {_biz_id} home: {_e}"
                     )
-                except (Pg0StillRunningError, Exception):
-                    # Best-effort: if stop fails, skip data dir deletion but continue
-                    pass
+        # All pg0 instances confirmed stopped; safe to delete entire hermes homes
         subprocess.run(
             ["sudo", "-u", "olo_hs", "rm", "-rf",
              "/home/olo_hs/v7_hermes_a", "/home/olo_hs/v7_hermes_b"],
@@ -2703,10 +2671,19 @@ class TestV10Footprint:
             port = base_port + i
             pg0_home = Path(f"/home/olo_hs/bench_{model_cfg['id']}")
             # Clean up with process-group kill, not pkill by name pattern (C12 fix)
-            subprocess.run(
-                ["sudo", "-u", "olo_hs", "rm", "-rf", str(pg0_home)],
-                check=False, capture_output=True,
-            )
+            # N6/N2 pre-clean fix: use safe_pg0_delete_home to stop any leftover
+            # pg0 instance from a previous run before deleting the directory.
+            from olo.m3.pg0_lifecycle import safe_pg0_delete_home as _pre_del
+            if pg0_home.exists():
+                try:
+                    _pre_del(pg0_home)
+                except Exception as _pre_e:
+                    # If stop fails, still attempt mkdir for the new run
+                    print(f"  [warn] benchmark pre-clean: {_pre_e}")
+                    subprocess.run(
+                        ["sudo", "-u", "olo_hs", "rm", "-rf", str(pg0_home)],
+                        check=False, capture_output=True,
+                    )
             subprocess.run(
                 ["sudo", "-u", "olo_hs", "mkdir", "-p", str(pg0_home)],
                 check=True, capture_output=True,
@@ -2720,27 +2697,17 @@ class TestV10Footprint:
                 timeout_startup=180.0,
             )
             results.append(r)
-            # N5/N6 fix: stop pg0 before deleting the benchmark home directory.
-            # run_benchmark() kills the Hindsight process group but not the
-            # detached pg0 postmaster.  Deleting pg0_home while the postmaster
-            # is still alive orphans or corrupts the database.
-            from tests.olo.m3._pg0_lifecycle import (
-                pg0_stop, Pg0StillRunningError, _pg0_instance_data_dir,
-            )
-            _bench_id = f"bench-{model_cfg['id']}"
-            _bench_inst = f"{_bench_id}-{model_cfg.get('reranker', 'rrf')[:6]}-line"[:40]
-            # Derive instance name the same way run_benchmark() does
-            _mb_model_id = model_cfg["id"]
-            _mb_inst = f"bench-{_mb_model_id}-rrf-line"  # default reranker/recency
-            try:
-                pg0_stop(instance_name=_mb_inst, home_dir=pg0_home, settle_s=0)
-            except Exception:
-                pass  # best-effort; rm -rf follows regardless
-            # Cleanup between model runs
-            subprocess.run(
-                ["sudo", "-u", "olo_hs", "rm", "-rf", str(pg0_home)],
-                check=False, capture_output=True,
-            )
+            # N2/N7 fix: use safe_pg0_delete_home which ENUMERATES all pg0
+            # instances.  The old code guessed the instance name and ignored
+            # stop failures — both of which cause live database deletion.
+            from olo.m3.pg0_lifecycle import safe_pg0_delete_home, Pg0StillRunningError
+            if pg0_home.exists():
+                try:
+                    safe_pg0_delete_home(pg0_home)
+                except Pg0StillRunningError as _e:
+                    # Benchmark cleanup failure is logged but not fatal.
+                    # The gate collects results for all models even if cleanup fails.
+                    print(f"  [warn] benchmark cleanup: {_e}")
             time.sleep(5)  # let memory settle
 
         print_results(results)

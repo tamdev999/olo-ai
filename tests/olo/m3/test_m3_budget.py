@@ -277,3 +277,39 @@ class TestBudgetGuardMandatory:
             )
         # client._get_stats should NOT have been called
         assert result["total"] == 1
+
+    def test_deploy_granite_requires_tracing(self) -> None:
+        """deploy() must refuse ingestion when server tracing is disabled.
+
+        This tests the actual deploy_granite.py entry point against a mock
+        client that reports tracing disabled.  The test verifies the fail-closed
+        behavior required by P0.4.
+        """
+        from unittest.mock import MagicMock, patch
+        from olo.m3.deploy_granite import deploy
+
+        mock_client = MagicMock()
+        mock_client.wait_until_ready = MagicMock()
+
+        # Simulate _require_tracing() failing because tracing is disabled
+        from olo.m3.hindsight.budget import StatsUnavailableError
+        mock_guard = MagicMock()
+        mock_guard.snapshot.side_effect = StatsUnavailableError(
+            "Server reports features.llm_trace=False."
+        )
+
+        with patch("olo.m3.deploy_granite.HindsightClient", return_value=mock_client), \
+             patch("olo.m3.deploy_granite.HindsightConfig"), \
+             patch("olo.m3.deploy_granite._check_server"), \
+             patch("olo.m3.deploy_granite._verify_granite_active", return_value=True), \
+             patch("olo.m3.deploy_granite._bank_facts", return_value=10), \
+             patch("olo.m3.deploy_granite.build_hindsight_items",
+                   return_value=[{"content": "x", "document_id": "sig:x",
+                                  "strategy": "structured-no-llm"}]), \
+             patch("olo.m3.hindsight.budget.UsageGuard", return_value=mock_guard), \
+             patch("pathlib.Path.exists", return_value=True):
+            with pytest.raises(RuntimeError, match="[Bb]udget|[Tt]racing"):
+                deploy(bank_id="test", host="127.0.0.1", port=19999)
+
+        # Verify no retain was called
+        mock_client.retain.assert_not_called()

@@ -277,22 +277,20 @@ def run_benchmark(
 
     # ── Base env ──────────────────────────────────────────────────────────────
     socket_dir = str(pg0_home / "run")
-    # N6 fix: stop any stale pg0 instance before wiping the benchmark home directory.
-    # A previous benchmark run may have left a pg0 postmaster running if it was
-    # killed before the teardown completed.  Deleting the HOME while the postmaster
-    # is alive orphans the process and can corrupt the data directory.
-    _pg0_inst_name = f"{bench_id}"
-    try:
-        from tests.olo.m3._pg0_lifecycle import pg0_stop as _pg0_stop_pre
-        _pg0_stop_pre(instance_name=_pg0_inst_name, home_dir=pg0_home, settle_s=0)
-    except Exception:
-        pass  # best-effort; rm -rf follows regardless
-    # Ensure a clean pg0 home — remove any stale postmaster.pid that could
-    # cause "Instance already running" on restart after an unclean shutdown.
-    subprocess.run(
-        ["sudo", "-u", "olo_hs", "rm", "-rf", str(pg0_home)],
-        check=False, capture_output=True,
-    )
+    # N6/N2 fix: use safe_pg0_delete_home which ENUMERATES all pg0 instances
+    # (not a guessed name).  The old code called pg0_stop(guessed_name) with
+    # `except: pass`, then unconditionally deleted the HOME — a live postmaster
+    # from a differently named instance would be orphaned.
+    if pg0_home.exists():
+        from olo.m3.pg0_lifecycle import safe_pg0_delete_home as _safe_del
+        from olo.m3.pg0_lifecycle import Pg0StillRunningError as _PgErr
+        try:
+            _safe_del(pg0_home)
+        except _PgErr as _exc:
+            # Raise: a live database in pg0_home means this benchmark run
+            # is not starting from a clean state.  Fail loudly.
+            result.error = f"pg0 pre-clean failed: {_exc}"
+            return result
     subprocess.run(
         ["sudo", "-u", "olo_hs", "mkdir", "-p", socket_dir],
         check=False, capture_output=True,
@@ -343,13 +341,13 @@ def run_benchmark(
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-        # N5 fix: stop pg0 after killing the server process group.
-        # SIGKILL on the Hindsight group does NOT stop the detached pg0 postmaster.
+        # N5 fix: stop pg0 after killing the server process group
+        from olo.m3.pg0_lifecycle import safe_pg0_delete_home as _safe_del_err
+        from olo.m3.pg0_lifecycle import Pg0StillRunningError as _PgErrTeardown
         try:
-            from tests.olo.m3._pg0_lifecycle import pg0_stop as _pg0_stop_err
-            _pg0_stop_err(instance_name=bench_id, home_dir=pg0_home, settle_s=0)
-        except Exception:
-            pass
+            _safe_del_err(pg0_home)
+        except (_PgErrTeardown, Exception):
+            pass  # best-effort on error path
         return result
     _stderr_fh.flush(); _stderr_fh.close()
     _stderr_log.unlink(missing_ok=True)
@@ -371,23 +369,23 @@ def run_benchmark(
             pass
         return result
 
-    # Ingest (prose + structured, no LLM for benchmark isolation)
+    # Ingest (prose + structured, no LLM for benchmark isolation).
+    # P0.4: model_benchmark uses HINDSIGHT_API_LLM_PROVIDER=none — no LLM calls
+    # are made and there is no spend to guard.  budget_guard=None is an explicit
+    # bypass documented here; this is NOT an accident.  Strategy validation still
+    # runs via batch_retain_to_hindsight.
     t_ingest_start = time.monotonic()
-    prose = [i for i in items if i.get("strategy") == "prose"]
-    structured = [i for i in items if i.get("strategy") != "prose"]
-    batch_size = 50
-    for label, batch_list in [("prose", prose), ("structured", structured)]:
-        for start in range(0, len(batch_list), batch_size):
-            batch = batch_list[start:start + batch_size]
-            # Content-addressed op ID (C1 fix)
-            batch_key = "|".join(sorted(
-                f"{item.get('document_id','')}:{item.get('metadata',{}).get('content_sha256','')}"
-                for item in batch
-            ))
-            op_id = str(_uuid.uuid5(
-                _uuid.NAMESPACE_OID, f"{bank_id}|{label}|{batch_key}",
-            ))
-            client.retain(batch, operation_id=op_id, async_=False, bank_id=bank_id)
+    from olo.m3.feeder import batch_retain_to_hindsight, prepare_hindsight_bank
+    prepare_hindsight_bank(client, bank_id)
+    batch_counters = batch_retain_to_hindsight(
+        items,
+        client,
+        bank_id=bank_id,
+        batch_size=50,
+        budget_guard=None,  # explicit: LLM_PROVIDER=none, no spend to guard
+        async_=False,
+        prepare_bank=False,  # already called above
+    )
     ingest_time_s = time.monotonic() - t_ingest_start
     result.ingestion_docs_per_s = len(items) / max(ingest_time_s, 0.001)
 
@@ -557,12 +555,13 @@ def run_benchmark(
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         pass
-    # Stop pg0 after killing the Hindsight process group
+    # Stop all pg0 instances and delete HOME
+    from olo.m3.pg0_lifecycle import safe_pg0_delete_home as _safe_del_done
+    from olo.m3.pg0_lifecycle import Pg0StillRunningError as _PgErrDone
     try:
-        from tests.olo.m3._pg0_lifecycle import pg0_stop as _pg0_stop_done
-        _pg0_stop_done(instance_name=bench_id, home_dir=pg0_home, settle_s=0)
-    except Exception:
-        pass
+        _safe_del_done(pg0_home)
+    except (_PgErrDone, Exception):
+        pass  # best-effort; caller (gate test) will also attempt cleanup
 
     return result
 

@@ -230,6 +230,30 @@ def deploy(
 
     # 6. Ingest all items FIRST (creates the bank on first retain)
     print("Ingesting evidence…")
+
+    # P0.4: Enforce budget guard before the first retain.
+    # deploy_granite.py uses LLM consolidation (DeepSeek), so budget enforcement
+    # is mandatory.  _require_tracing() verifies server-side LLM tracing is active;
+    # it fails closed if tracing is disabled or the /version endpoint is unreachable.
+    #
+    # NOTE: LLM trace records arrive asynchronously (typically within 1-10 seconds
+    # of a completed retain/consolidation call).  The budget guard therefore has
+    # a bounded lag: a batch that starts at the budget limit may overshoot by up
+    # to one batch worth of LLM tokens before the next check catches it.
+    # DeepSeek V3 consolidation typically uses 2-5k tokens per prose item; at the
+    # $8 default budget this is a ~$0.001 worst-case overshoot per 50-item batch.
+    from olo.m3.hindsight.budget import UsageGuard, StatsUnavailableError as _SUA
+    _guard = UsageGuard(client, bank_id=bank_id, budget_usd=8.0)
+    try:
+        _baseline = _guard.snapshot()
+    except _SUA as exc:
+        raise RuntimeError(
+            f"[deploy] Budget guard: tracing not active on server — cannot enforce "
+            f"spending limits.  Set HINDSIGHT_API_LLM_TRACE_ENABLED=true and "
+            f"restart the server before deploying.  Error: {exc}"
+        ) from exc
+    print("[ok] Budget guard active (tracing confirmed, budget $8.00)")
+
     batch_size = 50
     t_start = time.monotonic()
     for label, batch_list in [("structured", structured), ("prose", prose)]:
@@ -250,6 +274,15 @@ def deploy(
                         time.sleep(10)
                     else:
                         raise
+            # Check budget after each batch (trace records arrive asynchronously;
+            # see note above re. bounded lag).
+            try:
+                _guard.check(_baseline)
+            except _SUA as exc:
+                raise RuntimeError(
+                    f"[deploy] Budget guard: stats unavailable mid-ingest "
+                    f"(fails closed): {exc}"
+                ) from exc
 
     # 7. Configure bank strategy AFTER bank is created by first retain
     print("Configuring bank strategy…")

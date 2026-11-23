@@ -52,6 +52,24 @@ def load_timeline(client: HindsightClient, dry_run: bool = False) -> list[dict]:
         print("[load] DRY RUN — not sending to server")
         return items
 
+    # P0.4: Enforce budget guard before the first retain.
+    # gate_load.py is used to build production banks with LLM extraction
+    # (DeepSeek consolidation).  Budget enforcement and server-side tracing
+    # are mandatory.  Tracing records arrive asynchronously; a batch that
+    # starts at the limit may overshoot by up to one batch worth of tokens
+    # (bounded lag).
+    from olo.m3.hindsight.budget import UsageGuard, StatsUnavailableError as _GateSUA
+    _gate_guard = UsageGuard(client, bank_id=client._cfg.bank_id, budget_usd=8.0)
+    try:
+        _gate_baseline = _gate_guard.snapshot()
+        print("[load] Budget guard active (tracing confirmed)")
+    except _GateSUA as exc:
+        raise RuntimeError(
+            f"[load] Budget guard: tracing not active on server — cannot enforce "
+            f"spending limits.  Set HINDSIGHT_API_LLM_TRACE_ENABLED=true and "
+            f"restart before loading.  Error: {exc}"
+        ) from exc
+
     # v1.2.1 constraint: operation_id requires all items in a batch to have
     # the same strategy. Split into prose and structured batches.
     prose_items = [i for i in items if i.get("strategy") == "prose"]
@@ -75,6 +93,14 @@ def load_timeline(client: HindsightClient, dry_run: bool = False) -> list[dict]:
                 raise
             total_sent += len(batch)
             print(f"[load] {label} batch {batch_num:3d}: {len(batch)} items queued")
+            # Check budget after each batch (trace records arrive asynchronously)
+            try:
+                _gate_guard.check(_gate_baseline)
+            except _GateSUA as exc:
+                raise RuntimeError(
+                    f"[load] Budget guard: stats unavailable mid-load "
+                    f"(fails closed): {exc}"
+                ) from exc
 
     print(f"[load] Done. {total_sent} items queued ({len(prose_items)} prose, {len(structured_items)} structured).")
     return items

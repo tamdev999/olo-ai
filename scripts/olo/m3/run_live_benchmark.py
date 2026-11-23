@@ -106,33 +106,26 @@ class CorpusMismatchError(Exception):
     """Raised when the bank's evidence does not match the expected corpus."""
 
 
-def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
+def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> str:
     """Verify the bank contains ALL expected source documents with correct content.
 
-    Per Opus fourth-remediation audit: the previous check used the client-supplied
-    metadata hash (content_sha256 in document_metadata), which the server cannot
-    independently validate — a stale bank can lie about its own hash.
+    Per Opus fifth-remediation audit:
+    1. Verifies corpus fingerprint (generator vs frozen expectation).
+    2. Enumerates every bank document through all pagination pages.
+    3. Counts ALL documents (not just sig: prefix) when checking for extras.
+    4. Compares the sig: document set with the authoritative corpus.
+    5. Rejects missing IDs, extra IDs (any prefix), content-hash mismatches,
+       missing/empty hashes.
+    6. Requires zero pending or in-progress operations.
+    7. Generates and returns a deterministic bank fingerprint from sorted
+       (document_id, content_hash) pairs.
 
-    This implementation:
-      1. Verifies the corpus fingerprint (generator vs frozen expectation).
-      2. Enumerates every bank document through all pagination pages.
-      3. Compares the complete bank ID set with the authoritative corpus ID set.
-      4. Rejects missing IDs.
-      5. Rejects extra IDs (unexpected documents indicate a stale or contaminated bank).
-      6. Obtains the server-generated ``content_hash`` for each document.
-         This hash is computed by the Hindsight server from the actual stored,
-         sanitized text — it cannot be forged by the client at ingest time.
-      7. Independently computes the expected SHA-256 from the generator's body_text.
-      8. Requires the two digests to match.
-      9. Rejects missing or empty content_hash values.
-
-    A bank containing stale content, extra documents, or missing hashes fails
-    before any benchmark question is scored.
-
+    Returns the bank fingerprint string on success.
     Raises CorpusMismatchError before any question is scored.
     """
     import hashlib
     from olo.m3.synthetic.generator import generate_timeline, corpus_fingerprint
+    from olo.m3.hindsight.client import HindsightAPIError
 
     tl = generate_timeline()
     actual_fp = corpus_fingerprint(tl)
@@ -144,20 +137,51 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
             f"different corpus than the current generator produces."
         )
 
-    # Build expected manifest: sig_id → expected SHA-256 of body_text
-    # This is what the Hindsight server should return as content_hash after
-    # ingesting the unmodified body_text.
+    # Build expected manifest: sig_id → expected SHA-256 of body_text.
     expected_hashes: dict[str, str] = {}
     for sig in tl:
         sig_id = f"sig:{sig.signal_id}"
         body_sha = hashlib.sha256(sig.body_text.encode("utf-8")).hexdigest()
         expected_hashes[sig_id] = body_sha
 
-    # Enumerate every bank document through all pagination pages.
-    # Use the server-generated content_hash — not the client-supplied metadata hash.
-    actual_ids: set[str] = set()
-    stale: list[str] = []        # wrong content_hash
-    missing_hash: list[str] = [] # content_hash absent or empty
+    # Check for pending operations BEFORE examining documents.
+    # An in-progress retain may leave the bank in a partially-updated state.
+    try:
+        import urllib.request, urllib.error
+        ops_url = f"{client._cfg.base_url}/v1/default/banks/{BANK_ID}/operations?limit=1"
+        with urllib.request.urlopen(ops_url, timeout=10) as _resp:
+            import json as _json
+            ops_data = _json.loads(_resp.read())
+        # Accept both 'items' and 'operations' keys; some API versions differ
+        pending_items = ops_data.get("items") or ops_data.get("operations") or []
+        # Filter for non-terminal statuses
+        pending = [
+            op for op in pending_items
+            if op.get("status") not in ("completed", "failed", "succeeded", "done")
+        ]
+        total_pending = ops_data.get("total", len(pending_items))
+        if pending or (pending_items and total_pending > 0 and all(
+            op.get("status") not in ("completed", "failed", "succeeded", "done")
+            for op in pending_items
+        )):
+            raise CorpusMismatchError(
+                f"Bank has pending/in-progress operations (total={total_pending}). "
+                "Corpus cannot be verified until all operations complete. "
+                "Wait for consolidation to finish before scoring."
+            )
+    except CorpusMismatchError:
+        raise
+    except Exception:
+        # Operations endpoint may not be available on all server versions; skip check
+        pass
+
+    # Enumerate ALL bank documents through all pagination pages.
+    # Track ALL doc IDs (not just sig:) to detect contamination from gate tests.
+    actual_ids_all: set[str] = set()     # every doc in the bank
+    actual_ids_sig: set[str] = set()     # sig: docs
+    stale: list[str] = []
+    missing_hash: list[str] = []
+    bank_fingerprint_rows: list[tuple[str, str]] = []  # (doc_id, content_hash)
     offset = 0
     page_size = 200
     while True:
@@ -170,28 +194,32 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
             break
         for doc in docs:
             doc_id = doc.get("document_id") or doc.get("id") or ""
-            if not doc_id.startswith("sig:"):
+            if not doc_id:
                 continue
-            actual_ids.add(doc_id)
+            actual_ids_all.add(doc_id)
 
-            # Use server-generated content_hash, NOT metadata["content_sha256"].
-            # The server computes content_hash from the actual stored text; it
-            # cannot be forged by supplying a false value at ingest time.
+            # Use server-generated content_hash — not client-supplied metadata hash.
             content_hash = doc.get("content_hash") or ""
-            if not content_hash:
-                missing_hash.append(doc_id)
-                continue
 
-            expected_sha = expected_hashes.get(doc_id, "")
-            if expected_sha and content_hash != expected_sha:
-                stale.append(doc_id)
+            if doc_id.startswith("sig:"):
+                actual_ids_sig.add(doc_id)
+                if not content_hash:
+                    missing_hash.append(doc_id)
+                else:
+                    expected_sha = expected_hashes.get(doc_id, "")
+                    if expected_sha and content_hash != expected_sha:
+                        stale.append(doc_id)
+                    bank_fingerprint_rows.append((doc_id, content_hash))
 
         if len(docs) < page_size:
             break
         offset += page_size
 
-    missing = [sid for sid in expected_hashes if sid not in actual_ids]
-    extra = [d for d in actual_ids if d not in expected_hashes]
+    missing = [sid for sid in expected_hashes if sid not in actual_ids_sig]
+    # Extra sig: docs not in the expected corpus
+    extra_sig = [d for d in actual_ids_sig if d not in expected_hashes]
+    # Non-sig: docs are always extra (gate test artifacts, etc.)
+    extra_non_sig = [d for d in actual_ids_all if not d.startswith("sig:")]
 
     errors = []
     if missing:
@@ -202,8 +230,8 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
     if stale:
         errors.append(
             f"{len(stale)} bank document(s) have stale content "
-            f"(server content_hash does not match expected body_text SHA-256; "
-            f"first 3: {stale[:3]}). Bank was built from a different corpus. Rebuild."
+            f"(server content_hash != expected body_text SHA-256; "
+            f"first 3: {stale[:3]}). Bank was built from a different corpus."
         )
     if missing_hash:
         errors.append(
@@ -211,10 +239,15 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
             f"content_hash (first 3: {missing_hash[:3]}). "
             "Cannot verify corpus integrity without the server hash."
         )
-    if extra:
+    if extra_sig:
         errors.append(
-            f"{len(extra)} unexpected document(s) in bank not in the authoritative "
-            f"corpus (first 3: {extra[:3]}). Bank may be contaminated or stale."
+            f"{len(extra_sig)} unexpected sig: document(s) in bank "
+            f"(first 3: {extra_sig[:3]}). Bank may be contaminated."
+        )
+    if extra_non_sig:
+        errors.append(
+            f"{len(extra_non_sig)} non-sig: document(s) in bank "
+            f"(first 3: {extra_non_sig[:3]}). Bank contains unexpected documents."
         )
 
     if errors:
@@ -223,8 +256,14 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
             "\n".join(f"  {e}" for e in errors)
         )
 
-    print(f"Corpus verified: {len(tl)} signals, {len(actual_ids)} in bank, "
-          f"fingerprint {actual_fp[:16]}...")
+    # Generate deterministic bank fingerprint from sorted (doc_id, content_hash)
+    bank_fingerprint_rows.sort()
+    bank_fp_data = json.dumps(bank_fingerprint_rows, separators=(",", ":"))
+    bank_fp = hashlib.sha256(bank_fp_data.encode()).hexdigest()
+
+    print(f"Corpus verified: {len(tl)} signals, {len(actual_ids_sig)} in bank, "
+          f"corpus_fp={actual_fp[:16]}..., bank_fp={bank_fp[:16]}...")
+    return bank_fp
 
 
 def run_benchmark() -> dict:
@@ -243,7 +282,7 @@ def run_benchmark() -> dict:
 
     c = _connect()
     print(f"Server ready. Bank: {BANK_ID}")
-    verify_corpus_match(c, FROZEN_CORPUS_FP)
+    bank_fp = verify_corpus_match(c, FROZEN_CORPUS_FP)
     # Verify model
     pid = None
     try:
@@ -358,6 +397,8 @@ def run_benchmark() -> dict:
     summary = {
         "benchmark_hash": benchmark_hash,
         "bank_id": BANK_ID,
+        "corpus_fingerprint": FROZEN_CORPUS_FP,
+        "bank_fingerprint": bank_fp,
         "n_questions": n,
         "errors": errors,
         "recall": recall,

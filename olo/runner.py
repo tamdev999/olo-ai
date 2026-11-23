@@ -155,6 +155,15 @@ def run_source(
             duplicates += b_dup
             conflicts += b_con
 
+            # 3.5b Extract entity contacts from ingested signals.
+            # Best-effort: entity extraction failure does not abort ingestion.
+            if batch.signals:
+                try:
+                    from olo.adapters.entity_extractor import upsert_entities
+                    upsert_entities(batch.signals, source, conn, clock=clock)
+                except Exception:
+                    pass  # entity extraction is enrichment, not critical path
+
             # 3.6 Done?
             if not batch.has_more:
                 final_cursor = get_checkpoint(source, conn)

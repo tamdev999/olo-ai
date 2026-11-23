@@ -69,8 +69,11 @@ class TestCorpusVerification:
         fp = corpus_fingerprint(tl)
         docs = _expected_docs_correct()
         client = _client_with_docs(docs)
-        # Should not raise
-        verify_corpus_match(client, fp)
+        # Should not raise; returns bank fingerprint string
+        bank_fp = verify_corpus_match(client, fp)
+        assert isinstance(bank_fp, str) and len(bank_fp) == 64, (
+            "verify_corpus_match must return a 64-char hex bank fingerprint"
+        )
 
     def test_stale_content_hash_raises(self) -> None:
         """Bank has correct signal IDs but wrong server content_hash → rejected."""
@@ -139,16 +142,15 @@ class TestCorpusVerification:
             verify_corpus_match(client, fp)
 
     def test_extra_document_raises(self) -> None:
-        """Bank has an extra unexpected document → rejected (not just noted).
+        """Bank has an extra unexpected sig: document → rejected.
 
-        Case E from corpus_live.py: extra document with otherwise correct data.
+        Case E from corpus_live.py: extra sig: document with otherwise correct data.
         """
         from olo.m3.synthetic.generator import corpus_fingerprint, generate_timeline
         tl = generate_timeline()
         fp = corpus_fingerprint(tl)
 
         docs = _expected_docs_correct()
-        # Append an unexpected extra document
         docs.append({
             "document_id": "sig:extra_unexpected_doc",
             "content_hash": hashlib.sha256(b"extra").hexdigest(),
@@ -157,6 +159,29 @@ class TestCorpusVerification:
         client = _client_with_docs(docs)
 
         with pytest.raises(CorpusMismatchError, match="unexpected"):
+            verify_corpus_match(client, fp)
+
+    def test_extra_non_sig_document_raises(self) -> None:
+        """Bank has a non-sig: extra document → rejected.
+
+        Case G from corpus_live_v2.py: contaminant document from gate tests.
+        The previous implementation only checked sig: documents for extras,
+        allowing non-sig: contamination to pass silently.
+        """
+        from olo.m3.synthetic.generator import corpus_fingerprint, generate_timeline
+        tl = generate_timeline()
+        fp = corpus_fingerprint(tl)
+
+        docs = _expected_docs_correct()
+        # Non-sig: contaminant (like a gate test artifact with no sig: prefix)
+        docs.append({
+            "document_id": "contaminant-from-gate",
+            "content_hash": hashlib.sha256(b"gate artifact").hexdigest(),
+            "document_metadata": {},
+        })
+        client = _client_with_docs(docs)
+
+        with pytest.raises(CorpusMismatchError, match="non-sig"):
             verify_corpus_match(client, fp)
 
     def test_fingerprint_mismatch_raises(self) -> None:
