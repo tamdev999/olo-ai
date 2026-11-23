@@ -1787,10 +1787,10 @@ class TestV5CrashRecovery:
                 )
                 if not preserve_pg0_data:
                     try:
+                        from tests.olo.m3._pg0_lifecycle import _pg0_instance_data_dir
                         pg0_stop_and_clean(
                             instance_name=pg0_instance,
                             home_dir=v5_home,
-                            data_dir=v5_home / ".pg0" / pg0_instance / "data",
                             socket_dir=v5_socket_dir,
                         )
                     except Pg0StillRunningError as _e:
@@ -2358,14 +2358,15 @@ class TestV7IsolationIntegration:
                     _pg0_inst = _db_url[6:].split("?")[0].split("/")[0]
                     if _pg0_inst:
                         # Use verified stop-and-clean to prevent live-database deletion.
+                        # Import _pg0_instance_data_dir to use the correct pg0 0.17.0 layout.
                         from tests.olo.m3._pg0_lifecycle import (
-                            pg0_stop_and_clean, Pg0StillRunningError
+                            pg0_stop_and_clean, Pg0StillRunningError,
+                            _pg0_instance_data_dir,
                         )
                         try:
                             pg0_stop_and_clean(
                                 instance_name=_pg0_inst,
                                 home_dir=biz_home,
-                                data_dir=biz_home / ".pg0" / _pg0_inst / "data",
                                 socket_dir=Path(socket_dir),
                             )
                         except Pg0StillRunningError as _e:
@@ -2511,6 +2512,38 @@ class TestV7IsolationIntegration:
                 _kill_process_group(_p)
             except Exception:
                 pass
+        # N5 fix: stop pg0 for each business before deleting their home directories.
+        # Killing the Hindsight process group does NOT stop the detached pg0 postmaster.
+        # Deleting the HOME while pg0 is running corrupts or orphans the database.
+        from tests.olo.m3._pg0_lifecycle import (
+            pg0_stop, pg0_stop_and_clean, Pg0StillRunningError,
+            _pg0_instance_data_dir,
+        )
+        for _biz_id, _hermes_home, _port in [
+            (biz_a, hermes_home_a, port_a),
+            (biz_b, hermes_home_b, port_b),
+        ]:
+            _biz_home = _hermes_home / "businesses" / _biz_id
+            # Derive the pg0 instance name from the business env file
+            _biz_env_file = _biz_home / ".env"
+            _biz_pg0_inst = None
+            if _biz_env_file.exists():
+                for _line in _biz_env_file.read_text().splitlines():
+                    if "HINDSIGHT_API_DATABASE_URL" in _line:
+                        _db_val = _line.partition("=")[2].strip()
+                        if _db_val.startswith("pg0://"):
+                            _biz_pg0_inst = _db_val[6:].split("?")[0].split("/")[0]
+                        break
+            if _biz_pg0_inst:
+                try:
+                    pg0_stop_and_clean(
+                        instance_name=_biz_pg0_inst,
+                        home_dir=_biz_home,
+                        settle_s=0,
+                    )
+                except (Pg0StillRunningError, Exception):
+                    # Best-effort: if stop fails, skip data dir deletion but continue
+                    pass
         subprocess.run(
             ["sudo", "-u", "olo_hs", "rm", "-rf",
              "/home/olo_hs/v7_hermes_a", "/home/olo_hs/v7_hermes_b"],
@@ -2687,6 +2720,22 @@ class TestV10Footprint:
                 timeout_startup=180.0,
             )
             results.append(r)
+            # N5/N6 fix: stop pg0 before deleting the benchmark home directory.
+            # run_benchmark() kills the Hindsight process group but not the
+            # detached pg0 postmaster.  Deleting pg0_home while the postmaster
+            # is still alive orphans or corrupts the database.
+            from tests.olo.m3._pg0_lifecycle import (
+                pg0_stop, Pg0StillRunningError, _pg0_instance_data_dir,
+            )
+            _bench_id = f"bench-{model_cfg['id']}"
+            _bench_inst = f"{_bench_id}-{model_cfg.get('reranker', 'rrf')[:6]}-line"[:40]
+            # Derive instance name the same way run_benchmark() does
+            _mb_model_id = model_cfg["id"]
+            _mb_inst = f"bench-{_mb_model_id}-rrf-line"  # default reranker/recency
+            try:
+                pg0_stop(instance_name=_mb_inst, home_dir=pg0_home, settle_s=0)
+            except Exception:
+                pass  # best-effort; rm -rf follows regardless
             # Cleanup between model runs
             subprocess.run(
                 ["sudo", "-u", "olo_hs", "rm", "-rf", str(pg0_home)],

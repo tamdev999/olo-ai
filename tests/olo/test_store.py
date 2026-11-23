@@ -400,3 +400,92 @@ def test_connect_raises_on_dir_chmod_failure(
 
     with pytest.raises(OSError, match="simulated"):
         store_mod.connect(db)
+
+
+# ── entity_metadata schema tests (P3 fourth remediation) ─────────────────────
+
+def test_entity_metadata_table_created_by_migrate(tmp_path: Path) -> None:
+    """migrate() creates the entity_metadata table (P3 fourth remediation)."""
+    from olo.store import connect, migrate
+    db = tmp_path / "em_test" / "olo.db"
+    db.parent.mkdir()
+    conn = connect(db)
+    migrate(conn)
+    # Table must exist
+    result = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_metadata'"
+    ).fetchone()
+    assert result is not None, (
+        "entity_metadata table missing after migrate(). "
+        "P3 remediation requires this table in schema v4."
+    )
+    conn.close()
+
+
+def test_entity_metadata_has_required_columns(tmp_path: Path) -> None:
+    """entity_metadata has the columns the feeder expects."""
+    from olo.store import connect, migrate
+    db = tmp_path / "em_cols" / "olo.db"
+    db.parent.mkdir()
+    conn = connect(db)
+    migrate(conn)
+    # Insert a row to verify column names
+    conn.execute("BEGIN IMMEDIATE")
+    now = "2026-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO entity_metadata(source, entity_id, display_name, company, "
+        "source_kind, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        ("gmail_owner", "ent_01ACME", "Alice Smith", "Acme Corp", "contact", now, now),
+    )
+    conn.execute("COMMIT")
+    row = conn.execute(
+        "SELECT source, entity_id, display_name, company FROM entity_metadata"
+    ).fetchone()
+    assert row["source"] == "gmail_owner"
+    assert row["entity_id"] == "ent_01ACME"
+    assert row["display_name"] == "Alice Smith"
+    assert row["company"] == "Acme Corp"
+    conn.close()
+
+
+def test_entity_metadata_unique_per_source_entity(tmp_path: Path) -> None:
+    """(source, entity_id) is UNIQUE — duplicate upsert updates the row."""
+    from olo.store import connect, migrate
+    db = tmp_path / "em_uniq" / "olo.db"
+    db.parent.mkdir()
+    conn = connect(db)
+    migrate(conn)
+    now = "2026-01-01T00:00:00+00:00"
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "INSERT OR REPLACE INTO entity_metadata(source, entity_id, display_name, "
+        "company, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+        ("gmail", "ent_01", "Bob", "Corp A", now, now),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO entity_metadata(source, entity_id, display_name, "
+        "company, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+        ("gmail", "ent_01", "Robert", "Corp B", now, now),
+    )
+    conn.execute("COMMIT")
+    rows = conn.execute(
+        "SELECT display_name FROM entity_metadata WHERE source='gmail' AND entity_id='ent_01'"
+    ).fetchall()
+    assert len(rows) == 1, "Duplicate insert should update, not duplicate"
+    assert rows[0]["display_name"] == "Robert"
+    conn.close()
+
+
+def test_schema_version_is_4(tmp_path: Path) -> None:
+    """migrate() records schema_version 4 (entity_metadata addition)."""
+    from olo.store import connect, migrate, _SCHEMA_VERSION
+    assert _SCHEMA_VERSION == 4, (
+        f"Expected _SCHEMA_VERSION=4 after P3 remediation, got {_SCHEMA_VERSION}"
+    )
+    db = tmp_path / "sv4" / "olo.db"
+    db.parent.mkdir()
+    conn = connect(db)
+    migrate(conn)
+    row = conn.execute("SELECT version FROM schema_version").fetchone()
+    assert row["version"] == 4
+    conn.close()

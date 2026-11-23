@@ -277,6 +277,16 @@ def run_benchmark(
 
     # ── Base env ──────────────────────────────────────────────────────────────
     socket_dir = str(pg0_home / "run")
+    # N6 fix: stop any stale pg0 instance before wiping the benchmark home directory.
+    # A previous benchmark run may have left a pg0 postmaster running if it was
+    # killed before the teardown completed.  Deleting the HOME while the postmaster
+    # is alive orphans the process and can corrupt the data directory.
+    _pg0_inst_name = f"{bench_id}"
+    try:
+        from tests.olo.m3._pg0_lifecycle import pg0_stop as _pg0_stop_pre
+        _pg0_stop_pre(instance_name=_pg0_inst_name, home_dir=pg0_home, settle_s=0)
+    except Exception:
+        pass  # best-effort; rm -rf follows regardless
     # Ensure a clean pg0 home — remove any stale postmaster.pid that could
     # cause "Instance already running" on restart after an unclean shutdown.
     subprocess.run(
@@ -323,7 +333,6 @@ def run_benchmark(
         client.wait_until_ready(timeout_s=timeout_startup)
     except HindsightUnavailable as exc:
         result.error = f"Startup timeout: {exc}"
-        # Log the last 20 lines of server stderr for diagnostics
         try:
             _stderr_fh.flush(); _stderr_fh.close()
             tail = _stderr_log.read_text()[-3000:]
@@ -333,6 +342,13 @@ def run_benchmark(
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
+            pass
+        # N5 fix: stop pg0 after killing the server process group.
+        # SIGKILL on the Hindsight group does NOT stop the detached pg0 postmaster.
+        try:
+            from tests.olo.m3._pg0_lifecycle import pg0_stop as _pg0_stop_err
+            _pg0_stop_err(instance_name=bench_id, home_dir=pg0_home, settle_s=0)
+        except Exception:
             pass
         return result
     _stderr_fh.flush(); _stderr_fh.close()
@@ -528,7 +544,9 @@ def run_benchmark(
         result.v2_recall_at_20 = v2_hits_20 / max(v2_total, 1)
         result.v2_recall_at_50 = v2_hits_50 / max(v2_total, 1)
 
-    # Cleanup: kill the server process group, then remove pg0 data
+    # Cleanup: kill the server process group, then stop pg0, then remove pg0 data.
+    # N5 fix: SIGKILL on the Hindsight group does NOT stop the detached pg0 postmaster.
+    # Always attempt pg0 stop after killing the server.
     _kill_on_port(port)
     try:
         pgid = os.getpgid(proc.pid)
@@ -538,6 +556,12 @@ def run_benchmark(
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
+        pass
+    # Stop pg0 after killing the Hindsight process group
+    try:
+        from tests.olo.m3._pg0_lifecycle import pg0_stop as _pg0_stop_done
+        _pg0_stop_done(instance_name=bench_id, home_dir=pg0_home, settle_s=0)
+    except Exception:
         pass
 
     return result

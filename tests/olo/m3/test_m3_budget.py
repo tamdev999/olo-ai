@@ -215,3 +215,65 @@ class TestUsageGuard:
         guard = _FakeGuard([before, after], budget_usd=8.0)
         baseline = guard.snapshot()
         guard.check(baseline)  # must not raise
+
+
+# ── batch_retain_to_hindsight budget_guard enforcement ────────────────────────
+
+class TestBudgetGuardMandatory:
+    """batch_retain_to_hindsight and reconcile_hindsight_projection require a guard."""
+
+    def test_batch_retain_raises_without_budget_guard(self) -> None:
+        """Calling batch_retain_to_hindsight without budget_guard raises ValueError."""
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        items = [{"content": "test", "document_id": "sig:test",
+                  "strategy": "structured-no-llm"}]
+        with pytest.raises(ValueError, match="budget_guard is required"):
+            batch_retain_to_hindsight(items, client, bank_id="test")
+
+    def test_batch_retain_explicit_none_does_not_raise_guard_check(self) -> None:
+        """Explicit budget_guard=None bypasses the enforcement check (test bypass)."""
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from unittest.mock import MagicMock, patch
+
+        client = MagicMock()
+        client.retain = MagicMock(return_value={})
+        client.patch_bank_config = MagicMock(return_value={})
+        items = [{"content": "test", "document_id": "sig:test",
+                  "strategy": "structured-no-llm"}]
+        # Must NOT raise ValueError — explicit None is the deliberate test bypass
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            result = batch_retain_to_hindsight(
+                items, client, bank_id="test", budget_guard=None
+            )
+        assert result["total"] == 1
+
+    def test_reconcile_raises_without_budget_guard(self, tmp_path: Path) -> None:
+        """reconcile_hindsight_projection without budget_guard raises ValueError."""
+        from olo.m3.feeder import reconcile_hindsight_projection
+        from unittest.mock import MagicMock
+
+        db = tmp_path / "r_guard" / "olo.db"
+        db.parent.mkdir()
+        client = MagicMock()
+        with pytest.raises(ValueError, match="budget_guard is required"):
+            reconcile_hindsight_projection(db, client, bank_id="test")
+
+    def test_budget_guard_none_does_not_enforce_budget(self) -> None:
+        """With budget_guard=None, no stats check runs — budget is unguarded."""
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from unittest.mock import MagicMock, patch
+
+        client = MagicMock()
+        client.retain = MagicMock(return_value={})
+        items = [{"content": "test", "document_id": "sig:test",
+                  "strategy": "structured-no-llm"}]
+        # No budget guard = no stats call = no BudgetExceededError
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            result = batch_retain_to_hindsight(
+                items, client, bank_id="test", budget_guard=None
+            )
+        # client._get_stats should NOT have been called
+        assert result["total"] == 1

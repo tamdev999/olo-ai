@@ -80,55 +80,61 @@ def validate_item_strategy(item: dict, bank_id: str) -> None:
 
 
 # ── Entity metadata enrichment ────────────────────────────────────────────────
-# Cache populated from the OLO entity registry table in the source DB.
-# In production, this is populated from authoritative Olo entity records.
-# Never imports from olo.m3.synthetic.generator — that module must not be
-# a dependency of the production feeder.
-_ENTITY_META_CACHE: dict[str, tuple[str, str]] = {}  # entity_id → (display_name, company)
-_ENTITY_META_LOADED = False  # True once the cache has been populated
+# Loaded fresh from the OLO entity_metadata table per build_hindsight_items call.
+# No process-global cache: loading globally caused cross-tenant contamination when
+# two tenants were processed sequentially in the same process (the first tenant's
+# entities leaked into the second tenant's context, and colliding entity IDs
+# returned the wrong tenant's display_name/company).
+#
+# Instead, _load_entity_meta_from_db returns a plain dict keyed by entity_id,
+# which build_hindsight_items binds locally.  Each call to build_hindsight_items
+# gets a fresh, tenant-scoped snapshot.  The function never imports from
+# olo.m3.synthetic — the production path must not depend on test generators.
 
 
-def _load_entity_meta_from_db(db_conn: "sqlite3.Connection") -> None:
-    """Populate _ENTITY_META_CACHE from the entity_metadata table in the source DB.
+def _load_entity_meta_from_db(
+    db_conn: "sqlite3.Connection",
+) -> "dict[str, tuple[str, str]]":
+    """Return entity_id → (display_name, company) from the entity_metadata table.
 
-    The entity_metadata table (created by the DB generation script) maps
-    entity_id → (display_name, company).  It is populated during ingestion
-    from authoritative OLO entity records.
+    Returns a plain dict rather than mutating a module global.  Each call is
+    independent and tenant-scoped to the connection supplied.
 
-    If the table does not exist or has no rows, the cache is left empty —
-    _get_entity_meta() will return ("", "") for all lookups, which is safe
-    (context enrichment simply omits the contact/company fields).
+    If the table does not exist or has no rows, returns an empty dict — context
+    enrichment simply omits contact/company fields for unknown entities.  This is
+    the correct safe fallback for new businesses and partially populated DBs.
 
-    This function is idempotent and thread-safe for single-threaded callers.
+    Never raises; never imports from olo.m3.synthetic.
     """
-    global _ENTITY_META_CACHE, _ENTITY_META_LOADED
-    if _ENTITY_META_LOADED:
-        return
     import sqlite3
+    cache: dict[str, tuple[str, str]] = {}
     try:
         rows = db_conn.execute(
             "SELECT entity_id, display_name, company FROM entity_metadata"
         ).fetchall()
-        for entity_id, display_name, company in rows:
-            _ENTITY_META_CACHE[entity_id] = (display_name or "", company or "")
+        for row in rows:
+            entity_id = row[0] if isinstance(row, tuple) else row["entity_id"]
+            display_name = (row[1] if isinstance(row, tuple) else row["display_name"]) or ""
+            company = (row[2] if isinstance(row, tuple) else row["company"]) or ""
+            cache[entity_id] = (display_name, company)
     except (sqlite3.OperationalError, Exception):
-        # Table does not exist (old DB without entity_metadata) or query failed.
-        # Safe to proceed — context enrichment simply omits contact/company.
+        # Table does not exist (old DB, or DB without entity_metadata yet — will
+        # be created by migrate()).  Safe to return empty dict; enrichment is
+        # best-effort and callers never depend on it being populated.
         pass
-    finally:
-        _ENTITY_META_LOADED = True
+    return cache
 
 
-def _get_entity_meta(entity_id: str) -> tuple[str, str]:
-    """Return (display_name, company) for a given entity_id.
+def _get_entity_meta(
+    entity_id: str,
+    cache: "dict[str, tuple[str, str]]",
+) -> "tuple[str, str]":
+    """Return (display_name, company) from the caller-supplied cache dict.
 
     Returns ("", "") when the entity_id is not found (new business, missing
     metadata, or entity_metadata table not populated).  Never fabricates names.
-
-    Call _load_entity_meta_from_db() once before the per-signal loop to
-    populate the cache from the authoritative source DB.
     """
-    return _ENTITY_META_CACHE.get(entity_id, ("", ""))
+    return cache.get(entity_id, ("", ""))
 
 
 def _ym_tag(occurred_at_iso: str) -> str:
@@ -168,9 +174,10 @@ def build_hindsight_items(
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    # Load entity metadata from the authoritative DB before processing signals.
-    # This avoids any dependency on synthetic test data generators.
-    _load_entity_meta_from_db(conn)
+    # Load entity metadata fresh from this connection — no module globals.
+    # Each call gets a tenant-scoped snapshot; two tenants processed in the
+    # same process cannot contaminate each other's entity context.
+    entity_cache = _load_entity_meta_from_db(conn)
 
     # Read all signals for this source
     rows = conn.execute(
@@ -282,7 +289,7 @@ def build_hindsight_items(
         # Preserves contact, company, direction, document subject and other
         # grounded attributes when present.  Does NOT fabricate metadata.
         entity_id    = payload.get("entity_id", "")
-        display_name, company = _get_entity_meta(entity_id)
+        display_name, company = _get_entity_meta(entity_id, entity_cache)
         subject      = row["subject"] or ""
         doc_kind     = payload.get("kind", row["kind"])
         source_tag   = payload.get("source", "")
@@ -488,6 +495,15 @@ def prepare_hindsight_bank(
         ) from exc
 
 
+# ── Budget guard sentinel ────────────────────────────────────────────────────
+# Used to distinguish "caller did not pass a guard" from "caller explicitly
+# passed None to bypass guard enforcement".  Production callers must always
+# pass a UsageGuard instance.  Test-only callers that intentionally skip budget
+# enforcement must pass budget_guard=None explicitly — the deliberate act of
+# passing None serves as documentation that the caller chose to skip enforcement.
+_UNGUARDED = object()
+
+
 # ── Production retain pipeline with budget guard ──────────────────────────────
 
 def batch_retain_to_hindsight(
@@ -496,7 +512,7 @@ def batch_retain_to_hindsight(
     *,
     bank_id: str = "main-v1",
     batch_size: int = 50,
-    budget_guard=None,  # Optional[UsageGuard]
+    budget_guard=_UNGUARDED,  # UsageGuard | None; None only for explicit test bypass
     async_: bool = True,
     prepare_bank: bool = True,
 ) -> dict[str, int]:
@@ -538,6 +554,14 @@ def batch_retain_to_hindsight(
     """
     import os
     import uuid as _uuid
+
+    if budget_guard is _UNGUARDED:
+        raise ValueError(
+            "batch_retain_to_hindsight: budget_guard is required. "
+            "Pass a UsageGuard instance for production use to enforce spending limits. "
+            "For tests that intentionally skip budget enforcement, "
+            "pass budget_guard=None explicitly."
+        )
 
     if not items:
         raise FeedError("batch_retain_to_hindsight: items list is empty")
@@ -634,8 +658,13 @@ def reconcile_hindsight_projection(
     bank_id: str,
     source: str = "hindsight_gate",
     batch_size: int = 50,
+    budget_guard=_UNGUARDED,  # UsageGuard | None; None only for explicit test bypass
 ) -> dict[str, int]:
     """Diff olo.db signals against Hindsight documents and re-submit missing ones.
+
+    ``budget_guard`` is required.  Pass a ``UsageGuard`` for production use.
+    Pass ``budget_guard=None`` explicitly only in tests that intentionally skip
+    budget enforcement.
 
     Algorithm:
       1. Load all signals from olo.db.
@@ -658,6 +687,14 @@ def reconcile_hindsight_projection(
     Raises:
         FeedError: if any operation ends failed or any evidence is missing.
     """
+    if budget_guard is _UNGUARDED:
+        raise ValueError(
+            "reconcile_hindsight_projection: budget_guard is required. "
+            "Pass a UsageGuard instance for production use. "
+            "For tests that intentionally skip budget enforcement, "
+            "pass budget_guard=None explicitly."
+        )
+
     from olo.store import connect as _connect, migrate, record_projection, \
         confirm_projection, fail_projection, list_unconfirmed_projections
     from olo.m3.hindsight.client import HindsightAPIError
@@ -708,6 +745,7 @@ def reconcile_hindsight_projection(
             client,
             bank_id=bank_id,
             batch_size=batch_size,
+            budget_guard=budget_guard,
             async_=False,  # synchronous for deterministic reconciliation
         )
         resubmitted = counters["total"]

@@ -35,7 +35,6 @@ FROZEN_HASH = "1fb288817e141ee50aaf92a816009e4e76adabcd0ff129a074f7023ac3538972"
 # A mismatch means the bank was built from a different corpus than the benchmark labels expect.
 FROZEN_CORPUS_FP = "1877ca71d6fbbe64a6ef0b728159ceb4acc2595a14e05d0f9e44db2aa6759a0b"
 OUT_DIR     = Path("/tmp/benchmark_results")
-OUT_DIR.mkdir(exist_ok=True)
 
 def _connect() -> HindsightClient:
     cfg = HindsightConfig.from_env()
@@ -110,11 +109,25 @@ class CorpusMismatchError(Exception):
 def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
     """Verify the bank contains ALL expected source documents with correct content.
 
-    Per Opus release audit: spot-checking 6 document IDs is insufficient.
-    This check: (a) verifies corpus fingerprint, (b) lists every bank document
-    and checks its content_sha256, (c) rejects missing, extra and stale content.
+    Per Opus fourth-remediation audit: the previous check used the client-supplied
+    metadata hash (content_sha256 in document_metadata), which the server cannot
+    independently validate — a stale bank can lie about its own hash.
 
-    A bank containing stale content fails before any scores are calculated.
+    This implementation:
+      1. Verifies the corpus fingerprint (generator vs frozen expectation).
+      2. Enumerates every bank document through all pagination pages.
+      3. Compares the complete bank ID set with the authoritative corpus ID set.
+      4. Rejects missing IDs.
+      5. Rejects extra IDs (unexpected documents indicate a stale or contaminated bank).
+      6. Obtains the server-generated ``content_hash`` for each document.
+         This hash is computed by the Hindsight server from the actual stored,
+         sanitized text — it cannot be forged by the client at ingest time.
+      7. Independently computes the expected SHA-256 from the generator's body_text.
+      8. Requires the two digests to match.
+      9. Rejects missing or empty content_hash values.
+
+    A bank containing stale content, extra documents, or missing hashes fails
+    before any benchmark question is scored.
 
     Raises CorpusMismatchError before any question is scored.
     """
@@ -131,16 +144,20 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
             f"different corpus than the current generator produces."
         )
 
-    # Build expected manifest: sig_id -> expected content_sha256
+    # Build expected manifest: sig_id → expected SHA-256 of body_text
+    # This is what the Hindsight server should return as content_hash after
+    # ingesting the unmodified body_text.
     expected_hashes: dict[str, str] = {}
     for sig in tl:
         sig_id = f"sig:{sig.signal_id}"
         body_sha = hashlib.sha256(sig.body_text.encode("utf-8")).hexdigest()
         expected_hashes[sig_id] = body_sha
 
-    # List all documents in the bank and verify content hashes
+    # Enumerate every bank document through all pagination pages.
+    # Use the server-generated content_hash — not the client-supplied metadata hash.
     actual_ids: set[str] = set()
-    stale: list[str] = []
+    stale: list[str] = []        # wrong content_hash
+    missing_hash: list[str] = [] # content_hash absent or empty
     offset = 0
     page_size = 200
     while True:
@@ -152,31 +169,52 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
         if not docs:
             break
         for doc in docs:
-            doc_id = (doc.get("document_id") or doc.get("id") or "")
+            doc_id = doc.get("document_id") or doc.get("id") or ""
             if not doc_id.startswith("sig:"):
                 continue
             actual_ids.add(doc_id)
-            meta = doc.get("metadata") or {}
-            bank_sha = meta.get("content_sha256", "")
+
+            # Use server-generated content_hash, NOT metadata["content_sha256"].
+            # The server computes content_hash from the actual stored text; it
+            # cannot be forged by supplying a false value at ingest time.
+            content_hash = doc.get("content_hash") or ""
+            if not content_hash:
+                missing_hash.append(doc_id)
+                continue
+
             expected_sha = expected_hashes.get(doc_id, "")
-            if expected_sha and bank_sha and bank_sha != expected_sha:
+            if expected_sha and content_hash != expected_sha:
                 stale.append(doc_id)
+
         if len(docs) < page_size:
             break
         offset += page_size
 
     missing = [sid for sid in expected_hashes if sid not in actual_ids]
+    extra = [d for d in actual_ids if d not in expected_hashes]
 
     errors = []
     if missing:
         errors.append(
-            f"{len(missing)} expected signals missing from bank "
+            f"{len(missing)} expected signal(s) missing from bank "
             f"(first 3: {missing[:3]}). Rebuild the bank."
         )
     if stale:
         errors.append(
-            f"{len(stale)} bank documents have stale content "
-            f"(first 3: {stale[:3]}). Bank built from older corpus. Rebuild."
+            f"{len(stale)} bank document(s) have stale content "
+            f"(server content_hash does not match expected body_text SHA-256; "
+            f"first 3: {stale[:3]}). Bank was built from a different corpus. Rebuild."
+        )
+    if missing_hash:
+        errors.append(
+            f"{len(missing_hash)} bank document(s) have no server-generated "
+            f"content_hash (first 3: {missing_hash[:3]}). "
+            "Cannot verify corpus integrity without the server hash."
+        )
+    if extra:
+        errors.append(
+            f"{len(extra)} unexpected document(s) in bank not in the authoritative "
+            f"corpus (first 3: {extra[:3]}). Bank may be contaminated or stale."
         )
 
     if errors:
@@ -184,10 +222,6 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> None:
             "Bank content does not match expected corpus:\n" +
             "\n".join(f"  {e}" for e in errors)
         )
-
-    extra = [d for d in actual_ids if d not in expected_hashes]
-    if extra:
-        print(f"  Note: {len(extra)} extra signal(s) in bank (from gate tests etc.)")
 
     print(f"Corpus verified: {len(tl)} signals, {len(actual_ids)} in bank, "
           f"fingerprint {actual_fp[:16]}...")
@@ -356,6 +390,7 @@ def run_benchmark() -> dict:
 
     # Save results
     out_file = OUT_DIR / "live_benchmark_results.json"
+    OUT_DIR.mkdir(exist_ok=True, parents=True)
     with open(out_file, "w") as f:
         json.dump({"summary": summary, "per_question": per_question}, f, indent=2)
     print(f"\nFull results saved to: {out_file}")

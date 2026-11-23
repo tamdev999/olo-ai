@@ -29,12 +29,17 @@ _EXIT_POLL_TIMEOUT_S = 20.0
 
 
 def _pg0_instance_data_dir(home_dir: Path, instance_name: str) -> Path:
-    """Return the expected pg0 data directory for an instance.
+    """Return the pg0 data directory for an instance.
 
-    pg0 stores data under ``HOME/.pg0/{instance_name}/data/``.
+    pg0 0.17.0 layout: ``HOME/.pg0/instances/{instance_name}/data/``
     This directory contains ``postmaster.pid`` when PostgreSQL is running.
+
+    IMPORTANT: the intermediate ``instances/`` path component was added in
+    pg0 0.17.0.  Earlier probes used ``HOME/.pg0/{instance_name}/data/``
+    which never matched a real running server, causing the safety checks
+    (_read_postmaster_pid, /proc polling) to silently skip.
     """
-    return home_dir / ".pg0" / instance_name / "data"
+    return home_dir / ".pg0" / "instances" / instance_name / "data"
 
 
 def _read_postmaster_pid(data_dir: Path) -> Optional[int]:
@@ -183,44 +188,38 @@ def pg0_stop_and_clean(
     *,
     instance_name: str,
     home_dir: Path,
-    data_dir: Optional[Path] = None,
     socket_dir: Optional[Path] = None,
     timeout_s: float = 15.0,
     settle_s: float = 1.0,
     exit_wait_s: float = _EXIT_POLL_TIMEOUT_S,
 ) -> None:
-    """Stop a pg0 instance with verified exit, then clean owned directories.
+    """Stop a pg0 instance with verified exit, then delete its canonical data directory.
 
-    Per Opus release audit:
+    Per Opus release audit (fourth remediation):
+    - The data directory is ALWAYS derived from the canonical pg0 0.17.0 layout:
+      ``home_dir / ".pg0" / "instances" / instance_name / "data"``
+    - The caller cannot supply an arbitrary ``data_dir``.  This prevents N1-class
+      bugs where a caller passes the wrong instance's path and accidentally deletes
+      a live database that belongs to a different instance.
     - Verified exit (not just pg0 stop returncode=0) is required before rm -rf.
-    - The data directory is derived from home_dir to prevent cross-instance deletion.
     - Socket-directory cleanup is safe regardless of stop outcome.
 
     Args:
         instance_name: pg0 instance name.
         home_dir: HOME directory for the olo_hs user running this instance.
-        data_dir: pg0 data directory to delete after verified exit.
-                  If None, no data deletion is attempted.
-                  MUST be derived from home_dir to prevent accidental cross-deletion.
         socket_dir: Socket directory to remove (safe even on failed stop).
         timeout_s: Timeout for the pg0 stop command.
         settle_s: Settle time after confirmed process exit.
         exit_wait_s: Maximum wait time for postmaster PID to disappear.
 
     Raises:
-        Pg0StillRunningError: If stop verification fails and data_dir was requested.
+        Pg0StillRunningError: If stop verification fails.  The canonical data
+            directory is NOT deleted.  Socket directory IS cleaned if provided.
     """
-    # Validate that data_dir belongs to this instance's HOME.
-    if data_dir is not None:
-        expected_base = _pg0_instance_data_dir(home_dir, instance_name)
-        try:
-            data_dir.relative_to(home_dir)
-        except ValueError:
-            raise Pg0StillRunningError(
-                f"data_dir {data_dir} is not under home_dir {home_dir}. "
-                "Refusing to delete data outside the instance's HOME to prevent "
-                "accidental cross-instance deletion."
-            )
+    # Always derive the data directory from the canonical layout.
+    # Never trust a caller-supplied path: an incorrect path could target a
+    # different instance's data or a cross-HOME directory.
+    data_dir = _pg0_instance_data_dir(home_dir, instance_name)
 
     stopped = pg0_stop(
         instance_name=instance_name,
@@ -230,7 +229,7 @@ def pg0_stop_and_clean(
         exit_wait_s=exit_wait_s,
     )
 
-    if not stopped and data_dir is not None:
+    if not stopped:
         # Refuse to delete a live database.  Socket dir is safe to clean.
         if socket_dir is not None:
             subprocess.run(
@@ -239,7 +238,8 @@ def pg0_stop_and_clean(
             )
         raise Pg0StillRunningError(
             f"pg0_stop_and_clean: cannot verify that pg0 instance {instance_name!r} "
-            f"exited (HOME={home_dir}).  Refusing to delete data_dir={data_dir}. "
+            f"exited (HOME={home_dir}).  Refusing to delete canonical "
+            f"data_dir={data_dir}. "
             "Socket directory was cleaned if provided."
         )
 

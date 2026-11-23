@@ -34,7 +34,7 @@ from olo.signals import (
 )
 
 # ── Schema version ────────────────────────────────────────────────────────────
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_LEASE_TTL = 900  # seconds
@@ -239,6 +239,25 @@ _DDL_STATEMENTS = [
     PRIMARY KEY (signal_id, bank_id)
 )""",
     "CREATE INDEX IF NOT EXISTS idx_proj_bank_status ON hindsight_projection(bank_id, status)",
+    # M3.0 P3 (fourth remediation): authoritative entity registry.
+    # Scoped to (source, entity_id) — one row per entity per connector source.
+    # Populated during connector ingestion from signal metadata (Gmail contacts,
+    # Calendar organizers/attendees, Stripe customers, QBO companies).
+    # NEVER populated from benchmark fixtures or olo.m3.synthetic data.
+    # The feeder reads this table to build context-enriched Hindsight retain items;
+    # missing entities are tolerated (empty display_name/company is the safe fallback).
+    """CREATE TABLE IF NOT EXISTS entity_metadata (
+    id            INTEGER PRIMARY KEY,
+    source        TEXT NOT NULL,
+    entity_id     TEXT NOT NULL,
+    display_name  TEXT NOT NULL DEFAULT '',
+    company       TEXT NOT NULL DEFAULT '',
+    source_kind   TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    UNIQUE (source, entity_id)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_entity_source ON entity_metadata(source)",
 ]
 
 
@@ -248,6 +267,7 @@ def migrate(conn: Optional[sqlite3.Connection] = None,
 
     v1 → v2: adds content_blobs table (M2b §2.1).
     v2 → v3: adds hindsight_projection table (M3.0 §C2).
+    v3 → v4: adds entity_metadata table (M3.0 P3 fourth remediation).
     Runs in one transaction. Opens a new connection if *conn* is None.
     """
     close_after = conn is None
