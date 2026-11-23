@@ -34,11 +34,14 @@ from olo.m3.pg0_lifecycle import (
     Pg0StillRunningError,
     _pg0_instance_data_dir,
     _list_pg0_instances,
+    _enumerate_pg0_homes_under,
+    _find_live_pg_pids_under,
     _read_postmaster_pid,
     _process_exists,
     _wait_for_postmaster_exit,
     safe_pg0_stop_all,
     safe_pg0_delete_home,
+    safe_pg0_delete_tree,
 )
 
 
@@ -593,6 +596,289 @@ class TestCrossHomeDeletionPrevention:
         )
         assert not a.is_relative_to(home_b), "home_a path must not be inside home_b"
         assert not b.is_relative_to(home_a), "home_b path must not be inside home_a"
+
+
+# ── H3: enumeration failure raises, never deletes ────────────────────────────
+
+class TestEnumerationFailClosedH3:
+    """H3: _list_pg0_instances must raise on I/O error, never return [].
+
+    Returning an empty list on an enumeration error lets safe_pg0_delete_home
+    conclude there are no running instances and delete the HOME directory.
+    """
+
+    def test_iterdir_ioerror_raises_pg0_still_running(
+        self, tmp_path: Path
+    ) -> None:
+        """H3: OSError during iterdir causes Pg0StillRunningError, not empty list."""
+        home = tmp_path / "h3home"
+        home.mkdir()
+        instances_root = home / ".pg0" / "instances"
+        instances_root.mkdir(parents=True)
+        # Create a real instance directory so the file exists
+        (instances_root / "hs").mkdir()
+
+        saved_iterdir = Path.iterdir
+
+        def _boom(self):
+            if self.name == "instances":
+                raise OSError("simulated I/O error reading instances directory")
+            return saved_iterdir(self)
+
+        with patch.object(Path, "iterdir", _boom):
+            with pytest.raises(Pg0StillRunningError, match="simulated I/O error"):
+                _list_pg0_instances(home)
+
+    def test_iterdir_ioerror_prevents_home_deletion(
+        self, tmp_path: Path
+    ) -> None:
+        """H3: safe_pg0_delete_home raises when enumeration fails; HOME survives."""
+        home = tmp_path / "h3del"
+        home.mkdir()
+        instances_root = home / ".pg0" / "instances"
+        instances_root.mkdir(parents=True)
+        sentinel = home / "important_data.db"
+        sentinel.write_text("production data")
+
+        saved_iterdir = Path.iterdir
+
+        def _boom(self):
+            if self.name == "instances":
+                raise OSError("simulated I/O failure")
+            return saved_iterdir(self)
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", return_value=stop_result), \
+             patch("time.sleep"), \
+             patch.object(Path, "iterdir", _boom):
+            with pytest.raises(Pg0StillRunningError):
+                safe_pg0_delete_home(home)
+        assert sentinel.exists(), (
+            "HOME must NOT be deleted when instance enumeration fails"
+        )
+
+    def test_no_instances_directory_returns_empty_safely(
+        self, tmp_path: Path
+    ) -> None:
+        """H3 safe case: absent .pg0/instances/ is genuinely empty — no error."""
+        home = tmp_path / "h3empty"
+        home.mkdir()
+        # No .pg0 directory at all
+        result = _list_pg0_instances(home)
+        assert result == [], "Absent instances dir is genuinely empty — no error"
+
+
+# ── C5: proc scan catches postgres not visible via pg0 state files ────────────
+
+class TestProcScanC5:
+    """C5: _find_live_pg_pids_under and _proc_scan_or_raise catch live postgres
+    instances whose data directories lie under the cleanup target but are not
+    registered in pg0 state files (custom dirs, nested business HOmes,
+    incomplete pg0 state).
+    """
+
+    def test_find_live_pids_reads_nested_postmaster_pid(
+        self, tmp_path: Path
+    ) -> None:
+        """_find_live_pg_pids_under finds a postmaster.pid at any depth."""
+        root = tmp_path / "root"
+        # Nested business database — NOT at the top-level .pg0/instances/ path
+        nested_data = root / "businesses" / "biz_other" / ".pg0" / "instances" / "hs" / "data"
+        nested_data.mkdir(parents=True)
+        (nested_data / "postmaster.pid").write_text("77777\n")
+
+        with patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
+            pids = _find_live_pg_pids_under(root)
+        assert 77777 in pids, (
+            f"Expected PID 77777 in live pids, got {pids}"
+        )
+
+    def test_find_live_pids_ignores_dead_postmasters(
+        self, tmp_path: Path
+    ) -> None:
+        """postmaster.pid whose PID is not in /proc is ignored."""
+        root = tmp_path / "root"
+        data_dir = root / ".pg0" / "instances" / "hs" / "data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "postmaster.pid").write_text("99999\n")
+
+        with patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
+            pids = _find_live_pg_pids_under(root)
+        assert pids == [], "Dead postmaster must not appear in live pids"
+
+    def test_safe_pg0_delete_home_raises_on_custom_data_dir(
+        self, tmp_path: Path
+    ) -> None:
+        """C5: postgres with a custom data dir (not under .pg0) blocks deletion.
+
+        pg0 state-file enumeration finds no instances at the top level, but
+        the proc scan finds the live postmaster via postmaster.pid.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        # Custom data directory — NOT under .pg0/instances/
+        custom_data = home / "custom_pgdata"
+        custom_data.mkdir()
+        (custom_data / "postmaster.pid").write_text("55555\n")
+        sentinel = custom_data / "PG_VERSION"
+        sentinel.write_text("14")
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", return_value=stop_result), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
+            with pytest.raises(Pg0StillRunningError, match="live PostgreSQL"):
+                safe_pg0_delete_home(home, exit_wait_s=0.001)
+        assert sentinel.exists(), "Data must not be deleted when proc scan finds live process"
+
+    def test_safe_pg0_delete_home_proceeds_when_no_live_pids(
+        self, tmp_path: Path
+    ) -> None:
+        """safe_pg0_delete_home succeeds when proc scan finds no live pids."""
+        import shutil
+        home = tmp_path / "home"
+        home.mkdir()
+        data_dir = _pg0_instance_data_dir(home, "hs")
+        data_dir.mkdir(parents=True)
+        (data_dir / "postmaster.pid").write_text("12345\n")
+
+        def fake_rm(cmd, **kw):
+            m = MagicMock(); m.returncode = 0
+            if "rm" in cmd:
+                target = cmd[-1]
+                if Path(target).exists():
+                    if Path(target).is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        Path(target).unlink(missing_ok=True)
+            return m
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", side_effect=fake_rm), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
+            safe_pg0_delete_home(home)
+        assert not home.exists(), "HOME must be deleted when no live pids remain"
+
+
+# ── safe_pg0_delete_tree: nested pg0 HOmes ────────────────────────────────────
+
+class TestSafeDeleteTree:
+    """safe_pg0_delete_tree handles nested pg0 HOmes at arbitrary depth (C2/C5)."""
+
+    def test_enumerate_pg0_homes_finds_nested(self, tmp_path: Path) -> None:
+        """_enumerate_pg0_homes_under finds business HOME dirs at any depth."""
+        hermes = tmp_path / "hermes"
+        biz_a = hermes / "businesses" / "biz_a"
+        biz_b = hermes / "businesses" / "biz_b"
+        for biz in (biz_a, biz_b):
+            (biz / ".pg0" / "instances").mkdir(parents=True)
+
+        homes = _enumerate_pg0_homes_under(hermes)
+        assert biz_a in homes, f"biz_a not found: {homes}"
+        assert biz_b in homes, f"biz_b not found: {homes}"
+
+    def test_enumerate_pg0_homes_excludes_nonpg0_dirs(self, tmp_path: Path) -> None:
+        """Directories without .pg0/instances/ are not returned."""
+        root = tmp_path / "root"
+        (root / "other_dir").mkdir(parents=True)
+        (root / "not_pg0" / "instances").mkdir(parents=True)  # instances but not under .pg0
+        homes = _enumerate_pg0_homes_under(root)
+        # only paths where the instances dir is at .pg0/instances
+        assert not any("not_pg0" in str(h) for h in homes)
+
+    def test_delete_tree_stops_nested_instances(self, tmp_path: Path) -> None:
+        """C2: nested business pg0 instance under hermes_home is stopped before deletion."""
+        import shutil
+        hermes = tmp_path / "hermes"
+        biz_home = hermes / "businesses" / "biz_a"
+        data_dir = _pg0_instance_data_dir(biz_home, "hs")
+        data_dir.mkdir(parents=True)
+        (data_dir / "postmaster.pid").write_text("99999\n")
+        sentinel = data_dir / "PG_VERSION"
+        sentinel.write_text("14")
+
+        def fake_rm(cmd, **kw):
+            m = MagicMock(); m.returncode = 0
+            if "rm" in cmd:
+                target = cmd[-1]
+                if Path(target).exists():
+                    if Path(target).is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        Path(target).unlink(missing_ok=True)
+            return m
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", side_effect=fake_rm), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=False):
+            safe_pg0_delete_tree(hermes)
+        assert not hermes.exists(), "hermes must be deleted after all nested instances stopped"
+
+    def test_delete_tree_raises_when_nested_instance_cannot_stop(
+        self, tmp_path: Path
+    ) -> None:
+        """C5: live nested instance prevents deletion of the entire tree."""
+        hermes = tmp_path / "hermes"
+        biz_other = hermes / "businesses" / "biz_other"
+        data_other = _pg0_instance_data_dir(biz_other, "hs")
+        data_other.mkdir(parents=True)
+        (data_other / "postmaster.pid").write_text("22222\n")
+        sentinel = data_other / "PG_VERSION"
+        sentinel.write_text("14")
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", return_value=stop_result), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", return_value=True):
+            with pytest.raises(Pg0StillRunningError):
+                safe_pg0_delete_tree(hermes, exit_wait_s=0.001)
+        assert sentinel.exists(), "Data must survive when tree deletion fails"
+
+    def test_delete_tree_nonexistent_root_is_noop(self, tmp_path: Path) -> None:
+        """safe_pg0_delete_tree on a non-existent root returns without error."""
+        nonexistent = tmp_path / "does_not_exist"
+        safe_pg0_delete_tree(nonexistent)  # must not raise
+
+    def test_delete_tree_known_plus_unknown_biz(self, tmp_path: Path) -> None:
+        """C5: safe_pg0_delete_tree finds 'biz_other' even when only 'biz_a' is known.
+
+        Replicates the audit's C5 scenario: safe_pg0_delete_home(biz_a) deleted
+        biz_a's data, then raw rm -rf hermes_home deleted biz_other's live database.
+        safe_pg0_delete_tree(hermes_home) must stop BOTH before deleting.
+        """
+        import shutil
+        hermes = tmp_path / "hermes"
+        biz_a_data = _pg0_instance_data_dir(hermes / "businesses" / "biz_a", "hs")
+        biz_other_data = _pg0_instance_data_dir(hermes / "businesses" / "biz_other", "hs")
+        biz_a_data.mkdir(parents=True)
+        biz_other_data.mkdir(parents=True)
+        (biz_a_data / "postmaster.pid").write_text("11111\n")
+        (biz_other_data / "postmaster.pid").write_text("22222\n")
+
+        pids_alive = {11111: False, 22222: False}  # both stopped
+
+        def mock_process_exists(pid):
+            return pids_alive.get(pid, False)
+
+        def fake_rm(cmd, **kw):
+            m = MagicMock(); m.returncode = 0
+            if "rm" in cmd:
+                target = cmd[-1]
+                if Path(target).exists():
+                    if Path(target).is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        Path(target).unlink(missing_ok=True)
+            return m
+
+        stop_result = _make_pg0_stop_result(0)
+        with patch("subprocess.run", side_effect=fake_rm), \
+             patch("time.sleep"), \
+             patch("olo.m3.pg0_lifecycle._process_exists", side_effect=mock_process_exists):
+            safe_pg0_delete_tree(hermes)
+        assert not hermes.exists(), "Both biz stopped; hermes must be deleted"
 
 
 # ── safe_pg0_stop_all / safe_pg0_delete_home N2/N9/N5/N7/N6 ─────────────────

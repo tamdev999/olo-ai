@@ -1708,12 +1708,17 @@ class TestV5CrashRecovery:
         # isolated and never interfere with any other service.
         v5_socket_dir = v5_home / "run"
 
-        # Clean up only the directories this test owns.
-        # Never modify /tmp, never use pkill -u or -f patterns.
-        subprocess.run(
-            ["sudo", "-u", "olo_hs", "rm", "-rf", str(v5_home)],
-            check=False, capture_output=True,
-        )
+        # C1 fix: replace raw rm -rf with safe_pg0_delete_home so a live
+        # postmaster from a previous interrupted run cannot lose its data.
+        from olo.m3.pg0_lifecycle import safe_pg0_delete_home as _v5_initial_del
+        from olo.m3.pg0_lifecycle import Pg0StillRunningError as _V5SetupPgErr
+        if v5_home.exists():
+            try:
+                _v5_initial_del(v5_home)
+            except _V5SetupPgErr as _e:
+                pytest.fail(
+                    f"V5 setup: cannot safely clear {v5_home}: {_e}"
+                )
         subprocess.run(
             ["sudo", "-u", "olo_hs", "mkdir", "-p", str(v5_socket_dir)],
             check=True, capture_output=True,
@@ -2263,11 +2268,19 @@ class TestV7IsolationIntegration:
         )
         hermes_home_a = Path("/home/olo_hs/v7_hermes_a")
         hermes_home_b = Path("/home/olo_hs/v7_hermes_b")
+        # C2 fix: replace raw rm -rf with safe_pg0_delete_tree so previous-run
+        # business pg0 instances nested under the hermes home are stopped first.
+        from olo.m3.pg0_lifecycle import safe_pg0_delete_tree as _v7_initial_del
+        from olo.m3.pg0_lifecycle import Pg0StillRunningError as _V7SetupPgErr
+        for _v7_d in (hermes_home_a, hermes_home_b):
+            if _v7_d.exists():
+                try:
+                    _v7_initial_del(_v7_d)
+                except _V7SetupPgErr as _e:
+                    pytest.fail(
+                        f"V7 setup: cannot safely clear {_v7_d}: {_e}"
+                    )
         for d in (hermes_home_a, hermes_home_b):
-            subprocess.run(
-                ["sudo", "-u", "olo_hs", "rm", "-rf", str(d)],
-                check=False, capture_output=True,
-            )
             subprocess.run(
                 ["sudo", "-u", "olo_hs", "mkdir", "-p", str(d / "olo")],
                 check=True, capture_output=True,
@@ -2498,25 +2511,20 @@ class TestV7IsolationIntegration:
                 _kill_process_group(_p)
             except Exception:
                 pass
-        # N5/N9 fix: use safe_pg0_delete_home for each business HOME, then delete
-        # the hermes homes.  This enumerates ALL pg0 instances rather than relying
-        # on a configured name that may not match what's running.
-        from olo.m3.pg0_lifecycle import safe_pg0_delete_home, Pg0StillRunningError
-        for _biz_id, _hermes_home in [(biz_a, hermes_home_a), (biz_b, hermes_home_b)]:
-            _biz_home = _hermes_home / "businesses" / _biz_id
-            if _biz_home.exists():
+        # C5 fix: use safe_pg0_delete_tree for each hermes home so unlisted
+        # business databases nested underneath (not in biz_a/biz_b) are stopped
+        # before deletion.  The old approach (stop known biz + raw rm) deleted
+        # any "biz_other" pg0 instance that wasn't in the cleanup loop.
+        from olo.m3.pg0_lifecycle import safe_pg0_delete_tree as _v7_tree_del
+        from olo.m3.pg0_lifecycle import Pg0StillRunningError as _V7TeardownErr
+        for _hh in [hermes_home_a, hermes_home_b]:
+            if _hh.exists():
                 try:
-                    safe_pg0_delete_home(_biz_home)
-                except Pg0StillRunningError as _e:
+                    _v7_tree_del(_hh)
+                except _V7TeardownErr as _e:
                     pytest.fail(
-                        f"V7 teardown: cannot safely delete {_biz_id} home: {_e}"
+                        f"V7 teardown: cannot safely delete {_hh}: {_e}"
                     )
-        # All pg0 instances confirmed stopped; safe to delete entire hermes homes
-        subprocess.run(
-            ["sudo", "-u", "olo_hs", "rm", "-rf",
-             "/home/olo_hs/v7_hermes_a", "/home/olo_hs/v7_hermes_b"],
-            check=False, capture_output=True,
-        )
 
 
 @_integration
@@ -2670,19 +2678,21 @@ class TestV10Footprint:
         for i, model_cfg in enumerate(MODEL_CONFIGS):
             port = base_port + i
             pg0_home = Path(f"/home/olo_hs/bench_{model_cfg['id']}")
-            # Clean up with process-group kill, not pkill by name pattern (C12 fix)
-            # N6/N2 pre-clean fix: use safe_pg0_delete_home to stop any leftover
-            # pg0 instance from a previous run before deleting the directory.
-            from olo.m3.pg0_lifecycle import safe_pg0_delete_home as _pre_del
+            # N6/N2 pre-clean fix + C3 fix: use safe_pg0_delete_home and FAIL
+            # (not fall back to rm -rf) if the stop cannot be verified.
+            from olo.m3.pg0_lifecycle import (
+                safe_pg0_delete_home as _pre_del, Pg0StillRunningError,
+            )
             if pg0_home.exists():
                 try:
                     _pre_del(pg0_home)
-                except Exception as _pre_e:
-                    # If stop fails, still attempt mkdir for the new run
-                    print(f"  [warn] benchmark pre-clean: {_pre_e}")
-                    subprocess.run(
-                        ["sudo", "-u", "olo_hs", "rm", "-rf", str(pg0_home)],
-                        check=False, capture_output=True,
+                except Pg0StillRunningError as _pre_e:
+                    # C3 fix: never fall back to raw rm -rf after a failed safe stop.
+                    # A live postmaster must not lose its data directory.
+                    pytest.fail(
+                        f"Benchmark pre-clean: cannot safely delete {pg0_home}: "
+                        f"{_pre_e}. A live PostgreSQL instance was not stopped. "
+                        "Cannot start a fresh benchmark on a dirty HOME."
                     )
             subprocess.run(
                 ["sudo", "-u", "olo_hs", "mkdir", "-p", str(pg0_home)],

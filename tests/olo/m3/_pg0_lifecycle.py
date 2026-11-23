@@ -1,4 +1,4 @@
-"""Thin re-export from olo.m3.pg0_lifecycle for test backward-compatibility.
+"""Re-export from olo.m3.pg0_lifecycle for test backward-compatibility.
 
 The authoritative implementation is in ``olo/m3/pg0_lifecycle.py``.
 Tests should patch ``olo.m3.pg0_lifecycle.*`` for subprocess and process_exists,
@@ -8,8 +8,12 @@ from olo.m3.pg0_lifecycle import (  # noqa: F401
     _PG0_BIN,
     _EXIT_POLL_INTERVAL_S,
     _EXIT_POLL_TIMEOUT_S,
+    _OLO_HS_USER,
     _pg0_instance_data_dir,
     _list_pg0_instances,
+    _enumerate_pg0_homes_under,
+    _find_live_pg_pids_under,
+    _proc_scan_or_raise,
     _read_postmaster_pid,
     _process_exists,
     _wait_for_postmaster_exit,
@@ -18,4 +22,5 @@ from olo.m3.pg0_lifecycle import (  # noqa: F401
     pg0_stop_and_clean,
     safe_pg0_stop_all,
     safe_pg0_delete_home,
+    safe_pg0_delete_tree,
 )

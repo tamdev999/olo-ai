@@ -3,17 +3,24 @@
 Provides the authoritative implementation for stopping and cleaning up pg0
 instances used by Hindsight integration tests and benchmarks.
 
-Design principles (Opus release audit, fourth+fifth remediation):
+Design principles (Opus release audit, fourth+fifth+sixth remediation):
 - **Enumerate, don't guess.**  ``safe_pg0_delete_home`` and ``safe_pg0_stop_all``
   find EVERY instance by scanning the canonical pg0 layout
   (``HOME/.pg0/instances/*/``) rather than accepting a caller-supplied name.
   This eliminates N2/N7/N9 bugs where a wrong or guessed instance name caused
   the helper to miss live postmasters.
+- **Fail closed on enumeration errors (H3).**  ``_list_pg0_instances`` raises
+  ``Pg0StillRunningError`` if the instances directory cannot be listed; it never
+  returns an empty list when the error might mask a live database.
+- **Process-ownership check (C5).**  Before deleting any directory,
+  ``safe_pg0_delete_home`` and ``safe_pg0_delete_tree`` scan both
+  ``postmaster.pid`` files and ``/proc/*/cmdline`` for live PostgreSQL processes
+  with data directories nested under the target path.  This catches instances
+  that bypassed pg0 state-file enumeration (custom data dirs, nested business
+  homes, incomplete pg0 state).
 - **Verify, don't trust exit codes.**  ``pg0_stop`` checks the PID read from
   ``postmaster.pid`` against ``/proc/{pid}`` rather than relying on
   ``pg0 stop`` returning 0.  returncode=0 is necessary but not sufficient.
-- **Fail closed.**  Any stop failure raises ``Pg0StillRunningError`` before
-  any directory deletion.  ``except: pass`` around stop failures is prohibited.
 - **Derived paths only.**  ``pg0_stop_and_clean`` derives the data directory
   from ``(home_dir, instance_name)`` via ``_pg0_instance_data_dir`` and never
   accepts a caller-supplied path.
@@ -73,16 +80,20 @@ def _list_pg0_instances(home_dir: Path) -> list[str]:
     name.  This is the core fix for N2/N7/N9: a wrong or guessed instance name
     cannot cause the helper to miss a live postmaster.
 
-    Returns an empty list when no pg0 state is present (never raises).
+    **H3 fix:** Any failure to enumerate raises ``Pg0StillRunningError``.
+    Returning an empty list on an I/O error would allow ``safe_pg0_delete_home``
+    to conclude that no database is running and delete the HOME — fail-open.
+
+    Returns an empty list ONLY when the instances directory genuinely does not
+    exist (safe: no pg0 HOME has ever been initialised here).
     """
     instances_root = home_dir / ".pg0" / "instances"
     try:
         if not instances_root.exists():
             return []
         return [p.name for p in instances_root.iterdir() if p.is_dir()]
-    except PermissionError:
+    except PermissionError as exc:
         # Fallback: running as non-root, use sudo to list the directory.
-        # This handles gate environments where HOME is owned by olo_hs.
         try:
             result = subprocess.run(
                 ["sudo", "-u", _OLO_HS_USER, "ls", str(instances_root)],
@@ -90,11 +101,58 @@ def _list_pg0_instances(home_dir: Path) -> list[str]:
             )
             if result.returncode == 0:
                 return [n.strip() for n in result.stdout.splitlines() if n.strip()]
-        except Exception:
-            pass
+            # sudo also failed — cannot enumerate safely.
+            raise Pg0StillRunningError(
+                f"Cannot enumerate pg0 instances in {instances_root}: "
+                f"direct access denied and sudo returned {result.returncode}. "
+                "Refusing to allow deletion without confirmed instance state."
+            )
+        except Pg0StillRunningError:
+            raise
+        except Exception as exc2:
+            raise Pg0StillRunningError(
+                f"Cannot enumerate pg0 instances in {instances_root}: {exc2}. "
+                "Refusing to allow deletion without confirmed instance state."
+            ) from exc2
+    except Exception as exc:
+        raise Pg0StillRunningError(
+            f"Cannot enumerate pg0 instances in {instances_root}: {exc}. "
+            "Refusing to allow deletion without confirmed instance state."
+        ) from exc
+
+
+def _enumerate_pg0_homes_under(root: Path) -> list[Path]:
+    """Find every pg0 HOME directory nested anywhere under ``root``.
+
+    A pg0 HOME is a directory containing ``.pg0/instances/``.  This handles
+    hermes homes that contain multiple business databases at arbitrary depth
+    (e.g. ``hermes_home/businesses/biz_a/.pg0/instances/``).
+
+    Uses ``os.walk`` with ``followlinks=False`` to avoid following the
+    ``hindsight-venv`` symlink into the system venv tree.
+
+    Returns list of unique HOME paths sorted for deterministic order.
+    Silently skips unreadable subdirectories (best-effort; the proc scan in
+    ``safe_pg0_delete_home`` / ``safe_pg0_delete_tree`` provides a second line
+    of defence for instances that escape this enumeration).
+    """
+    if not root.exists():
         return []
-    except Exception:
-        return []
+    homes: set[Path] = set()
+    try:
+        for dirpath, dirnames, _filenames in os.walk(
+            str(root), followlinks=False, onerror=None
+        ):
+            # Look for a .pg0 subdirectory with an instances child
+            if ".pg0" in dirnames:
+                candidate = Path(dirpath) / ".pg0" / "instances"
+                if candidate.is_dir():
+                    homes.add(Path(dirpath))
+                # Do NOT recurse into .pg0 itself — pg0 never nests pg0 HOmes
+                dirnames.remove(".pg0")
+    except (PermissionError, OSError):
+        pass
+    return sorted(homes)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +189,72 @@ def _wait_for_postmaster_exit(
             return True
         time.sleep(_EXIT_POLL_INTERVAL_S)
     return not _process_exists(pid)
+
+
+def _find_live_pg_pids_under(directory: Path) -> list[int]:
+    """Find live PostgreSQL postmaster PIDs with data directories under ``directory``.
+
+    Uses two complementary methods so instances not registered with pg0 (custom
+    data dirs, broken state files, nested business databases) are still detected:
+
+    1. ``os.walk`` for every ``postmaster.pid`` file under ``directory``
+       (``followlinks=False`` to avoid venv symlinks).
+    2. ``/proc/*/cmdline`` scan for postgres processes with ``-D`` paths under
+       ``directory`` (Linux only; silently skipped on other platforms).
+
+    Returns a sorted list of unique live PIDs.  Never raises; best-effort.
+    """
+    live: set[int] = set()
+
+    # --- Method 1: recursive postmaster.pid scan ---
+    try:
+        for dirpath, _dirnames, filenames in os.walk(
+            str(directory), followlinks=False, onerror=None
+        ):
+            if "postmaster.pid" in filenames:
+                pid_file = Path(dirpath) / "postmaster.pid"
+                try:
+                    pid = int(pid_file.read_text().splitlines()[0].strip())
+                    if _process_exists(pid):
+                        live.add(pid)
+                except (OSError, ValueError, IndexError):
+                    continue
+    except (PermissionError, OSError):
+        pass
+
+    # --- Method 2: /proc cmdline scan ---
+    proc_dir = Path("/proc")
+    if proc_dir.exists():
+        directory_str = str(directory.resolve())
+        try:
+            for pid_path in proc_dir.iterdir():
+                if not pid_path.name.isdigit():
+                    continue
+                try:
+                    cmdline_bytes = (pid_path / "cmdline").read_bytes()
+                    if b"postgres" not in cmdline_bytes:
+                        continue
+                    parts = cmdline_bytes.rstrip(b"\x00").split(b"\x00")
+                    for j, part in enumerate(parts):
+                        data_dir_str: Optional[str] = None
+                        if part == b"-D" and j + 1 < len(parts):
+                            data_dir_str = parts[j + 1].decode("utf-8", errors="replace")
+                        elif part.startswith(b"--pgdata="):
+                            data_dir_str = part[9:].decode("utf-8", errors="replace")
+                        if data_dir_str and (
+                            data_dir_str.startswith(directory_str + os.sep)
+                            or data_dir_str.startswith(directory_str + "/")
+                            or data_dir_str == directory_str
+                        ):
+                            pid = int(pid_path.name)
+                            if _process_exists(pid):
+                                live.add(pid)
+                except (PermissionError, FileNotFoundError, ValueError, OSError):
+                    continue
+        except (PermissionError, OSError):
+            pass
+
+    return sorted(live)
 
 
 # ---------------------------------------------------------------------------
@@ -295,12 +419,14 @@ def safe_pg0_stop_all(
     the caller.  This eliminates N2/N7/N9 bugs where a guessed or mismatched
     instance name caused the helper to miss live postmasters.
 
+    **H3:** Raises ``Pg0StillRunningError`` if instance enumeration fails.
+
     Returns the list of instance names that were stopped.
 
     Raises ``Pg0StillRunningError`` listing every instance that could not be
     verified stopped.  Caller MUST NOT delete any directory on this error.
     """
-    instances = _list_pg0_instances(home_dir)
+    instances = _list_pg0_instances(home_dir)  # raises Pg0StillRunningError on failure
     stopped: list[str] = []
     errors: list[str] = []
 
@@ -326,6 +452,26 @@ def safe_pg0_stop_all(
     return stopped
 
 
+def _proc_scan_or_raise(directory: Path, context: str) -> None:
+    """Scan for live PostgreSQL processes under ``directory``; raise if found.
+
+    This is the second line of defence after ``safe_pg0_stop_all``.  It catches:
+    - PostgreSQL instances with custom data directories (not under .pg0/instances/)
+    - Nested business databases not reachable by the top-level enumeration
+    - Processes that survived pg0 stop despite a successful return code
+
+    Raises ``Pg0StillRunningError`` if any live postmaster is detected.
+    """
+    live_pids = _find_live_pg_pids_under(directory)
+    if live_pids:
+        raise Pg0StillRunningError(
+            f"{context}: found {len(live_pids)} live PostgreSQL process(es) with "
+            f"data directories under {directory}: PIDs {live_pids}. "
+            "These were not found by pg0 state-file enumeration. "
+            "Cannot delete until all PostgreSQL processes are confirmed stopped."
+        )
+
+
 def safe_pg0_delete_home(
     home_dir: Path,
     *,
@@ -338,23 +484,19 @@ def safe_pg0_delete_home(
     This is the ONLY safe way to delete a pg0 HOME directory.
 
     Algorithm:
-    1. Enumerate every instance under ``HOME/.pg0/instances/*/``.
+    1. Enumerate every pg0 instance under ``HOME/.pg0/instances/*/`` (H3: raises
+       on enumeration failure, never returns empty list on error).
     2. Stop each instance with verified postmaster exit.
     3. If ANY instance cannot be verified stopped, raise ``Pg0StillRunningError``
        and do NOT delete anything.
-    4. Only after ALL instances are confirmed gone, delete ``home_dir``.
+    4. Scan for any live PostgreSQL process with a data directory under
+       ``home_dir`` (C5: catches instances missed by pg0 state-file enumeration).
+    5. Only after both checks pass, delete ``home_dir``.
 
-    Eliminates:
-    - N2: guessed/wrong instance name misses live postmaster.
-    - N5: unconditional ``rm -rf HOME`` after a failed or skipped stop.
-    - N6: raw pre-clean without stop when a previous run left a postmaster.
-    - N7: ignored stop failure before ``rm -rf``.
-    - N9: stopping one instance and then deleting a HOME containing another.
-
-    Raises ``Pg0StillRunningError`` if any instance is still running.
-    Does NOT raise on file-system errors during the final deletion.
+    Raises ``Pg0StillRunningError`` if any instance is still running or if live
+    PostgreSQL processes are detected under ``home_dir``.
     """
-    # Stop all instances first — raises if any cannot be verified gone.
+    # Stop all pg0-registered instances (raises if any cannot be verified gone).
     safe_pg0_stop_all(
         home_dir,
         timeout_s=timeout_s,
@@ -362,8 +504,78 @@ def safe_pg0_delete_home(
         exit_wait_s=exit_wait_s,
     )
 
-    # All instances confirmed stopped.  Safe to delete.
+    # Belt-and-suspenders: scan for any remaining live postgres processes.
+    _proc_scan_or_raise(home_dir, "safe_pg0_delete_home")
+
+    # All confirmed stopped.  Safe to delete.
     subprocess.run(
         ["sudo", "-u", _OLO_HS_USER, "rm", "-rf", str(home_dir)],
+        check=False, capture_output=True,
+    )
+
+
+def safe_pg0_delete_tree(
+    root: Path,
+    *,
+    timeout_s: float = 15.0,
+    settle_s: float = 1.0,
+    exit_wait_s: float = _EXIT_POLL_TIMEOUT_S,
+) -> None:
+    """Safely delete a directory tree containing pg0 HOME(s) at any depth.
+
+    Use this when the target directory CONTAINS pg0 HOME(s) nested at an
+    arbitrary depth (e.g. ``hermes_home/businesses/biz_a/.pg0/instances/``).
+    For a directory that IS the pg0 HOME, use ``safe_pg0_delete_home``.
+
+    Algorithm:
+    1. If ``root`` does not exist, return immediately (nothing to do).
+    2. Enumerate every pg0 HOME directory nested under ``root``
+       (directories containing ``.pg0/instances/``) using ``os.walk`` without
+       following symlinks.
+    3. For each found HOME, call ``safe_pg0_stop_all`` to stop every registered
+       instance with verified exit.
+    4. If ANY instance cannot be stopped, raise ``Pg0StillRunningError`` and
+       do NOT delete ``root``.
+    5. Perform a full proc scan of ``root`` for any remaining live PostgreSQL
+       processes (catches instances not reachable via pg0 state files).
+    6. Only after both checks pass, delete ``root``.
+
+    Eliminates C2 (V7 setup: nested business databases) and C5 (V7 teardown:
+    unlisted business under hermes home).
+
+    Raises ``Pg0StillRunningError`` if any instance cannot be verified stopped
+    or if live PostgreSQL processes are detected under ``root``.
+    """
+    if not root.exists():
+        return
+
+    # Find all pg0 HOME directories nested under root.
+    homes = _enumerate_pg0_homes_under(root)
+
+    # Stop all instances in every found HOME.
+    all_errors: list[str] = []
+    for home in homes:
+        try:
+            safe_pg0_stop_all(
+                home,
+                timeout_s=timeout_s,
+                settle_s=settle_s,
+                exit_wait_s=exit_wait_s,
+            )
+        except Pg0StillRunningError as exc:
+            all_errors.append(str(exc))
+
+    if all_errors:
+        raise Pg0StillRunningError(
+            f"safe_pg0_delete_tree: cannot safely delete {root}:\n"
+            + "\n".join(f"  {e}" for e in all_errors)
+        )
+
+    # Final proc scan for any postgres with data dirs anywhere under root.
+    _proc_scan_or_raise(root, "safe_pg0_delete_tree")
+
+    # All confirmed stopped.  Safe to delete the tree.
+    subprocess.run(
+        ["sudo", "-u", _OLO_HS_USER, "rm", "-rf", str(root)],
         check=False, capture_output=True,
     )
