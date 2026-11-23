@@ -18,8 +18,6 @@ Opus architecture: §9 (PoC scenarios P1–P10); §B.2 (validation V1–V10).
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import os
 import sys
 import time
@@ -52,13 +50,40 @@ def load_timeline(client: HindsightClient, dry_run: bool = False) -> list[dict]:
         print("[load] DRY RUN — not sending to server")
         return items
 
-    # P0.4: Enforce budget guard before the first retain.
-    # gate_load.py is used to build production banks with LLM extraction
-    # (DeepSeek consolidation).  Budget enforcement and server-side tracing
-    # are mandatory.  Tracing records arrive asynchronously; a batch that
-    # starts at the limit may overshoot by up to one batch worth of tokens
-    # (bounded lag).
-    from olo.m3.hindsight.budget import UsageGuard, StatsUnavailableError as _GateSUA
+    # P0.4 fixes applied in this block:
+    # 1. Bank created and strategies registered BEFORE snapshot (not after first retain).
+    #    snapshot() on a nonexistent bank returns HTTP 404.
+    # 2. Retains routed through batch_retain_to_hindsight which: validates strategies,
+    #    waits for each operation to complete (wait_for_operation) before checking
+    #    budget, and fails closed on unavailable stats.
+    # 3. Tracing verified before snapshot (snapshot() calls _require_tracing()).
+    #
+    # Async trace lag: retain costs arrive within ~1-10 s of operation completion.
+    # wait_for_operation ensures the operation (and its LLM extraction) finished
+    # before the budget is polled.  One additional batch worth of spend can still
+    # slip through if the trace records arrive just after the check window.
+
+    # Step A: create the bank and register strategies
+    from olo.m3.feeder import (
+        prepare_hindsight_bank, batch_retain_to_hindsight, FeedError,
+    )
+    for _gl_r in range(3):
+        try:
+            prepare_hindsight_bank(client, client._cfg.bank_id)
+            print("[load] Bank created and strategies registered")
+            break
+        except Exception as _gl_e:
+            if _gl_r < 2:
+                time.sleep(5)
+            else:
+                raise RuntimeError(
+                    f"[load] Cannot create bank or register strategies: {_gl_e}"
+                ) from _gl_e
+
+    # Step B: verify LLM tracing and take initial snapshot
+    from olo.m3.hindsight.budget import (
+        UsageGuard, StatsUnavailableError as _GateSUA, BudgetExceededError,
+    )
     _gate_guard = UsageGuard(client, bank_id=client._cfg.bank_id, budget_usd=8.0)
     try:
         _gate_baseline = _gate_guard.snapshot()
@@ -70,39 +95,24 @@ def load_timeline(client: HindsightClient, dry_run: bool = False) -> list[dict]:
             f"restart before loading.  Error: {exc}"
         ) from exc
 
-    # v1.2.1 constraint: operation_id requires all items in a batch to have
-    # the same strategy. Split into prose and structured batches.
-    prose_items = [i for i in items if i.get("strategy") == "prose"]
-    structured_items = [i for i in items if i.get("strategy") != "prose"]
+    # Step C: retain all items via batch_retain_to_hindsight (wait_for_operation
+    # per batch ensures costs are reflected before each budget check)
+    try:
+        counters = batch_retain_to_hindsight(
+            items,
+            client,
+            bank_id=client._cfg.bank_id,
+            batch_size=50,
+            budget_guard=_gate_guard,
+            async_=True,
+            prepare_bank=False,  # already prepared in step A
+        )
+    except (FeedError, BudgetExceededError) as exc:
+        raise RuntimeError(f"[load] Ingestion failed: {exc}") from exc
 
-    BATCH = 50
-    total_sent = 0
-    batch_num = 0
-
-    for label, item_list in [("prose", prose_items), ("structured", structured_items)]:
-        for start in range(0, len(item_list), BATCH):
-            batch = item_list[start:start + BATCH]
-            op_id = f"olo-gate-{label}-{batch_num:03d}"
-            batch_num += 1
-            try:
-                result = client.retain(batch, operation_id=op_id, async_=True)
-            except Exception as e:
-                from olo.m3.hindsight.client import HindsightAPIError
-                if isinstance(e, HindsightAPIError) and e.response_body:
-                    print(f"[load] error detail: {e.response_body.decode()[:300]}")
-                raise
-            total_sent += len(batch)
-            print(f"[load] {label} batch {batch_num:3d}: {len(batch)} items queued")
-            # Check budget after each batch (trace records arrive asynchronously)
-            try:
-                _gate_guard.check(_gate_baseline)
-            except _GateSUA as exc:
-                raise RuntimeError(
-                    f"[load] Budget guard: stats unavailable mid-load "
-                    f"(fails closed): {exc}"
-                ) from exc
-
-    print(f"[load] Done. {total_sent} items queued ({len(prose_items)} prose, {len(structured_items)} structured).")
+    total_sent = counters["total"]
+    print(f"[load] Done. {total_sent} items retained "
+          f"({counters['prose']} prose, {counters['structured']} structured).")
     return items
 
 

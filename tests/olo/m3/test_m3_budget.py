@@ -313,3 +313,339 @@ class TestBudgetGuardMandatory:
 
         # Verify no retain was called
         mock_client.retain.assert_not_called()
+
+
+# ── P0.4 async budget enforcement ────────────────────────────────────────────
+
+class TestAsyncBudgetEnforcement:
+    """Async retains must wait for operation completion before budget checks."""
+
+    def test_async_retain_waits_for_operation_before_check(self) -> None:
+        """P0.4 root cause: async retain submits work but check runs before costs land.
+
+        This test verifies that batch_retain_to_hindsight calls wait_for_operation
+        BEFORE budget_guard.check() when async_=True.
+        """
+        import uuid as _uuid
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
+        from unittest.mock import MagicMock, call, patch
+
+        cfg = HindsightConfig(host="127.0.0.1", port=19999)
+        client = HindsightClient(cfg)
+
+        # Operation ID returned by the async retain call
+        test_op_id = str(_uuid.uuid4())
+        retain_called_before = []
+        wait_called_before = []
+        check_called_before = []
+        call_order = []
+
+        def mock_retain(*a, **kw):
+            call_order.append("retain")
+            return {"operation_id": test_op_id, "status": "queued"}
+
+        def mock_wait(op_id, timeout_s=60.0, bank_id=None):
+            call_order.append("wait_for_operation")
+            return {"status": "completed"}
+
+        client.retain = mock_retain
+        client.wait_for_operation = mock_wait
+        client._cfg = cfg
+
+        # Guard that records when check() is called
+        guard = MagicMock()
+        guard.snapshot.return_value = MagicMock()
+
+        def mock_check(baseline):
+            call_order.append("budget_check")
+
+        guard.check = mock_check
+
+        items = [{"content": "test", "document_id": "sig:test",
+                  "strategy": "structured-no-llm"}]
+
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            batch_retain_to_hindsight(
+                items, client, bank_id="test",
+                budget_guard=guard, async_=True,
+            )
+
+        # wait_for_operation must come BEFORE budget_check
+        assert "wait_for_operation" in call_order, (
+            "wait_for_operation must be called when async_=True and budget guard is set"
+        )
+        wait_idx = call_order.index("wait_for_operation")
+        check_idx = call_order.index("budget_check")
+        assert wait_idx < check_idx, (
+            f"wait_for_operation (pos {wait_idx}) must precede budget_check "
+            f"(pos {check_idx}) to ensure costs are reflected. Order: {call_order}"
+        )
+
+    def test_no_wait_when_budget_guard_is_none(self) -> None:
+        """When budget_guard=None, wait_for_operation is NOT called (perf bypass)."""
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
+        from unittest.mock import MagicMock, patch
+
+        cfg = HindsightConfig(host="127.0.0.1", port=19999)
+        client = HindsightClient(cfg)
+        wait_calls = []
+
+        def mock_retain(*a, **kw):
+            return {"operation_id": "op-123", "status": "queued"}
+
+        def mock_wait(*a, **kw):
+            wait_calls.append(a)
+            return {"status": "completed"}
+
+        client.retain = mock_retain
+        client.wait_for_operation = mock_wait
+        client._cfg = cfg
+
+        items = [{"content": "test", "document_id": "sig:test",
+                  "strategy": "structured-no-llm"}]
+
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            batch_retain_to_hindsight(
+                items, client, bank_id="test",
+                budget_guard=None,  # explicit bypass
+                async_=True,
+            )
+
+        assert not wait_calls, (
+            "wait_for_operation must NOT be called when budget_guard=None"
+        )
+
+    def test_no_wait_when_sync_retain(self) -> None:
+        """When async_=False, wait_for_operation is NOT called (server already done)."""
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
+        from unittest.mock import MagicMock, patch
+
+        cfg = HindsightConfig(host="127.0.0.1", port=19999)
+        client = HindsightClient(cfg)
+        wait_calls = []
+
+        def mock_retain(*a, **kw):
+            return {"operation_id": "op-sync", "status": "completed"}
+
+        def mock_wait(*a, **kw):
+            wait_calls.append(a)
+            return {"status": "completed"}
+
+        client.retain = mock_retain
+        client.wait_for_operation = mock_wait
+        client._cfg = cfg
+
+        guard = MagicMock()
+        guard.snapshot.return_value = MagicMock()
+        guard.check = MagicMock()
+
+        items = [{"content": "test", "document_id": "sig:test",
+                  "strategy": "structured-no-llm"}]
+
+        with patch("olo.m3.feeder.prepare_hindsight_bank", return_value=True):
+            batch_retain_to_hindsight(
+                items, client, bank_id="test",
+                budget_guard=guard,
+                async_=False,  # sync: server already completed
+            )
+
+        assert not wait_calls, (
+            "wait_for_operation must NOT be called when async_=False "
+            "(sync retain already completed by the time retain() returns)"
+        )
+
+
+class TestFreshBankInitialization:
+    """Bank must exist before snapshot; strategies before first retain."""
+
+    def test_deploy_creates_bank_before_snapshot(self) -> None:
+        """deploy() must create bank and register strategies before snapshot().
+
+        The snapshot() call on a nonexistent bank returns HTTP 404
+        (StatsUnavailableError).  prepare_hindsight_bank() creates the bank;
+        it must be called BEFORE UsageGuard.snapshot().
+        """
+        from olo.m3.deploy_granite import deploy
+        from olo.m3.feeder import batch_retain_to_hindsight
+        from olo.m3.hindsight.budget import UsageGuard
+        from unittest.mock import MagicMock, patch, call
+
+        call_order = []
+        mock_client = MagicMock()
+        mock_client.wait_until_ready = MagicMock()
+
+        def mock_prepare_bank(client, bank_id):
+            call_order.append("prepare_bank")
+            return True
+
+        mock_guard = MagicMock()
+
+        def mock_snapshot():
+            call_order.append("snapshot")
+            return MagicMock()
+
+        mock_guard.snapshot = mock_snapshot
+        mock_guard.check = MagicMock()
+
+        def mock_batch_retain(items, client, *, bank_id, batch_size, budget_guard,
+                              async_, prepare_bank):
+            call_order.append("batch_retain")
+            return {"total": 1, "prose": 0, "structured": 1, "batches": 1}
+
+        with patch("olo.m3.deploy_granite.HindsightClient", return_value=mock_client), \
+             patch("olo.m3.deploy_granite.HindsightConfig"), \
+             patch("olo.m3.deploy_granite._check_server"), \
+             patch("olo.m3.deploy_granite._verify_granite_active", return_value=True), \
+             patch("olo.m3.deploy_granite._bank_facts", return_value=-1), \
+             patch("olo.m3.deploy_granite._wait_for_consolidation", return_value=1), \
+             patch("olo.m3.deploy_granite.build_hindsight_items",
+                   return_value=[{"content": "x", "document_id": "sig:x",
+                                  "strategy": "structured-no-llm"}]), \
+             patch("olo.m3.deploy_granite.prepare_hindsight_bank",
+                   side_effect=mock_prepare_bank), \
+             patch("olo.m3.feeder.batch_retain_to_hindsight",
+                   side_effect=mock_batch_retain), \
+             patch("olo.m3.hindsight.budget.UsageGuard", return_value=mock_guard), \
+             patch("pathlib.Path.exists", return_value=True):
+            deploy(bank_id="test", host="127.0.0.1", port=19999)
+
+        # prepare_bank must precede snapshot
+        assert "prepare_bank" in call_order, "prepare_hindsight_bank must be called"
+        assert "snapshot" in call_order, "snapshot must be called"
+        prep_idx = call_order.index("prepare_bank")
+        snap_idx = call_order.index("snapshot")
+        assert prep_idx < snap_idx, (
+            f"prepare_bank (pos {prep_idx}) must precede snapshot (pos {snap_idx}). "
+            f"Order: {call_order}"
+        )
+
+    def test_deploy_strategies_before_retain(self) -> None:
+        """deploy() must register strategies before the first retain operation."""
+        from olo.m3.deploy_granite import deploy
+        from unittest.mock import MagicMock, patch
+
+        call_order = []
+        mock_client = MagicMock()
+        mock_client.wait_until_ready = MagicMock()
+
+        def mock_prepare_bank(client, bank_id):
+            call_order.append("prepare_bank")
+            return True
+
+        def mock_batch_retain(items, client, *, bank_id, batch_size, budget_guard,
+                              async_, prepare_bank):
+            call_order.append("batch_retain")
+            return {"total": 1, "prose": 0, "structured": 1, "batches": 1}
+
+        mock_guard = MagicMock()
+        mock_guard.snapshot.return_value = MagicMock()
+        mock_guard.check = MagicMock()
+
+        with patch("olo.m3.deploy_granite.HindsightClient", return_value=mock_client), \
+             patch("olo.m3.deploy_granite.HindsightConfig"), \
+             patch("olo.m3.deploy_granite._check_server"), \
+             patch("olo.m3.deploy_granite._verify_granite_active", return_value=True), \
+             patch("olo.m3.deploy_granite._bank_facts", return_value=-1), \
+             patch("olo.m3.deploy_granite._wait_for_consolidation", return_value=1), \
+             patch("olo.m3.deploy_granite.build_hindsight_items",
+                   return_value=[{"content": "x", "document_id": "sig:x",
+                                  "strategy": "structured-no-llm"}]), \
+             patch("olo.m3.deploy_granite.prepare_hindsight_bank",
+                   side_effect=mock_prepare_bank), \
+             patch("olo.m3.feeder.batch_retain_to_hindsight",
+                   side_effect=mock_batch_retain), \
+             patch("olo.m3.hindsight.budget.UsageGuard", return_value=mock_guard), \
+             patch("pathlib.Path.exists", return_value=True):
+            deploy(bank_id="test", host="127.0.0.1", port=19999)
+
+        prep_idx = call_order.index("prepare_bank")
+        retain_idx = call_order.index("batch_retain")
+        assert prep_idx < retain_idx, (
+            f"prepare_bank (pos {prep_idx}) must precede batch_retain (pos {retain_idx}). "
+            f"Order: {call_order}"
+        )
+
+
+class TestConsolidationBudgetCheck:
+    """Consolidation rounds must be budget-checked after each completes."""
+
+    def test_consolidation_checks_budget_after_each_round(self) -> None:
+        """_wait_for_consolidation calls budget_guard.check after each round."""
+        from olo.m3.deploy_granite import _wait_for_consolidation
+        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
+        from unittest.mock import MagicMock, patch
+
+        cfg = HindsightConfig(host="127.0.0.1", port=19999)
+        client = HindsightClient(cfg)
+        client._cfg = cfg
+
+        rounds_triggered = []
+        budget_checks = []
+
+        def mock_trigger_consolidation(bank_id=None):
+            rounds_triggered.append(len(rounds_triggered) + 1)
+            if len(rounds_triggered) <= 2:
+                return {"operation_id": f"op-round-{len(rounds_triggered)}"}
+            return {}  # no work left on 3rd round
+
+        def mock_wait_for_op(op_id, timeout_s=60.0, bank_id=None):
+            return {"status": "completed"}
+
+        client.trigger_consolidation = mock_trigger_consolidation
+        client.wait_for_operation = mock_wait_for_op
+        client.bank_id = "test"
+
+        guard = MagicMock()
+        baseline = MagicMock()
+
+        def mock_check(bl):
+            budget_checks.append(len(budget_checks) + 1)
+
+        guard.check = mock_check
+
+        _wait_for_consolidation(
+            client, "test",
+            rounds=3, timeout=10.0,
+            budget_guard=guard, budget_baseline=baseline,
+        )
+
+        assert len(budget_checks) >= 2, (
+            f"Budget must be checked after each round with work. "
+            f"Got {len(budget_checks)} checks, expected ≥2."
+        )
+
+    def test_consolidation_stops_on_budget_exceeded(self) -> None:
+        """_wait_for_consolidation raises BudgetExceededError when budget hit."""
+        from olo.m3.deploy_granite import _wait_for_consolidation
+        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
+        from olo.m3.hindsight.budget import BudgetExceededError, TokenSnapshot
+        from unittest.mock import MagicMock
+
+        cfg = HindsightConfig(host="127.0.0.1", port=19999)
+        client = HindsightClient(cfg)
+        client._cfg = cfg
+
+        client.trigger_consolidation = MagicMock(
+            return_value={"operation_id": "op-123"}
+        )
+        client.wait_for_operation = MagicMock(return_value={"status": "completed"})
+
+        guard = MagicMock()
+        baseline = TokenSnapshot(0, 0)
+
+        guard.check.side_effect = BudgetExceededError(
+            spent=8.01, budget=8.0, in_tok=50_000_000, out_tok=4_000_000
+        )
+
+        with pytest.raises(BudgetExceededError):
+            _wait_for_consolidation(
+                client, "test",
+                rounds=5, timeout=10.0,
+                budget_guard=guard, budget_baseline=baseline,
+            )
+
+        # Only one round should have been triggered before the budget stopped it
+        assert client.trigger_consolidation.call_count == 1

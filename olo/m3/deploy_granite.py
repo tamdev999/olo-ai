@@ -36,7 +36,6 @@ import argparse
 import os
 import sys
 import time
-import uuid as _uuid
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -107,16 +106,27 @@ def _verify_granite_active() -> bool:
         return False
 
 
-def _wait_for_consolidation(client: HindsightClient, bank_id: str,
-                             rounds: int = CONSOLIDATION_ROUNDS,
-                             timeout: float = CONSOLIDATION_TIMEOUT) -> int:
+def _wait_for_consolidation(
+    client: HindsightClient,
+    bank_id: str,
+    rounds: int = CONSOLIDATION_ROUNDS,
+    timeout: float = CONSOLIDATION_TIMEOUT,
+    budget_guard=None,
+    budget_baseline=None,
+) -> int:
     """Run consolidation rounds until stable; return number of rounds used.
 
     Each round calls trigger_consolidation and waits for the returned
     operation_id via wait_for_operation (event-based, not a fixed sleep).
     After a round completes with no work, we're done.
     Connection resets are retried with backoff.
+
+    If ``budget_guard`` and ``budget_baseline`` are provided, the budget is
+    checked after EACH completed round.  Exceeding the budget raises
+    ``BudgetExceededError`` and stops further rounds.
     """
+    from olo.m3.hindsight.budget import BudgetExceededError, StatsUnavailableError
+
     for round_num in range(1, rounds + 1):
         print(f"  Consolidation round {round_num}/{rounds}…", end="", flush=True)
         # Retry trigger on connection reset
@@ -154,6 +164,22 @@ def _wait_for_consolidation(client: HindsightClient, bank_id: str,
             except TimeoutError:
                 print(f" timeout after {timeout:.0f}s — continuing")
                 break
+
+        # P0.4: Budget check after each completed consolidation round.
+        # Consolidation is a major DeepSeek spending path; each round may
+        # consume significant tokens.  Check before authorising the next round.
+        if budget_guard is not None and budget_baseline is not None:
+            try:
+                budget_guard.check(budget_baseline)
+            except BudgetExceededError as exc:
+                print(f"\n  Budget exhausted after consolidation round {round_num}: {exc}")
+                raise
+            except StatsUnavailableError as exc:
+                raise RuntimeError(
+                    f"[deploy] Budget guard: stats unavailable after consolidation "
+                    f"round {round_num} (fails closed): {exc}"
+                ) from exc
+
     return rounds
 
 
@@ -228,21 +254,43 @@ def deploy(
     structured = [i for i in items if i.get("strategy") != "prose"]
     print(f"  {len(items)} items  ({len(prose)} prose, {len(structured)} structured)")
 
-    # 6. Ingest all items FIRST (creates the bank on first retain)
-    print("Ingesting evidence…")
+    # 6. Create the bank and register extraction strategies BEFORE retaining.
+    #    This ensures structured items use the named "structured-no-llm" strategy
+    #    (chunks extraction, 0 LLM calls) from the first batch, rather than
+    #    falling back to DeepSeek extraction while the bank config is pending.
+    #    prepare_hindsight_bank() creates the bank via PATCH /config and registers
+    #    the named strategy in one call.
+    print("Creating bank and registering extraction strategies…")
+    for _r in range(5):
+        try:
+            prepare_hindsight_bank(client, bank_id)
+            print("  Bank created and strategies registered")
+            break
+        except (HindsightUnavailable, Exception) as e:
+            if _r < 4:
+                print(f"  retry {_r+1}/5 after transient error: {e}")
+                time.sleep(10)
+            else:
+                raise RuntimeError(
+                    f"[deploy] Cannot create bank or register strategies: {e}"
+                ) from e
 
-    # P0.4: Enforce budget guard before the first retain.
-    # deploy_granite.py uses LLM consolidation (DeepSeek), so budget enforcement
-    # is mandatory.  _require_tracing() verifies server-side LLM tracing is active;
-    # it fails closed if tracing is disabled or the /version endpoint is unreachable.
+    # 7. Verify LLM tracing and take initial budget snapshot.
+    #    snapshot() on a nonexistent bank returns HTTP 404 (StatsUnavailableError),
+    #    which is why bank creation MUST precede this call.
+    #    snapshot() also invokes _require_tracing() — fails closed if tracing is
+    #    disabled or the /version endpoint is unreachable.
     #
-    # NOTE: LLM trace records arrive asynchronously (typically within 1-10 seconds
-    # of a completed retain/consolidation call).  The budget guard therefore has
-    # a bounded lag: a batch that starts at the budget limit may overshoot by up
-    # to one batch worth of LLM tokens before the next check catches it.
-    # DeepSeek V3 consolidation typically uses 2-5k tokens per prose item; at the
-    # $8 default budget this is a ~$0.001 worst-case overshoot per 50-item batch.
-    from olo.m3.hindsight.budget import UsageGuard, StatsUnavailableError as _SUA
+    #    NOTE ON ASYNC TRACE LAG: LLM usage records arrive asynchronously
+    #    (typically within 1-10 s of a completed retain/consolidation call).
+    #    The budget guard therefore cannot claim a strict per-batch monetary cap.
+    #    After the first batch exceeds the budget, up to one additional batch
+    #    worth of spend may occur before the check catches it.  At the $8 budget
+    #    and typical DeepSeek V3 rates (~$0.001 per prose batch), the worst-case
+    #    overshoot is ~$0.001 per batch, well within the guard's purpose of
+    #    preventing runaway multi-dollar overruns.
+    print("Verifying LLM tracing and taking budget snapshot…")
+    from olo.m3.hindsight.budget import UsageGuard, StatsUnavailableError as _SUA, BudgetExceededError
     _guard = UsageGuard(client, bank_id=bank_id, budget_usd=8.0)
     try:
         _baseline = _guard.snapshot()
@@ -254,58 +302,40 @@ def deploy(
         ) from exc
     print("[ok] Budget guard active (tracing confirmed, budget $8.00)")
 
-    batch_size = 50
+    # 8. Retain items via batch_retain_to_hindsight which:
+    #    - validates strategies before sending
+    #    - waits for each operation to complete (async_=True + wait_for_operation)
+    #      BEFORE checking the budget so costs are reflected
+    #    - fails closed if budget is exceeded or stats are unavailable
+    print("Ingesting evidence…")
     t_start = time.monotonic()
-    for label, batch_list in [("structured", structured), ("prose", prose)]:
-        for start in range(0, len(batch_list), batch_size):
-            batch = batch_list[start : start + batch_size]
-            bk = "|".join(sorted(
-                f"{i.get('document_id','')}:{i.get('metadata',{}).get('content_sha256','')}"
-                for i in batch
-            ))
-            op_id = str(_uuid.uuid5(_uuid.NAMESPACE_OID, f"{bank_id}|{label}|{bk}"))
-            # Retry individual batches on connection reset
-            for _r in range(3):
-                try:
-                    client.retain(batch, operation_id=op_id, async_=True, bank_id=bank_id)
-                    break
-                except HindsightUnavailable:
-                    if _r < 2:
-                        time.sleep(10)
-                    else:
-                        raise
-            # Check budget after each batch (trace records arrive asynchronously;
-            # see note above re. bounded lag).
-            try:
-                _guard.check(_baseline)
-            except _SUA as exc:
-                raise RuntimeError(
-                    f"[deploy] Budget guard: stats unavailable mid-ingest "
-                    f"(fails closed): {exc}"
-                ) from exc
-
-    # 7. Configure bank strategy AFTER bank is created by first retain
-    print("Configuring bank strategy…")
-    for _r in range(5):
-        try:
-            prepare_hindsight_bank(client, bank_id)
-            print("  retain_strategies registered")
-            break
-        except (HindsightUnavailable, Exception) as e:
-            if _r < 4:
-                print(f"  retry {_r+1}/5 after transient error: {e}")
-                time.sleep(15)
-            else:
-                print(f"  [warn] bank config not applied: {e} — proceeding without it")
+    from olo.m3.feeder import batch_retain_to_hindsight, FeedError
+    try:
+        counters = batch_retain_to_hindsight(
+            items,
+            client,
+            bank_id=bank_id,
+            batch_size=50,
+            budget_guard=_guard,
+            async_=True,       # async + wait_for_operation per batch
+            prepare_bank=False,  # already prepared in step 6
+        )
+    except (FeedError, BudgetExceededError) as exc:
+        raise RuntimeError(f"[deploy] Ingestion failed: {exc}") from exc
     elapsed = time.monotonic() - t_start
-    print(f"  All {len(items)} items queued in {elapsed:.0f}s")
+    print(f"  {counters['total']} items retained in {elapsed:.0f}s "
+          f"({counters['prose']} prose, {counters['structured']} structured)")
 
-    # 8. Run consolidation until quiescent (event-based waits)
+    # 9. Run LLM consolidation rounds with budget verification after each round.
     print("Running LLM consolidation rounds…")
-    rounds_used = _wait_for_consolidation(client, bank_id)
+    rounds_used = _wait_for_consolidation(
+        client, bank_id,
+        budget_guard=_guard,
+        budget_baseline=_baseline,
+    )
     print(f"  Consolidation stable after {rounds_used} round(s)")
 
-    # 9. Report final state
+    # 10. Report final state
     final_facts = _bank_facts(client, bank_id)
     print(f"\n[ok] '{bank_id}': {final_facts} facts")
     print(f"[ok] E5 bank '{E5_BANK_ID}' preserved")

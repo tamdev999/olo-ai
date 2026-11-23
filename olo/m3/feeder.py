@@ -630,7 +630,9 @@ def batch_retain_to_hindsight(
                 _uuid.NAMESPACE_OID,
                 f"{bank_id}|{label}|{batch_content_key}",
             ))
-            client.retain(batch, operation_id=op_id, async_=async_, bank_id=bank_id)
+            retain_result = client.retain(
+                batch, operation_id=op_id, async_=async_, bank_id=bank_id
+            )
 
             total_sent += len(batch)
             batch_num += 1
@@ -641,7 +643,40 @@ def batch_retain_to_hindsight(
                 counters["structured"] += len(batch)
             counters["total"] += len(batch)
 
-            # Check budget after each batch — always fail closed on unavailable
+            # P0.4 async fix: wait for the operation to complete before checking
+            # the budget.  async=True submissions queue work but do not execute
+            # LLM extraction immediately; a budget check immediately after
+            # client.retain(async_=True) always sees $0 spent because the
+            # background worker has not yet run.
+            #
+            # Only wait when both conditions apply:
+            #   1. A budget guard is active (guard=None → no cost tracking needed)
+            #   2. The retain was submitted asynchronously
+            # For sync retains (async_=False), the server already completed the
+            # extraction by the time retain() returns.
+            if budget_guard is not None and async_:
+                from olo.m3.hindsight.client import HindsightAPIError, HindsightUnavailable
+                returned_op_id = (
+                    retain_result.get("operation_id") if isinstance(retain_result, dict)
+                    else None
+                ) or op_id
+                try:
+                    client.wait_for_operation(
+                        returned_op_id,
+                        timeout_s=180.0,
+                        bank_id=bank_id,
+                    )
+                except (TimeoutError, HindsightAPIError, HindsightUnavailable) as _we:
+                    # Operation wait failed: budget check will still run but
+                    # may undercount due to incomplete trace data.  Log and
+                    # continue; the budget guard fails closed on unavailable stats.
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        "batch_retain_to_hindsight: wait_for_operation timed out "
+                        "or failed (%s); budget check may undercount costs", _we
+                    )
+
+            # Check budget after each completed batch — always fail closed on unavailable
             # statistics (C6 fix: removed the OLO_GATE_STRICT guard so production
             # workloads are protected, not just strict-mode gate runs).
             if budget_guard is not None and baseline is not None:
