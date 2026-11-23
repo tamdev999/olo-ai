@@ -437,55 +437,34 @@ class TestSourceBackedIdentity:
                     )
 
     def test_email_received_primary_entity_is_sender(self, tmp_path: Path) -> None:
-        """email.received: entities field carries a valid entity ID.
-
-        In the synthetic corpus the ent: tag ULID is preferred for entity links
-        (ensures entity-scoped recall works across all signal kinds).  In
-        production Gmail (no ent: tags), the email-derived SHA-256 ID is used.
-        """
+        """email.received: entities field carries the canonical contact_id (cid_...)."""
         db, items = _build(tmp_path, "sb2")
         recv_items = [
             i for i in items
             if (i.get("metadata") or {}).get("kind") == "email.received"
         ]
         assert recv_items
-
-        ulid_ids = {ent.entity_id for ent in ENTITIES}
-        sha_ids = {entity_id_from_email(ent.email) for ent in ENTITIES}
-        sha_ids.add(entity_id_from_email("owner@olo-business.example"))
-
-        for item in recv_items[:3]:  # spot-check first 3
+        for item in recv_items[:3]:
             entities = item.get("entities") or []
             if not entities:
                 continue
             entity_text = entities[0].get("text", "")
-            # Must be a valid OLO entity ID: either ULID (from ent: tag) or
-            # SHA-256-of-email (fallback for production without ent: tags)
-            assert entity_text.startswith("ent_"), (
-                f"entities field has unexpected format: {entity_text!r}"
-            )
-            assert entity_text in ulid_ids | sha_ids, (
-                f"email.received entities[0]={entity_text!r} not a known entity ID"
+            if not entity_text:
+                continue
+            # C1/C2: entities field uses canonical contact_id (cid_... prefix)
+            assert entity_text.startswith("cid_"), (
+                f"email.received entities[0]={entity_text!r} must start with 'cid_' "
+                "(canonical contact_id from CRM fixture)"
             )
 
     def test_email_sent_primary_entity_is_recipient(self, tmp_path: Path) -> None:
-        """email.sent: entities field carries a valid entity ID.
-
-        In the synthetic corpus the ent: tag ULID is preferred.  In production
-        Gmail (no ent: tags), the email-derived SHA-256 ID is used.
-        """
+        """email.sent: entities field carries the canonical contact_id (cid_...)."""
         db, items = _build(tmp_path, "sb3")
         sent_items = [
             i for i in items
             if (i.get("metadata") or {}).get("kind") == "email.sent"
         ]
         assert sent_items
-
-        ulid_ids = {ent.entity_id for ent in ENTITIES}
-        sha_ids = {entity_id_from_email(ent.email) for ent in ENTITIES}
-        sha_ids.add(entity_id_from_email("owner@olo-business.example"))
-        all_valid = ulid_ids | sha_ids
-
         for item in sent_items[:3]:
             entities = item.get("entities") or []
             if not entities:
@@ -493,9 +472,9 @@ class TestSourceBackedIdentity:
             entity_text = entities[0].get("text", "")
             if not entity_text:
                 continue
-            assert entity_text in all_valid, (
-                f"email.sent entities[0]={entity_text!r} is not a known entity ID. "
-                f"Known IDs: {all_valid}"
+            # C1/C2: entities field uses canonical contact_id (cid_... prefix)
+            assert entity_text.startswith("cid_"), (
+                f"email.sent entities[0]={entity_text!r} must start with 'cid_'"
             )
 
 
@@ -518,7 +497,7 @@ class TestEntityLinkFallback:
     # ── Acceptance test 1: voice transcript creates entity link ──────────────
 
     def test_transcript_has_entity_link_from_ent_tag(self, tmp_path: Path) -> None:
-        """call.transcript: entities field must carry the ent: tag ULID entity ID."""
+        """call.transcript: entities field uses canonical cid_ contact_id via phone lookup."""
         db, items = _build(tmp_path, "el1")
         transcript_items = [
             i for i in items
@@ -526,40 +505,48 @@ class TestEntityLinkFallback:
         ]
         assert transcript_items, "Must have call.transcript items"
 
+        from olo.adapters.contacts import make_contact_id
+        expected_cids = {make_contact_id(ent.email) for ent in ENTITIES}
         for item in transcript_items:
             entities = item.get("entities") or []
             assert entities, (
-                f"call.transcript must have non-empty entities field for entity-scoped recall. "
+                f"call.transcript must have non-empty entities field. "
                 f"doc={item.get('document_id')}"
             )
             entity_text = entities[0].get("text", "")
-            assert entity_text.startswith("ent_"), (
-                f"entities[0] must have ent_ prefix, got {entity_text!r}"
+            # C1/C2: entities field uses canonical contact_id (cid_... prefix)
+            assert entity_text.startswith("cid_"), (
+                f"entities[0] must have cid_ prefix (canonical contact_id), "
+                f"got {entity_text!r}"
             )
-            # Must match one of the known ULID entity IDs (from ENTITIES)
-            ulid_ids = {ent.entity_id for ent in ENTITIES}
-            assert entity_text in ulid_ids, (
-                f"transcript entities[0]={entity_text!r} not in ENTITIES ULIDs {ulid_ids}"
+            assert entity_text in expected_cids, (
+                f"transcript entities[0]={entity_text!r} not in expected CRM contacts"
             )
 
     # ── Acceptance test 2: entity link matches the signal's customer ─────────
 
     def test_transcript_entity_link_matches_customer(self, tmp_path: Path) -> None:
-        """call.transcript entity link must match the customer whose ent: tag is in the signal."""
+        """call.transcript entity link uses the CRM contact_id (not ent: tag value)."""
         db, items = _build(tmp_path, "el2")
         transcript_items = [
             i for i in items
             if (i.get("metadata") or {}).get("kind") == "call.transcript"
         ]
+        from olo.adapters.contacts import make_contact_id
+        expected_cids = {make_contact_id(ent.email) for ent in ENTITIES}
         for item in transcript_items:
-            # The document's ent: tags tell us which customer it belongs to
-            ent_tags = [t[4:] for t in (item.get("tags") or []) if t.startswith("ent:")]
             entities = item.get("entities") or []
-            if not ent_tags or not entities:
+            if not entities:
                 continue
-            # The entity link must match the ent: tag value
-            assert entities[0].get("text") in ent_tags, (
-                f"entities[0]={entities[0].get('text')!r} doesn't match ent: tags {ent_tags}"
+            entity_text = entities[0].get("text", "")
+            if not entity_text:
+                continue
+            # C2: entity link must be a valid CRM contact_id, not an ent: tag value
+            assert entity_text.startswith("cid_"), (
+                f"entities[0]={entity_text!r} must be a canonical cid_ contact_id"
+            )
+            assert entity_text in expected_cids, (
+                f"transcript cid_ {entity_text!r} not in expected CRM contacts"
             )
 
     # ── Acceptance test 3: unfiltered retrieval unchanged ────────────────────
@@ -685,15 +672,12 @@ class TestEntityLinkFallback:
 
     # ── Acceptance test 6: Gmail entity links unchanged ──────────────────────
 
-    def test_gmail_entities_use_ent_tag_ulid_when_present(self, tmp_path: Path) -> None:
-        """email.received: entities field uses ent: tag ULID when available.
+    def test_gmail_entities_use_canonical_contact_id(self, tmp_path: Path) -> None:
+        """email.received: entities field uses canonical cid_ contact_id from CRM (C1/C2).
 
-        In the synthetic corpus, every signal carries an ent:ULID tag set by
-        the generator.  build_hindsight_items prefers this ULID for the entities
-        field so that entity-scoped recall is consistent across all signal kinds.
-
-        In production (real Gmail adapters that don't write ent: tags), the
-        fallback is the email-derived SHA-256 entity ID — unchanged behaviour.
+        In the synthetic corpus with CRM fixture, all signals resolve to cid_...
+        contact IDs via verified email addresses.  In production Gmail (no CRM
+        fixture loaded), entities remain empty until a CRM is configured.
         """
         db, items = _build(tmp_path, "el6")
         email_items = [
@@ -701,10 +685,6 @@ class TestEntityLinkFallback:
             if (i.get("metadata") or {}).get("kind") == "email.received"
         ]
         assert email_items
-        ulid_ids = {ent.entity_id for ent in ENTITIES}
-        ulid_ids.add("owner@olo-business.example")  # owner ULID not in ENTITIES
-        sha_ids = {entity_id_from_email(ent.email) for ent in ENTITIES}
-
         for item in email_items[:5]:
             entities = item.get("entities") or []
             if not entities:
@@ -712,32 +692,31 @@ class TestEntityLinkFallback:
             entity_text = entities[0].get("text", "")
             if not entity_text:
                 continue
-            # With ent: tags present (synthetic corpus), entities field uses ULID.
-            # Fallback to SHA-256 is production-only (no ent: tags on real Gmail).
-            assert entity_text in ulid_ids or entity_text in sha_ids, (
-                f"email entities[0]={entity_text!r} not a known entity ID "
-                f"(ULID or SHA-256)"
+            # C1/C2: entities field uses canonical contact_id (cid_ prefix)
+            assert entity_text.startswith("cid_"), (
+                f"email entities[0]={entity_text!r} must use canonical cid_ contact_id"
             )
 
     # ── Acceptance test 7: invoice entity link from ent: tag ─────────────────
 
     def test_invoice_has_entity_link(self, tmp_path: Path) -> None:
-        """invoice.created: entities field carries the ent: tag ULID entity ID."""
+        """invoice.created: entities field carries the canonical cid_ contact_id."""
         db, items = _build(tmp_path, "el7")
         invoice_items = [
             i for i in items
             if (i.get("metadata") or {}).get("kind") == "invoice.created"
         ]
         assert invoice_items, "Must have invoice.created items"
-        ulid_ids = {ent.entity_id for ent in ENTITIES}
+        from olo.adapters.contacts import make_contact_id
+        expected_cids = {make_contact_id(ent.email) for ent in ENTITIES}
         for item in invoice_items:
             entities = item.get("entities") or []
             assert entities, (
                 f"invoice.created must have non-empty entities. doc={item.get('document_id')}"
             )
             entity_text = entities[0].get("text", "")
-            assert entity_text in ulid_ids, (
-                f"invoice entities[0]={entity_text!r} not in ENTITIES ULIDs {ulid_ids}"
+            assert entity_text.startswith("cid_") and entity_text in expected_cids, (
+                f"invoice entities[0]={entity_text!r} not a canonical CRM contact_id"
             )
 
     # ── Acceptance test 8: entity link count consistency ─────────────────────

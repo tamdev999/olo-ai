@@ -420,8 +420,6 @@ def _add_entity_signals(
         metadata={
             "phone": ent.phone,
             "duration_s": 180,
-            "customer_name": ent.display_name,
-            "customer_company": ent.company,
         },
         tags=[f"src:voice_fixture", f"kind:call.transcript",
               f"ent:{ent.entity_id}", "dc:voice", _ym(day_92)],
@@ -445,8 +443,6 @@ def _add_entity_signals(
         metadata={
             "phone": ent.phone,
             "duration_s": 150,
-            "customer_name": ent.display_name,
-            "customer_company": ent.company,
         },
         tags=[f"src:voice_fixture", f"kind:call.transcript",
               f"ent:{ent.entity_id}", "dc:voice", _ym(day_93)],
@@ -503,7 +499,6 @@ def _add_entity_signals(
             "invoice_id": invoice_id,
             "customer_id": ent.stripe_customer_id,
             "customer_email": ent.email,
-            "customer_name": ent.display_name,
             "amount_due": amount_charged,
             "currency": "usd",
             "status": "open",
@@ -527,7 +522,6 @@ def _add_entity_signals(
             "invoice_id": invoice_id,
             "customer_id": ent.qbo_customer_id,
             "customer_email": ent.email,
-            "customer_name": ent.display_name,
             "balance": amount_charged,
             "agreed_amount": amount_agreed,
             "status": "open",
@@ -561,8 +555,6 @@ def _add_entity_signals(
         metadata={
             "phone": ent.phone,
             "invoice_id": invoice_id,
-            "customer_name": ent.display_name,
-            "customer_company": ent.company,
         },
         tags=[f"src:voice_fixture", f"kind:call.transcript",
               f"ent:{ent.entity_id}", f"invoice:{invoice_id}", "dc:voice",
