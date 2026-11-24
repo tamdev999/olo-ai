@@ -334,6 +334,17 @@ def build_hindsight_items(
         # C3 ablation: suppress entity links when requested.
         if contact_id and include_entity_links:
             item["entities"] = [{"text": contact_id, "type": "person"}]
+            # Scope consolidation candidates by canonical customer identity, not
+            # source channel.  Without this, an email observation (tagged
+            # src:gmail_owner) is structurally invisible to a call.transcript
+            # consolidation batch (tagged src:voice_fixture) because
+            # recall_unified uses all_strict matching on the world fact's own
+            # tags.  Setting observation_scopes to the shared CID entity tag
+            # lets cross-channel supersession work correctly (email ↔ transcript)
+            # while preserving per-customer isolation (cid_alice ≠ cid_bob).
+            cid_ent_tag = f"ent:{contact_id}"
+            item["tags"] = [t for t in item["tags"] if not t.startswith("ent:")] + [cid_ent_tag]
+            item["observation_scopes"] = [[cid_ent_tag]]
 
         # Map signal kinds to human-readable source descriptors
         _KIND_DESCRIPTORS: dict[str, str] = {

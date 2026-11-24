@@ -223,14 +223,15 @@ class TestAllConnectorsSameEntity:
         items = build_hindsight_items(db)
 
         alice_cid = get_contact_id_for_email(ALICE_EMAIL)
-        alice_entity_id = ENTITIES[0].entity_id  # ULID (for tag lookup)
+        # CID entity tag (new canonical format after cross-channel scope fix)
+        alice_cid_tag = f"ent:{alice_cid}"
 
         email_cids, cal_cids, call_cids, inv_cids = set(), set(), set(), set()
         for item in items:
             kind = (item.get("metadata") or {}).get("kind", "")
             tags = item.get("tags") or []
-            # Only look at Alice's signals (via ULID entity tag)
-            if f"ent:{alice_entity_id}" not in tags:
+            # Only look at Alice's resolved signals (via CID entity tag)
+            if alice_cid_tag not in tags:
                 continue
             cid = (item.get("entities") or [{}])[0].get("text", "")
             if kind in ("email.received", "email.sent"):
@@ -670,8 +671,8 @@ class TestResolveEntitiesFalse:
         populate_olo_db(tl, db)
         items = build_hindsight_items(db)
 
-        alice_eid = ENTITIES[0].entity_id  # ULID for tag lookup
-        bob_eid   = ENTITIES[1].entity_id
+        alice_eid = get_contact_id_for_email(ENTITIES[0].email)  # CID for tag lookup
+        bob_eid   = get_contact_id_for_email(ENTITIES[1].email)
 
         alice_cids = set()
         bob_cids   = set()
@@ -868,10 +869,11 @@ class TestContactIdStabilityDefectA:
 
         # Every Alice item must still use the SAME contact_id
         def alice_cids(items):
+            _alice_cid = get_contact_id_for_email(ENTITIES[0].email)
             return {
                 (i.get("entities") or [{}])[0].get("text", "")
                 for i in items
-                if f"ent:{ENTITIES[0].entity_id}" in (i.get("tags") or [])
+                if f"ent:{_alice_cid}" in (i.get("tags") or [])
                 and (i.get("entities") or [{}])[0].get("text", "")
             }
 
@@ -1138,7 +1140,7 @@ class TestLiveStableIdAfterEmailChange:
         def alice_entity_ids(items):
             return {(i.get("entities") or [{}])[0].get("text","")
                     for i in items
-                    if f"ent:{ENTITIES[0].entity_id}" in (i.get("tags") or [])
+                    if f"ent:{alice_cid}" in (i.get("tags") or [])
                     and (i.get("entities") or [{}])[0].get("text","")}
         assert alice_entity_ids(items_orig) == {alice_cid}
         assert alice_entity_ids(items_upd)  == {alice_cid}

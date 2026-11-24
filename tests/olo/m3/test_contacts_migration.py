@@ -765,5 +765,5 @@ class TestFingerprintUnchanged:
         assert result.ok, (
             f"Frozen fingerprint mismatch.\n"
             f"  Expected: {FROZEN_FULL_ITEM_FP}\n"
-            f"  Got:      {result.actual_fp}"
+            f"  Got:      {result.actual}"
         )

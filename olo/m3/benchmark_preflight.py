@@ -52,7 +52,7 @@ _log = logging.getLogger(__name__)
 #:   python scripts/olo/m3/build_corpus.py --db-dir /tmp/fip_check
 #:   # then read Full-item fingerprint from output
 FROZEN_FULL_ITEM_FP: str = (
-    "8bc0a791420ef0c5b53397ebd7ded571f4b5f30584d9bf576ebfe4a51af3a1cf"
+    "a9d589ecc34fbb4849d5d4f2b1721f307a725a8925e7fec273a07711b61d2333"
 )
 
 #: Pre-CM01 fingerprint (historical reference — corpus before email_confirm_orig fix).
@@ -289,7 +289,34 @@ def check_scope_equivalence(
         ulid = ent_tags[0]
 
         if ulid not in all_known_ulids:
-            # Completely unknown ULID
+            # Check whether this is already a canonical CID-scoped item.
+            # Items built after the cross-channel scope fix store the CRM
+            # contact_id directly in the ent: tag (e.g. "cid_64c1dd...").
+            if ulid.startswith("cid_"):
+                all_known_cids: set[str] = {r["contact_id"] for r in crm_contacts}
+                if ulid not in all_known_cids:
+                    result.missing_crm += 1
+                    result.details.append(ItemScopeResult(
+                        document_id=doc_id, ent_ulid=ulid,
+                        expected_cid=ulid, actual_cid=actual_cid,
+                        status="missing_crm",
+                    ))
+                elif actual_cid != ulid:
+                    result.mismatched += 1
+                    result.details.append(ItemScopeResult(
+                        document_id=doc_id, ent_ulid=ulid,
+                        expected_cid=ulid, actual_cid=actual_cid,
+                        status="mismatch",
+                    ))
+                else:
+                    result.passed += 1
+                    result.details.append(ItemScopeResult(
+                        document_id=doc_id, ent_ulid=ulid,
+                        expected_cid=ulid, actual_cid=actual_cid,
+                        status="pass",
+                    ))
+                continue
+            # Completely unknown value (neither a known ULID nor a cid_)
             result.unknown_ulid += 1
             result.details.append(ItemScopeResult(
                 document_id=doc_id, ent_ulid=ulid, expected_cid="",

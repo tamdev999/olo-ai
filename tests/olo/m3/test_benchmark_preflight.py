@@ -115,19 +115,19 @@ class TestScopeEquivalenceNegative:
     """Preflight must fail closed on any identity mismatch."""
 
     def test_altered_ent_tag_detected(self, tmp_path: Path) -> None:
-        """Negative: changing an item's ent: tag to wrong ULID causes failure."""
+        """Negative: changing an item's ent: tag to wrong CID causes failure."""
         items = _build_items(tmp_path, "alt_tag")
         mutated = copy.deepcopy(items)
 
-        alice_ulid = ENTITIES[0].entity_id
-        bob_ulid   = ENTITIES[1].entity_id
+        alice_cid = get_contact_id_for_email(ENTITIES[0].email)
+        bob_cid   = get_contact_id_for_email(ENTITIES[1].email)
 
-        # Find an Alice item and change its ent: tag to Bob's ULID
+        # Find an Alice item (CID-scoped) and change its ent: tag to Bob's CID
         changed = 0
         for item in mutated:
-            if f"ent:{alice_ulid}" in (item.get("tags") or []):
+            if f"ent:{alice_cid}" in (item.get("tags") or []):
                 item["tags"] = [
-                    t.replace(f"ent:{alice_ulid}", f"ent:{bob_ulid}")
+                    t.replace(f"ent:{alice_cid}", f"ent:{bob_cid}")
                     for t in item["tags"]
                 ]
                 changed += 1
@@ -228,13 +228,13 @@ class TestScopeEquivalenceNegative:
         items = _build_items(tmp_path, "wrong_link")
         mutated = copy.deepcopy(items)
 
-        alice_ulid = ENTITIES[0].entity_id
-        bob_cid    = get_contact_id_for_email(ENTITIES[1].email)
+        alice_cid = get_contact_id_for_email(ENTITIES[0].email)
+        bob_cid   = get_contact_id_for_email(ENTITIES[1].email)
 
-        # Find an Alice item and replace its entity link with Bob's cid_
+        # Find an Alice item (CID-scoped) and replace its entity link with Bob's cid_
         changed = 0
         for item in mutated:
-            if f"ent:{alice_ulid}" in (item.get("tags") or []):
+            if f"ent:{alice_cid}" in (item.get("tags") or []):
                 item["entities"] = [{"text": bob_cid, "type": "person"}]
                 changed += 1
                 break

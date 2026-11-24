@@ -836,13 +836,74 @@ def _add_entity_signals(
 
 # ── Serialisation helpers ─────────────────────────────────────────────────────
 
+def _cid_from_signal_meta(sig: "SyntheticSignal") -> str:
+    """Resolve a canonical CRM contact_id from a signal's verified source identifiers.
+
+    Uses only email addresses (from message headers) and phone numbers
+    (from call metadata) — the same identifier types that
+    ``resolve_contact_from_signal`` uses on the production path.
+
+    Returns the ``cid_...`` string, or ``""`` when no CRM mapping is found
+    (safe fallback: caller keeps legacy behaviour, no observation_scopes set).
+
+    Never derives IDs from ``ent:`` tags, ``entity_id`` fields, or any
+    asserted payload claim that could be forged.
+    """
+    from olo.m3.synthetic.crm_fixture import (
+        get_contact_id_for_email,
+        get_contact_id_for_phone,
+    )
+    meta = sig.metadata or {}
+    kind = sig.kind
+
+    if kind in ("email.received", "email.sent", "email.content"):
+        headers = meta.get("headers") or {}
+        # email.sent (owner → customer): customer address is in "to".
+        # email.received (customer → owner): customer address is in "from".
+        # email.content: try "to" then "from" (direction resolved from payload).
+        if kind == "email.sent":
+            buckets = [headers.get("to") or []]
+        elif kind == "email.received":
+            buckets = [headers.get("from") or []]
+        else:
+            buckets = [headers.get("to") or [], headers.get("from") or []]
+        for bucket in buckets:
+            for entry in bucket:
+                if isinstance(entry, dict):
+                    email = entry.get("email", "").strip().lower()
+                elif isinstance(entry, str):
+                    email = entry.strip().lower()
+                else:
+                    continue
+                if email and "@" in email:
+                    cid = get_contact_id_for_email(email)
+                    if cid:
+                        return cid
+
+    elif kind == "call.transcript":
+        phone = (meta.get("phone") or "").strip()
+        if phone:
+            cid = get_contact_id_for_phone(phone)
+            if cid:
+                return cid
+
+    return ""
+
+
 def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
     """Convert SyntheticSignal list to Hindsight MemoryItem dicts.
 
     Maps per §B.2 (DECISION):
       document_id = "sig:<signal_id>"
       operation_id = "olo-idx:gate:<signal_id>"
-      entities    = [{"text": entity_id, "type": "person"}] (resolve_entities=false)
+      entities    = [{"text": contact_id, "type": "person"}] (cid_ when resolved)
+      observation_scopes = [["ent:<contact_id>"]] (cid_-scoped when resolved)
+
+    When a CRM contact_id is resolved from the signal's verified source
+    identifiers (email headers, call phone), the entity tag and
+    observation_scopes use that CID so cross-channel consolidation works
+    correctly.  When no CID is found, the original ULID entity_id and no
+    observation_scopes are used (safe fallback to default Hindsight behaviour).
     """
     items = []
     for sig in signals:
@@ -856,12 +917,29 @@ def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
         # structured-no-llm → chunks extraction, 0 LLM calls
         # prose → bank default extraction (concise + DeepSeek)
         hindsight_strategy = "prose" if sig.is_llm_eligible else "structured-no-llm"
+
+        # Resolve canonical customer ID for cross-channel observation scoping.
+        # Prose signals (email, transcript) are consolidated; CID scoping lets
+        # the consolidation engine find cross-channel candidates (e.g. a Gmail
+        # email observation when processing a voice transcript world fact).
+        contact_id = _cid_from_signal_meta(sig) if sig.is_llm_eligible else ""
+        if contact_id:
+            cid_ent_tag = f"ent:{contact_id}"
+            # Replace legacy generator ULID entity tag with canonical CID tag.
+            # All source/kind/dc/thread/ym tags are preserved unchanged.
+            tags = [t for t in tags if not t.startswith("ent:")] + [cid_ent_tag]
+            item_entities = [{"text": contact_id, "type": "person"}]
+            item_obs_scopes: list | None = [[cid_ent_tag]]
+        else:
+            item_entities = [{"text": sig.entity_id, "type": "person"}]
+            item_obs_scopes = None
+
         item: dict = {
             "content": sig.body_text,
             "timestamp": sig.occurred_at.isoformat(),
             "document_id": f"sig:{sig.signal_id}",
             "operation_id": f"olo-idx:gate:{sig.signal_id}",
-            "entities": [{"text": sig.entity_id, "type": "person"}],
+            "entities": item_entities,
             "resolve_entities": False,
             "tags": tags,
             "metadata": {
@@ -875,6 +953,8 @@ def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
             # Option B: structured signals use "chunks", prose uses extraction
             "strategy": hindsight_strategy,
         }
+        if item_obs_scopes is not None:
+            item["observation_scopes"] = item_obs_scopes
         if sig.subject:
             item["context"] = sig.subject   # v1.2.1: context is a string
         items.append(item)

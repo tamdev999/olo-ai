@@ -581,7 +581,7 @@ class TestRegressionCorrectness:
         assert result.ok, (
             f"Frozen benchmark fingerprint mismatch.\n"
             f"  Expected: {FROZEN_FULL_ITEM_FP}\n"
-            f"  Got:      {result.actual_fp}\n"
+            f"  Got:      {result.actual}\n"
             "The frozen corpus must not change — do not modify retrieval models, "
             "fixture identities, or scoring."
         )
