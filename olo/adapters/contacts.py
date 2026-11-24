@@ -117,6 +117,79 @@ class IdentityResolutionError(Exception):
     or with an invalid target contact (P3: restricted resolution pathway)."""
 
 
+class PhoneNormalizationError(Exception):
+    """Raised by normalize_phone() when the number is invalid or ambiguous (Fix 3)."""
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: Phone normalization
+# ---------------------------------------------------------------------------
+
+def normalize_phone(raw: str, default_region: Optional[str] = None) -> str:
+    """Normalize a phone number to E.164 format (+XXXXXXXXXX).
+
+    Numbers already in E.164 (+XX...) are validated and returned unchanged.
+    National numbers (no leading +) require an explicit ``default_region``.
+    Invalid or ambiguous numbers raise ``PhoneNormalizationError``.
+
+    Supported regions for national-number expansion:
+      'US', 'CA' — NANP: 10 digits → +1XXXXXXXXXX; 11 digits starting with 1
+                   → +1XXXXXXXXXX.
+
+    For other regions, supply the number in E.164 format directly.
+
+    Args:
+        raw:            Raw phone number string (e.g. "+1 415-555-0101",
+                        "(415) 555-0101", "4155550101").
+        default_region: ISO 3166-1 alpha-2 region code required for national
+                        numbers lacking a + prefix (e.g. 'US').
+
+    Returns:
+        E.164 string starting with '+'.
+
+    Raises:
+        PhoneNormalizationError: on invalid length, unsupported region, or
+                                 missing region for a national number.
+    """
+    if not raw:
+        raise PhoneNormalizationError("Empty phone number.")
+    raw = raw.strip()
+    has_plus = raw.startswith("+")
+    digits = "".join(c for c in raw if c.isdigit())
+
+    if has_plus:
+        # Input already carries a country code.
+        if not (7 <= len(digits) <= 15):
+            raise PhoneNormalizationError(
+                f"Invalid E.164 number {raw!r}: expected 7–15 digits after +, "
+                f"got {len(digits)}."
+            )
+        return "+" + digits
+
+    # No leading '+' — country code is absent.
+    if not default_region:
+        raise PhoneNormalizationError(
+            f"Phone {raw!r} has no country code and no default_region was given. "
+            "Provide the number in E.164 format (+XX…) or supply a region such as 'US'."
+        )
+
+    region = default_region.upper()
+    if region in ("US", "CA"):
+        if len(digits) == 10:
+            return "+1" + digits
+        if len(digits) == 11 and digits[0] == "1":
+            return "+" + digits
+        raise PhoneNormalizationError(
+            f"Invalid {region} phone {raw!r}: expected 10 digits or "
+            f"11 digits starting with 1, got {len(digits)}."
+        )
+
+    raise PhoneNormalizationError(
+        f"Normalization for region {region!r} is not supported. "
+        "Supply the number in E.164 format (+XX…) instead."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stable ID derivation
 # ---------------------------------------------------------------------------
@@ -223,6 +296,19 @@ def migrate_contacts(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass  # table does not exist yet — will be created below
 
+    # Fix 1: add revocation columns to contact_identifiers if missing.
+    # ALTER TABLE ADD COLUMN is non-destructive and idempotent in SQLite.
+    for _col, _dflt in [
+        ("revoked_at", "NULL"),
+        ("revocation_source", "NULL"),
+    ]:
+        try:
+            conn.execute(
+                f"ALTER TABLE contact_identifiers ADD COLUMN {_col} TEXT DEFAULT {_dflt}"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS organizations (
             id          TEXT PRIMARY KEY,
@@ -242,12 +328,16 @@ def migrate_contacts(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (organization_id) REFERENCES organizations(id)
         );
 
+        -- Fix 1: revoked_at / revocation_source track identifier lifecycle.
+        -- NULL revoked_at = active.  Non-NULL = revoked by that source at that time.
         CREATE TABLE IF NOT EXISTS contact_identifiers (
-            identifier_type  TEXT NOT NULL,
-            identifier_value TEXT NOT NULL,
-            contact_id       TEXT NOT NULL,
-            source           TEXT NOT NULL,
-            verified_at      TEXT NOT NULL,
+            identifier_type   TEXT NOT NULL,
+            identifier_value  TEXT NOT NULL,
+            contact_id        TEXT NOT NULL,
+            source            TEXT NOT NULL,
+            verified_at       TEXT NOT NULL,
+            revoked_at        TEXT,
+            revocation_source TEXT,
             PRIMARY KEY (identifier_type, identifier_value, source),
             FOREIGN KEY (contact_id) REFERENCES contacts(id)
         );
@@ -267,6 +357,22 @@ def migrate_contacts(conn: sqlite3.Connection) -> None:
             resolved_by         TEXT
         );
 
+        -- Fix 2: append-only ownership event log.
+        -- event_type: 'assigned' | 'revoked' | 'transferred_in' | 'transferred_out'
+        -- source: the original CRM source (never overwritten with actor name).
+        -- actor: the authorized operator for transfer events (NULL for CRM-driven events).
+        CREATE TABLE IF NOT EXISTS identifier_ownership_history (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            identifier_type  TEXT NOT NULL,
+            identifier_value TEXT NOT NULL,
+            contact_id       TEXT NOT NULL,
+            event_type       TEXT NOT NULL,
+            source           TEXT NOT NULL,
+            actor            TEXT,
+            reason           TEXT,
+            occurred_at      TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS contact_name_history (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             contact_id       TEXT NOT NULL,
@@ -278,12 +384,17 @@ def migrate_contacts(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS
             idx_contact_identifiers_lookup
-        ON contact_identifiers (identifier_type, identifier_value);
+        ON contact_identifiers (identifier_type, identifier_value, revoked_at);
 
         CREATE INDEX IF NOT EXISTS
             idx_identifier_conflicts_lookup
         ON identifier_conflicts (identifier_type, identifier_value,
                                   resolved_contact_id);
+
+        CREATE INDEX IF NOT EXISTS
+            idx_ownership_history_lookup
+        ON identifier_ownership_history (identifier_type, identifier_value,
+                                          contact_id);
     """)
 
 
@@ -296,6 +407,8 @@ def populate_contacts_from_crm(
     conn: sqlite3.Connection,
     source: str = "crm_fixture",
     clock=None,
+    snapshot_mode: bool = False,
+    default_region: Optional[str] = None,
 ) -> int:
     """Insert or update contact records from a CRM fixture.
 
@@ -308,15 +421,17 @@ def populate_contacts_from_crm(
 
     ``canonical_email`` in the fixture entry is informational only.
 
-    Defect A repair: contact_id is taken directly from ``entry["contact_id"]``.
-    Changing an email address in a later CRM update does NOT change contact_id.
+    Fix 1 — identifier removals:
+      When ``snapshot_mode=True``, this call is treated as an authoritative
+      full snapshot for every contact present in *crm_contacts*.  Any active
+      identifier for a contact that is NOT present in the new snapshot is
+      REVOKED (not deleted) with provenance recorded in
+      ``identifier_ownership_history``.  Partial/delta updates must pass
+      ``snapshot_mode=False`` (the default) to avoid unintended revocations.
 
-    Defect B repair: before assigning each identifier, check whether it is
-    already claimed by a DIFFERENT contact.  If so:
-      • Record the conflict in ``identifier_conflicts``.
-      • Do NOT overwrite the existing ownership.
-      • The identifier is excluded from automatic attribution until explicitly
-        resolved via ``resolve_identifier_conflict()``.
+    Fix 3 — phone normalization:
+      ``default_region`` (e.g. ``'US'``) is passed to ``normalize_phone()``
+      for phone identifiers that lack a leading '+'.
 
     Idempotent: existing records are updated when canonical data changes.
     Name changes are recorded in ``contact_name_history`` for provenance.
@@ -329,6 +444,8 @@ def populate_contacts_from_crm(
 
     conn.execute("BEGIN IMMEDIATE")
     upserted = 0
+    # Build snapshot map for revocation check (snapshot_mode only)
+    snapshot_identifiers: dict[str, set[tuple[str, str]]] = {}  # contact_id → {(type,value)}
     try:
         for entry in crm_contacts:
             # Defect A fix: use fixture-assigned contact_id, never derive from email.
@@ -388,19 +505,58 @@ def populate_contacts_from_crm(
                         (contact_id, old_name, display_name, now, source),
                     )
 
-            # Upsert identifiers with Defect B conflict detection.
+            # Upsert identifiers with conflict detection.
+            snapshot_identifiers[contact_id] = set()
             for id_type, id_value in (entry.get("identifiers") or []):
                 normalized = id_value.strip()
                 if id_type == "email":
                     normalized = normalized.lower()
+                elif id_type == "phone":
+                    try:
+                        normalized = normalize_phone(normalized, default_region)
+                    except PhoneNormalizationError as exc:
+                        _log.warning(
+                            "Skipping phone %r for contact %r: %s",
+                            id_value, contact_id, exc,
+                        )
+                        continue
                 if not normalized:
                     continue
-
+                snapshot_identifiers[contact_id].add((id_type, normalized))
                 _upsert_identifier(
                     id_type, normalized, contact_id, source, now, conn
                 )
 
             upserted += 1
+
+        # Fix 1 — snapshot-mode revocation.
+        # Revoke any active identifier for a contact that is NOT present in
+        # the authoritative snapshot.  Only contacts present in this call are
+        # eligible; contacts absent from crm_contacts are untouched (this is
+        # explicitly NOT a full-database wipe).
+        if snapshot_mode:
+            for contact_id, in_snapshot in snapshot_identifiers.items():
+                active_rows = conn.execute(
+                    "SELECT identifier_type, identifier_value, source"
+                    " FROM contact_identifiers"
+                    " WHERE contact_id = ? AND revoked_at IS NULL",
+                    (contact_id,),
+                ).fetchall()
+                for id_type, id_value, orig_source in active_rows:
+                    if (id_type, id_value) not in in_snapshot:
+                        # This identifier was removed from the CRM snapshot.
+                        conn.execute(
+                            "UPDATE contact_identifiers"
+                            "  SET revoked_at = ?, revocation_source = ?"
+                            " WHERE identifier_type = ? AND identifier_value = ?"
+                            "   AND contact_id = ? AND revoked_at IS NULL",
+                            (now, source, id_type, id_value, contact_id),
+                        )
+                        _record_ownership_event(
+                            conn, id_type, id_value, contact_id, "revoked",
+                            orig_source, None, now,
+                            reason=f"removed from CRM snapshot ({source})",
+                        )
 
         conn.execute("COMMIT")
     except Exception:
@@ -413,6 +569,34 @@ def populate_contacts_from_crm(
     return upserted
 
 
+def _record_ownership_event(
+    conn: sqlite3.Connection,
+    identifier_type: str,
+    identifier_value: str,
+    contact_id: str,
+    event_type: str,
+    source: str,
+    actor: Optional[str],
+    occurred_at: str,
+    reason: Optional[str] = None,
+) -> None:
+    """Append one event to identifier_ownership_history.  Called inside a transaction.
+
+    Not idempotent by default — callers check for existing events where needed.
+    """
+    try:
+        conn.execute(
+            "INSERT INTO identifier_ownership_history"
+            " (identifier_type, identifier_value, contact_id, event_type,"
+            "  source, actor, reason, occurred_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (identifier_type, identifier_value, contact_id, event_type,
+             source, actor, reason, occurred_at),
+        )
+    except sqlite3.OperationalError:
+        pass  # table may not exist on databases built before this schema version
+
+
 def _upsert_identifier(
     id_type: str,
     id_value: str,
@@ -421,31 +605,36 @@ def _upsert_identifier(
     now: str,
     conn: sqlite3.Connection,
 ) -> None:
-    """Insert or update one identifier entry with Defect B conflict detection.
+    """Insert or update one identifier entry with conflict detection.
 
-    If the identifier is already owned by a DIFFERENT contact (from any source),
-    record a conflict and do NOT overwrite the existing ownership.
-    If the identifier is already owned by this contact, update the timestamp.
-    If no prior ownership exists, insert freely.
+    Fix 1: only ACTIVE (revoked_at IS NULL) identifiers are considered when
+    checking for conflicts.  Revoked identifiers may be re-assigned freely.
+    If this contact's own identifier was revoked, re-activate it.
+
+    Fix 2: records 'assigned' events in identifier_ownership_history for new
+    or re-activated assignments.  Idempotent for already-active identifiers.
 
     Called inside an open transaction.
     """
-    # Check for existing ownership (any source)
-    existing_owners = conn.execute(
-        "SELECT DISTINCT contact_id FROM contact_identifiers"
-        " WHERE identifier_type = ? AND identifier_value = ?",
-        (id_type, id_value),
+    # Check this contact's current state for this identifier
+    own_row = conn.execute(
+        "SELECT source, revoked_at FROM contact_identifiers"
+        " WHERE identifier_type = ? AND identifier_value = ?"
+        "   AND contact_id = ?",
+        (id_type, id_value, contact_id),
+    ).fetchone()
+
+    # Check for ACTIVE ownership by OTHER contacts
+    other_active = conn.execute(
+        "SELECT contact_id FROM contact_identifiers"
+        " WHERE identifier_type = ? AND identifier_value = ?"
+        "   AND contact_id != ? AND revoked_at IS NULL",
+        (id_type, id_value, contact_id),
     ).fetchall()
 
-    other_owners = [row[0] for row in existing_owners if row[0] != contact_id]
-    if other_owners:
-        # Defect B + P2: identifier already claimed by another contact.
-        # Record each conflict and refuse the assignment.
-        for other_id in other_owners:
-            # P2 idempotency: skip if an IDENTICAL unresolved conflict already
-            # exists for (type, value, existing, new, source).  This prevents
-            # duplicates within the same CRM sync run.  After a conflict is
-            # resolved, a fresh claim from the same parties is a NEW event.
+    if other_active:
+        # Conflict: another contact has an active claim.  Record and refuse.
+        for (other_id,) in other_active:
             already = conn.execute(
                 "SELECT id FROM identifier_conflicts"
                 " WHERE identifier_type = ? AND identifier_value = ?"
@@ -466,21 +655,44 @@ def _upsert_identifier(
                 "new claim from %r (%s) refused and recorded.",
                 id_type, id_value, other_id, contact_id, source,
             )
-        # Do NOT insert/update — the conflicted identifier is excluded from
-        # automatic attribution until explicitly resolved (P1).
-        return
+        return  # Do NOT assign — identifier excluded from attribution until resolved (P1)
 
-    # Safe to insert or update (same contact or no prior owner)
-    conn.execute(
-        "INSERT INTO contact_identifiers"
-        " (identifier_type, identifier_value, contact_id, source, verified_at)"
-        " VALUES (?, ?, ?, ?, ?)"
-        " ON CONFLICT(identifier_type, identifier_value, source)"
-        " DO UPDATE SET"
-        "  contact_id = excluded.contact_id,"
-        "  verified_at = excluded.verified_at",
-        (id_type, id_value, contact_id, source, now),
-    )
+    if own_row is not None:
+        orig_source, revoked_at = own_row[0], own_row[1]
+        if revoked_at is not None:
+            # Previously revoked — re-activate.
+            conn.execute(
+                "UPDATE contact_identifiers"
+                "  SET revoked_at = NULL, revocation_source = NULL,"
+                "      verified_at = ?"
+                " WHERE identifier_type = ? AND identifier_value = ?"
+                "   AND contact_id = ?",
+                (now, id_type, id_value, contact_id),
+            )
+            _record_ownership_event(
+                conn, id_type, id_value, contact_id, "assigned",
+                source, None, now, reason="re-activated after revocation",
+            )
+        else:
+            # Already active — update timestamp only (no new history event).
+            conn.execute(
+                "UPDATE contact_identifiers SET verified_at = ?"
+                " WHERE identifier_type = ? AND identifier_value = ?"
+                "   AND contact_id = ?",
+                (now, id_type, id_value, contact_id),
+            )
+    else:
+        # New assignment.
+        conn.execute(
+            "INSERT INTO contact_identifiers"
+            " (identifier_type, identifier_value, contact_id, source, verified_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (id_type, id_value, contact_id, source, now),
+        )
+        _record_ownership_event(
+            conn, id_type, id_value, contact_id, "assigned",
+            source, None, now,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +726,45 @@ def get_identifier_conflicts(
         keys = ("id", "identifier_type", "identifier_value",
                 "existing_contact_id", "new_contact_id", "source", "detected_at",
                 "resolved_contact_id", "resolved_at", "resolved_by")
+        return [dict(zip(keys, row)) for row in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
+def get_identifier_ownership_history(
+    conn: sqlite3.Connection,
+    identifier_type: Optional[str] = None,
+    identifier_value: Optional[str] = None,
+    contact_id: Optional[str] = None,
+) -> list[dict]:
+    """Return ownership history events, optionally filtered.
+
+    Returns a list of dicts with keys:
+        id, identifier_type, identifier_value, contact_id, event_type,
+        source, actor, reason, occurred_at.
+
+    Ordered by occurred_at ascending (chronological).
+    Returns [] when the history table does not yet exist.
+    """
+    try:
+        where_parts = []
+        params: list = []
+        if identifier_type:
+            where_parts.append("identifier_type = ?"); params.append(identifier_type)
+        if identifier_value:
+            where_parts.append("identifier_value = ?"); params.append(identifier_value)
+        if contact_id:
+            where_parts.append("contact_id = ?"); params.append(contact_id)
+        where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        rows = conn.execute(
+            f"SELECT id, identifier_type, identifier_value, contact_id, event_type,"
+            f"  source, actor, reason, occurred_at"
+            f" FROM identifier_ownership_history {where}"
+            f" ORDER BY occurred_at",
+            params,
+        ).fetchall()
+        keys = ("id", "identifier_type", "identifier_value", "contact_id",
+                "event_type", "source", "actor", "reason", "occurred_at")
         return [dict(zip(keys, row)) for row in rows]
     except sqlite3.OperationalError:
         return []
@@ -600,25 +851,97 @@ def resolve_identifier_conflict(
         ).rowcount
 
         if updated > 0:
-            # Remove identifier from all contacts that are NOT the resolved one
-            conn.execute(
-                "DELETE FROM contact_identifiers"
+            # Fix 2: revoke losers' identifiers instead of hard-deleting them.
+            # Preserves original source and provenance; revocation_source records
+            # who authorized the transfer.
+            loser_rows = conn.execute(
+                "SELECT contact_id, source FROM contact_identifiers"
                 " WHERE identifier_type = ? AND identifier_value = ?"
-                "   AND contact_id != ?",
+                "   AND contact_id != ? AND revoked_at IS NULL",
                 (identifier_type, identifier_value, resolved_contact_id),
-            )
-            # Assign to the resolved contact (may already exist)
-            conn.execute(
-                "INSERT INTO contact_identifiers"
-                " (identifier_type, identifier_value, contact_id, source, verified_at)"
-                " VALUES (?, ?, ?, ?, ?)"
-                " ON CONFLICT(identifier_type, identifier_value, source)"
-                " DO UPDATE SET"
-                "  contact_id = excluded.contact_id,"
-                "  verified_at = excluded.verified_at",
-                (identifier_type, identifier_value, resolved_contact_id,
-                 resolved_by, now),
-            )
+            ).fetchall()
+            for loser_cid, loser_source in loser_rows:
+                conn.execute(
+                    "UPDATE contact_identifiers"
+                    "  SET revoked_at = ?, revocation_source = ?"
+                    " WHERE identifier_type = ? AND identifier_value = ?"
+                    "   AND contact_id = ? AND revoked_at IS NULL",
+                    (now, resolved_by, identifier_type, identifier_value, loser_cid),
+                )
+                # Record 'transferred_out' with original source preserved.
+                _record_ownership_event(
+                    conn, identifier_type, identifier_value, loser_cid,
+                    "transferred_out", loser_source, resolved_by, now,
+                )
+
+            # Assign the identifier to the winner.
+            # Fix 2: use the winner's ORIGINAL CRM source, not resolved_by,
+            # so the ownership provenance reflects the authentic registration.
+            winner_active = conn.execute(
+                "SELECT source FROM contact_identifiers"
+                " WHERE identifier_type = ? AND identifier_value = ?"
+                "   AND contact_id = ? AND revoked_at IS NULL",
+                (identifier_type, identifier_value, resolved_contact_id),
+            ).fetchone()
+            if winner_active:
+                # Winner already has an active entry — just refresh timestamp.
+                winner_source = winner_active[0]
+                conn.execute(
+                    "UPDATE contact_identifiers SET verified_at = ?"
+                    " WHERE identifier_type = ? AND identifier_value = ?"
+                    "   AND contact_id = ? AND revoked_at IS NULL",
+                    (now, identifier_type, identifier_value, resolved_contact_id),
+                )
+            else:
+                # Winner's entry was revoked or never existed.
+                # Find their original source from contact_identifiers (revoked)
+                # or from the conflict record.
+                revoked_row = conn.execute(
+                    "SELECT source FROM contact_identifiers"
+                    " WHERE identifier_type = ? AND identifier_value = ?"
+                    "   AND contact_id = ? AND revoked_at IS NOT NULL"
+                    " ORDER BY revoked_at DESC LIMIT 1",
+                    (identifier_type, identifier_value, resolved_contact_id),
+                ).fetchone()
+                conflict_row = conn.execute(
+                    "SELECT source FROM identifier_conflicts"
+                    " WHERE identifier_type = ? AND identifier_value = ?"
+                    "   AND new_contact_id = ? LIMIT 1",
+                    (identifier_type, identifier_value, resolved_contact_id),
+                ).fetchone()
+                winner_source = (
+                    (revoked_row[0] if revoked_row else None)
+                    or (conflict_row[0] if conflict_row else None)
+                    or resolved_by  # last resort
+                )
+                conn.execute(
+                    "INSERT INTO contact_identifiers"
+                    " (identifier_type, identifier_value, contact_id,"
+                    "  source, verified_at,"
+                    "  revoked_at, revocation_source)"
+                    " VALUES (?, ?, ?, ?, ?, NULL, NULL)"
+                    " ON CONFLICT(identifier_type, identifier_value, source)"
+                    " DO UPDATE SET"
+                    "  contact_id = excluded.contact_id,"
+                    "  verified_at = excluded.verified_at,"
+                    "  revoked_at = NULL,"
+                    "  revocation_source = NULL",
+                    (identifier_type, identifier_value, resolved_contact_id,
+                     winner_source, now),
+                )
+
+            # Record 'transferred_in' for the winner (once; idempotent check).
+            already_in = conn.execute(
+                "SELECT id FROM identifier_ownership_history"
+                " WHERE identifier_type = ? AND identifier_value = ?"
+                "   AND contact_id = ? AND event_type = 'transferred_in'",
+                (identifier_type, identifier_value, resolved_contact_id),
+            ).fetchone()
+            if not already_in:
+                _record_ownership_event(
+                    conn, identifier_type, identifier_value, resolved_contact_id,
+                    "transferred_in", winner_source, resolved_by, now,
+                )
 
         conn.execute("COMMIT")
         return updated
@@ -658,11 +981,11 @@ def load_contact_index(
     identifier_map: dict[tuple[str, str], str] = {}
     contact_info: dict[str, tuple[str, str]] = {}
     try:
-        # Load all identifiers. The original owner keeps their mapping in
-        # contact_identifiers even when a conflict was recorded.
+        # Load all ACTIVE (non-revoked) identifiers.
         rows = conn.execute(
             "SELECT identifier_type, identifier_value, contact_id"
             " FROM contact_identifiers"
+            " WHERE revoked_at IS NULL"
         ).fetchall()
         for row in rows:
             identifier_map[(row[0], row[1])] = row[2]
@@ -784,10 +1107,21 @@ def resolve_contact_from_signal(
 
     elif kind == "call.transcript":
         # Verified identifier: the caller's phone number from the call metadata.
-        # Payload.customer_name is NOT used — it is an assertion, not a CRM fact.
+        # Fix 3: normalize to E.164 before lookup.  Numbers already in E.164
+        # pass through unchanged; national numbers require a default_region.
         phone = (payload.get("phone") or "").strip()
         if phone:
-            candidates.append(("phone", phone))
+            try:
+                phone = normalize_phone(phone, payload.get("phone_region"))
+            except PhoneNormalizationError:
+                _log.debug(
+                    "resolve_contact_from_signal: could not normalize phone %r — "
+                    "skipping lookup",
+                    phone,
+                )
+                phone = ""
+            if phone:
+                candidates.append(("phone", phone))
 
     elif kind == "invoice.created":
         # Priority 1: customer email (most specific identifier).
@@ -804,6 +1138,13 @@ def resolve_contact_from_signal(
                 candidates.append(("qbo_customer_id", cust_id))
 
     for id_type, id_value in candidates:
+        # Fix 3: normalize phone identifiers before lookup so callers can
+        # supply numbers in any common format.
+        if id_type == "phone":
+            try:
+                id_value = normalize_phone(id_value, payload.get("phone_region"))
+            except PhoneNormalizationError:
+                continue  # skip unnormalizable phone
         contact_id = identifier_map.get((id_type, id_value))
         if contact_id:
             return contact_id
