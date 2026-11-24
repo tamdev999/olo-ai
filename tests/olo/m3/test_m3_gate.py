@@ -2944,6 +2944,8 @@ class TestP1TwoCheckpointDelivery:
             "passed": False, "failure": "", "assertions": {},
             "O_id": None, "O2_id": None, "O2_text": "",
             "O2_sources": [], "history_method": "none",
+            "history_entries": 0, "history_conf_carried": False,
+            "delivery_obs_count": 0, "contaminated_obs": [],
         }
 
         def _op(tag: str) -> str:
@@ -3049,7 +3051,7 @@ class TestP1TwoCheckpointDelivery:
             r2 = _recall(f"{ent.display_name} delivery rescheduled April {ent.company}")
             sf2 = self._build_extended_sf_map(r2)
 
-            # Prefer obs citing BOTH confirm_id AND transcript_id
+            # Require obs citing BOTH confirm_id AND transcript_id — no fallback to partial obs
             O2: dict | None = None
             for cand in self._obs_citing_doc(r2, transcript_id):
                 srcs = self._sources_from_obs(cand, sf2)
@@ -3057,20 +3059,15 @@ class TestP1TwoCheckpointDelivery:
                     O2 = cand
                     break
             if O2 is None:
-                # Accept obs citing transcript alone (confirm may be in prior version)
-                cands_trans = self._obs_citing_doc(r2, transcript_id)
-                if cands_trans:
-                    O2 = cands_trans[0]
-            if O2 is None and O_id:
-                # Accept original O if its text was updated
-                for r in (r2.get("results") or []):
-                    if r.get("id") == O_id:
-                        O2 = r
-                        break
-            if O2 is None:
+                trans_cands = self._obs_citing_doc(r2, transcript_id)
+                conf_cands  = self._obs_citing_doc(r2, confirm_id)
                 raise RuntimeError(
-                    f"A3 FAIL: no delivery observation found after phase-2. "
-                    f"transcript_citing={len(self._obs_citing_doc(r2, transcript_id))}"
+                    f"A3/A4 FAIL: no observation cites BOTH confirm_orig AND "
+                    f"transcript_reschedule after phase-2. "
+                    f"transcript_citing={len(trans_cands)} "
+                    f"confirm_citing={len(conf_cands)} "
+                    f"transcript_cand_sources="
+                    f"{[list(self._sources_from_obs(c, sf2)) for c in trans_cands[:2]]!r}"
                 )
 
             O2_id = O2.get("id", "")
@@ -3101,74 +3098,93 @@ class TestP1TwoCheckpointDelivery:
                 )
             rec["assertions"]["A3"] = "PASS"
 
-            # A4: D1 traceable in history; sources include confirm_orig + transcript
+            # A4: D1 traceable via /memories/{id}/history; sources include confirm_orig + transcript
             d1_traceable = False
             history_method = "none"
 
             if O2_id:
                 history = self._get_memory_history(hs_client, O2_id, bank)
+                rec["history_entries"] = len(history)
                 for entry in (history or []):
                     entry_text = ""
+                    conf_carried = False
                     if isinstance(entry, dict):
-                        entry_text = (entry.get("text") or entry.get("content") or "").lower()
+                        # diagnostic confirmed history entries carry previous_text
+                        entry_text = (
+                            entry.get("previous_text") or
+                            entry.get("text") or
+                            entry.get("content") or ""
+                        ).lower()
+                        # is_new=false on confirm_orig proves it was retained before phase-2
+                        for sf in (entry.get("source_facts") or []):
+                            if (isinstance(sf, dict)
+                                    and sf.get("document_id") == confirm_id
+                                    and sf.get("is_new") is False):
+                                conf_carried = True
                     elif isinstance(entry, str):
                         entry_text = entry.lower()
-                    if d1 in self._april_days(entry_text):
+                    if d1 in self._april_days(entry_text) and "deliver" in entry_text:
                         d1_traceable = True
                         history_method = "memories_history_api"
+                        rec["history_conf_carried"] = conf_carried
                         break
-
-            # Fallback: D1 in O2 text as "original/prior" reference
-            if not d1_traceable and d1 in days_O2:
-                d1_traceable = True
-                history_method = "d1_in_O2_text"
-
-            # Fallback: world fact from confirm_orig still present
-            if not d1_traceable:
-                for r in (r2.get("results") or []):
-                    if r.get("document_id") == confirm_id:
-                        wf_text = (r.get("text") or "").lower()
-                        if d1 in self._april_days(wf_text) and "deliver" in wf_text:
-                            d1_traceable = True
-                            history_method = "world_fact_still_present"
-                            break
 
             if not d1_traceable:
                 raise RuntimeError(
-                    f"A4 FAIL: D1={date_orig!r} not traceable in history or world facts. "
-                    f"Tried: memories_history_api, d1_in_O2_text, world_facts. "
+                    f"A4 FAIL: D1={date_orig!r} not found in /memories/{O2_id}/history. "
+                    f"history_entries={rec.get('history_entries', 0)} "
                     f"O2.id={O2_id!r} O2.text={O2_text[:200]!r}"
                 )
             rec["history_method"] = history_method
             rec["assertions"]["A4_d1_traceable"] = f"PASS via {history_method}"
 
-            # Sources: confirm_orig + transcript both cited
+            # Sources: confirm_orig + transcript both cited (guaranteed by O2 selection above)
             if confirm_id not in O2_sources:
                 raise RuntimeError(
-                    f"A4 FAIL: {confirm_id!r} not in O2 sources (even with extended sf_map). "
-                    f"NOTE: Hindsight v1.2.1 source_facts may not include all UUID→doc "
-                    f"mappings for world facts from prior consolidation rounds. "
-                    f"Extended O2_sources={O2_sources}"
+                    f"A4 FAIL: {confirm_id!r} not in O2 sources. "
+                    f"O2_sources={list(O2_sources)!r}"
                 )
             if transcript_id not in O2_sources:
-                # Acceptable if D1 came from world fact and transcript was used for D2
-                # Warn but don't fail — Hindsight may keep them as adjacent world facts
-                rec["assertions"]["A4_sources"] = (
-                    f"PARTIAL: transcript_reschedule not in O2_sources "
-                    f"(O2_sources={list(O2_sources)[:4]}); D1 traceable via {history_method}"
+                raise RuntimeError(
+                    f"A4 FAIL: transcript_reschedule {transcript_id!r} not in O2 sources. "
+                    f"O2_sources={list(O2_sources)!r}"
                 )
-            else:
-                rec["assertions"]["A4_sources"] = "PASS"
+            rec["assertions"]["A4_sources"] = "PASS"
 
-            # A5: O2 sources exclude meeting_trans; another obs cites it
+            # A5: sweep ALL delivery observations for meeting transcript contamination
+            all_delivery_obs: dict[str, dict] = {}
+            for cand in (self._obs_citing_doc(r2, transcript_id) +
+                         self._obs_citing_doc(r2, confirm_id)):
+                cid = cand.get("id", "")
+                if cid:
+                    all_delivery_obs[cid] = cand
+            rec["delivery_obs_count"] = len(all_delivery_obs)
+
+            contaminated = []
+            for obs_id, obs in all_delivery_obs.items():
+                obs_srcs = self._sources_from_obs(obs, sf2)
+                if meeting_id in obs_srcs:
+                    contaminated.append({
+                        "id": obs_id,
+                        "text": (obs.get("text") or "")[:120],
+                        "sources": list(obs_srcs),
+                    })
+            rec["contaminated_obs"] = contaminated
+
             if meeting_id in O2_sources:
                 raise RuntimeError(
                     f"A5 FAIL: O2 sources include meeting transcript {meeting_id!r}. "
                     f"Meeting distractor leaked into delivery chain."
                 )
+            if contaminated:
+                raise RuntimeError(
+                    f"A5 FAIL: {len(contaminated)} delivery observation(s) contaminated "
+                    f"with meeting transcript {meeting_id!r}. "
+                    f"contaminated={contaminated!r}"
+                )
             rec["assertions"]["A5_meeting_excluded"] = "PASS"
 
-            # Find at least one other observation citing meeting_trans
+            # Verify meeting distractor is processed as a separate observation
             mtg_obs = self._obs_citing_doc(r2, meeting_id)
             if not mtg_obs:
                 # Try a meeting-focused recall
@@ -3235,9 +3251,13 @@ class TestP1TwoCheckpointDelivery:
             if rec["passed"]:
                 print(f"    O.id={rec['O_id']!r}")
                 print(f"    O2.id={rec['O2_id']!r}  history_via={rec['history_method']!r}")
+                print(f"    history_entries={rec.get('history_entries', 0)}  conf_carried={rec.get('history_conf_carried', False)}")
                 print(f"    O2_sources={rec['O2_sources'][:4]!r}")
+                print(f"    delivery_obs_scanned={rec.get('delivery_obs_count', 0)}  contaminated={rec.get('contaminated_obs', [])!r}")
                 print(f"    assertions={rec['assertions']!r}")
             else:
+                print(f"    O2.id={rec.get('O2_id')!r}  O2_sources={rec.get('O2_sources', [])!r}")
+                print(f"    history_entries={rec.get('history_entries', 0)}  contaminated={rec.get('contaminated_obs', [])!r}")
                 print(f"    assertions so far={rec['assertions']!r}")
             results.append(rec)
 
