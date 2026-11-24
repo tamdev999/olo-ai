@@ -1,0 +1,178 @@
+﻿{
+  "sha": "aa136d69a60534f5cbba50194b5a3053c84ba754",
+  "bank": "p1-repro-0f55d991",
+  "date_orig": "Saturday April 04",
+  "date_new": "Wednesday April 08",
+  "source_documents": {
+    "confirm_orig": {
+      "id": "sig:sig_67d70d5b3e95a57eb6493a19",
+      "subject": "RE: Delivery for Saturday April 04 \u2014 Acme Corp",
+      "body_excerpt": "Hi Alice Chen, just to confirm, our meeting is still on for Saturday April 04 as originally scheduled. See you then. - Owner",
+      "defect": "body says 'meeting' in a delivery thread"
+    },
+    "reschedule_email": {
+      "id": "sig:sig_08e9ea787f62d5e743bf7288",
+      "subject": "Need to reschedule our delivery \u2014 Acme Corp",
+      "body_excerpt": "Hi there, I need to reschedule our delivery originally planned for Saturday April 04. Could we move it to Wednesday April 08 instead? Let me know if that works. Best, Alice Chen"
+    },
+    "transcript": {
+      "id": "sig:sig_d992bc383e81974213d7d74a",
+      "subject": "Call: delivery reschedule \u2014 Acme Corp",
+      "body_excerpt": "Agent: Hi, this is Owner at Olo Business. How can I help you? Customer: Hi, I'm calling about my delivery scheduled for Saturday April 04. I need to change it to Wednesday April 08 if possible. Agent:"
+    }
+  },
+  "steps": {
+    "after_step2_consolidation": {
+      "operation": {
+        "triggered": true,
+        "op_id": "42aa8626-8a4c-4040-a739-8d45c07c6de3",
+        "status": "completed"
+      },
+      "observations_count": 2,
+      "observations": [
+        {
+          "type": "world",
+          "doc_id": "sig:sig_67d70d5b3e95a57eb6493a19",
+          "text_excerpt": "User confirmed that the meeting with Alice Chen is still on for Saturday, April 04, 2026, as originally scheduled. | When: 2026-04-04 | Involving: user, Alice Chen | Confirmation of previously schedul"
+        },
+        {
+          "type": "observation",
+          "doc_id": null,
+          "text_excerpt": "The user's meeting with Alice Chen is still on for Saturday, April 04, 2026, as originally scheduled."
+        }
+      ]
+    },
+    "after_step4_consolidation": {
+      "operation": {
+        "triggered": true,
+        "op_id": "7de1cbec-ef1d-4e1d-96dc-6621f1655a4e",
+        "status": "completed"
+      },
+      "observations_count": 8,
+      "observations": [
+        {
+          "type": "world",
+          "doc_id": "sig:sig_08e9ea787f62d5e743bf7288",
+          "source_fact_ids": [],
+          "text_excerpt": "Alice Chen requested to reschedule a delivery originally planned for Saturday April 04 to Wednesday April 08. | When: 2026-04-01 | Involving: Alice Chen | Delivery rescheduling request"
+        },
+        {
+          "type": "world",
+          "doc_id": "sig:sig_67d70d5b3e95a57eb6493a19",
+          "source_fact_ids": [],
+          "text_excerpt": "User confirmed that the meeting with Alice Chen is still on for Saturday, April 04, 2026, as originally scheduled. | When: 2026-04-04 | Involving: user, Alice Chen | Confirmation of previously scheduled meeting"
+        },
+        {
+          "type": "observation",
+          "doc_id": null,
+          "source_fact_ids": [],
+          "text_excerpt": "Alice Chen requested to reschedule a delivery originally planned for Saturday, April 04 to Wednesday, April 08, 2026."
+        },
+        {
+          "type": "world",
+          "doc_id": "sig:sig_d992bc383e81974213d7d74a",
+          "source_fact_ids": [],
+          "text_excerpt": "Customer requested to reschedule delivery ORD-ACME-001 from Saturday April 04 to Wednesday April 08; agent confirmed the reschedule. | When: 2026-04-03 | Involving: Customer, Agent (Owner at Olo Business) | Customer needed to change delivery date"
+        },
+        {
+          "type": "observation",
+          "doc_id": null,
+          "source_fact_ids": [],
+          "text_excerpt": "The user's meeting with Alice Chen is still on for Saturday, April 04, 2026, as originally scheduled."
+        },
+        {
+          "type": "observation",
+          "doc_id": null,
+          "source_fact_ids": [],
+          "text_excerpt": "The customer requested to reschedule delivery ORD-ACME-001 from Saturday, April 04 to Wednesday, April 08, 2026, and the agent confirmed the reschedule."
+        },
+        {
+          "type": "world",
+          "doc_id": "sig:sig_d992bc383e81974213d7d74a",
+          "source_fact_ids": [],
+          "text_excerpt": "Customer's phone number is +14155550101. | Involving: Customer"
+        },
+        {
+          "type": "observation",
+          "doc_id": null,
+          "source_fact_ids": [],
+          "text_excerpt": "The customer's phone number is +14155550101."
+        }
+      ]
+    }
+  },
+  "gate_assertion_outcome": {
+    "assert1_d2_confirmed": true,
+    "assert2_d1_traceable": true,
+    "assert3_supersession_stated": true,
+    "assert4_source_found": true,
+    "overall_pass": true,
+    "reschedule_obs_found": true,
+    "meeting_obs_count": 2,
+    "delivery_obs_count": 4,
+    "defect_body_says_meeting": true,
+    "defect_body_says_delivery": false
+  },
+  "correction_manifest": [
+    {
+      "id": "CM-01",
+      "artifact": "olo/m3/synthetic/generator.py",
+      "field": "email_confirm_orig.body_text",
+      "title": "email_confirm_orig body says 'meeting' in a delivery thread",
+      "current_label": "body: 'just to confirm, our meeting is still on for Saturday April 04'",
+      "problem": "The email is a reply in the delivery-reschedule thread (thread_id=reschedule_thread). Its subject says 'RE: Delivery for {date}'. But the body says 'our meeting is still on', causing DeepSeek to extract a 'meeting' observation. The transcript_reschedule then extracts a 'delivery' observation. DeepSeek treats them as separate business objects and no contradiction is detected, breaking the P1 scenario intent.",
+      "proposed_fix": "Change body to: 'just to confirm, your delivery is still scheduled for Saturday April 04 as originally planned. We haven't made any changes.' Requires corpus regeneration and fingerprint update.",
+      "evidence": "signal_id=sig_67d70d5b3e95a57eb6493a19, subject='RE: Delivery for Saturday April 04 \u2014 Acme Corp', body contains 'meeting' but not 'delivery'"
+    },
+    {
+      "id": "CM-02",
+      "artifact": "olo/m3/benchmark_v2.py",
+      "field": "mtg_02.expected_signal_ids",
+      "title": "mtg_02 label includes delivery transcript for a meeting question",
+      "current_label": "[meeting_trans, reschedule_trans, p4_meet_orig, p4_meet_corr] where reschedule_trans=sig_d992bc383e81974213d7d74a",
+      "problem": "transcript_reschedule body says 'delivery is now rescheduled' \u2014 it is a delivery transcript. Including it in mtg_02 ('Did {contact} request to change a meeting date?') is a semantic mismatch. The v2.2 evaluator is_meeting_change_request() correctly excludes it via 'delivery not in body'.",
+      "proposed_fix": "Remove sig_d992bc383e81974213d7d74a from mtg_02. Updated expected: [meeting_trans, p4_meet_orig, p4_meet_corr]",
+      "evidence": "transcript_reschedule body: 'delivery is now rescheduled for Wednesday April 08'"
+    },
+    {
+      "id": "CM-03",
+      "artifact": "olo/m3/benchmark_v2.py",
+      "field": "del_01.expected_signal_ids",
+      "title": "del_01 omits meeting transcript for 'meeting or delivery' question",
+      "current_label": "[reschedule_email, reschedule_trans, p4_del_orig, p4_del_corr] -- meeting_trans=sig_ef0441706eb85cd54782a064 absent",
+      "problem": "Query: 'Has {company} ever requested to reschedule a meeting or delivery?' explicitly includes meetings. transcript_meeting_reschedule body says 'I need to move [the meeting] to {date_new}' \u2014 it IS a meeting reschedule request. It should be in the label set for del_01.",
+      "proposed_fix": "Add sig_ef0441706eb85cd54782a064 to del_01. Updated expected: [reschedule_email, reschedule_trans, meeting_trans, p4_del_orig, p4_del_corr]",
+      "evidence": "transcript_meeting_reschedule body: 'I need to move [the meeting] to Wednesday April 08'"
+    },
+    {
+      "id": "CM-04",
+      "artifact": "olo/m3/benchmark_v2.py",
+      "field": "mtg_05.expected_signal_ids",
+      "title": "mtg_05 label points to delivery-context signal for meeting question",
+      "current_label": "[email_confirm_orig] = [sig_67d70d5b3e95a57eb6493a19]",
+      "problem": "Query: 'Find the email confirming a meeting was still happening on the original date for {company}.' email_confirm_orig body currently says 'our meeting is still on' (the CM-01 defect). Once CM-01 is fixed (body \u2192 'delivery'), this signal no longer satisfies the meeting query. A better answer is p4_meeting_orig which is a customer email confirming a meeting on a specific date, without any delivery confusion.",
+      "proposed_fix": "Replace email_confirm_orig with p4_meeting_orig (sig_77192f2cc52068f5de5be6b2). p4_meeting_orig body: 'just confirming our meeting is scheduled for {date}. Please add it to your calendar.' \u2014 purely a meeting confirmation.",
+      "evidence": "p4_meeting_orig subject='Meeting confirmed for Saturday April 04', body contains 'meeting is scheduled' with no delivery mention"
+    },
+    {
+      "id": "CM-05",
+      "artifact": "olo/m3/benchmark_v2.py",
+      "field": "inv_02 / inv_05 / inv_10 / rel_* .expected_signal_ids",
+      "title": "voice_qbo is a phantom signal: not generated but referenced in labels",
+      "current_label": "voice_qbo=sig_bb6407d8bbe21aaab19720e8 in inv_02, inv_05, inv_10, cross-connector and voice questions",
+      "problem": "generator.py never produces a signal with signal_id matching _sig_id(f'voice_qbo_{ent.entity_id}'). The signal is referenced in benchmark_v2.py labels for 5+ question categories per entity (3 entities = 15+ phantom references). inv_05 expected=[dispute_trans, voice_qbo] but only dispute_trans exists (effective denominator=1 not 2). Pass@K scores are unaffected (phantom never retrieved), but set-coverage metrics overcount expected set size.",
+      "proposed_fix": "Either: (a) add a voice_qbo signal to generator.py representing a QBO invoice discussion call, OR (b) remove all voice_qbo references from benchmark_v2.py label sets. Option (a) requires corpus regeneration; option (b) is a pure label correction with no corpus change.",
+      "evidence": "grep benchmark_v2.py for voice_qbo: 6 references in label sets. grep generator.py for voice_qbo: 0 matches. Verified programmatically in test_p1_semantics.py::TestVoiceQboMissingSignal."
+    },
+    {
+      "id": "CM-05-note",
+      "artifact": "olo/m3/benchmark_v2.py",
+      "field": "(all three entities)",
+      "title": "CM-01 through CM-05 apply identically to all three entities",
+      "current_label": "3 entities \u00d7 affected questions",
+      "problem": "Each benchmark question is instantiated for ENTITIES[0] (Alice/ACME), ENTITIES[1] (Bob/Beta), and ENTITIES[2] (Carla/Gamma).",
+      "proposed_fix": "Apply the same correction for each entity instance.",
+      "evidence": "ENTITIES = ['Alice Chen', 'Bob Torres', 'Carla Osei']"
+    }
+  ]
+}
