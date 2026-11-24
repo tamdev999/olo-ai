@@ -15,9 +15,16 @@ Design constraints:
   - Customer isolation: ``contact_id`` must be a canonical ``cid_...``
     identifier from the contacts table.  Legacy ULID generator entity IDs
     are rejected at the boundary.
-  - Multiple possible matches are recorded as UNRESOLVED and not applied;
-    the caller must supply additional context (e.g. a business_key) to
-    disambiguate.
+  - Multiple unnamed commitments may coexist for the same customer and event
+    type (e.g. two delivery orders on different dates, neither with an order
+    ID).  The unique constraint only applies to *named* (business_key != '')
+    commitments.
+  - Cross-channel linking is evidence-based: a transcript event that names a
+    ``prior_confirmed_date`` links to the commitment whose current confirmed
+    date matches that value.  When no date evidence is provided and a single
+    candidate exists, that candidate is updated.  When multiple candidates
+    qualify — or when there is no trustworthy connection — the event is left
+    UNRESOLVED rather than guessing.
   - Idempotency: a ``source_doc_id`` already applied to a commitment returns
     UNCHANGED on the second call without writing any new row.
 
@@ -52,21 +59,28 @@ CREATE TABLE IF NOT EXISTS commitments (
     created_at      TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uk_commitment_key
-    ON commitments (contact_id, event_type, business_key);
+-- Named commitments (business_key != '') are unique per customer per type.
+-- Unnamed commitments (business_key = '') may coexist: two delivery orders
+-- without order IDs on different dates are distinct business objects.
+-- SQLite 3.8.9+ partial-index syntax; both Linux (3.37.2) and Windows
+-- (3.53.1) test-env SQLite versions satisfy this requirement.
+CREATE UNIQUE INDEX IF NOT EXISTS uk_named_commitment
+    ON commitments (contact_id, event_type, business_key)
+    WHERE business_key != '';
 
 CREATE TABLE IF NOT EXISTS commitment_versions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    commitment_id   TEXT NOT NULL,
-    version         INTEGER NOT NULL,
-    confirmed_date  TEXT,
-    proposed_date   TEXT,
-    is_confirmed    INTEGER NOT NULL,
-    source_doc_id   TEXT NOT NULL,
-    source_kind     TEXT NOT NULL,
-    occurred_at     TEXT NOT NULL,
-    recorded_at     TEXT NOT NULL,
-    notes           TEXT NOT NULL DEFAULT '',
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    commitment_id        TEXT NOT NULL,
+    version              INTEGER NOT NULL,
+    confirmed_date       TEXT,
+    prior_confirmed_date TEXT,
+    proposed_date        TEXT,
+    is_confirmed         INTEGER NOT NULL,
+    source_doc_id        TEXT NOT NULL,
+    source_kind          TEXT NOT NULL,
+    occurred_at          TEXT NOT NULL,
+    recorded_at          TEXT NOT NULL,
+    notes                TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (commitment_id) REFERENCES commitments (id)
 );
 
@@ -100,38 +114,42 @@ class LedgerEvent:
     """A business event to apply to the commitment ledger.
 
     Attributes:
-        event_type:      ``'delivery'`` or ``'meeting'``.
-        contact_id:      Canonical ``cid_...`` identifier from the CRM contacts
-                         table.  Rejects bare ULID generator entity IDs.
-        business_key:    A specific identifier such as an order ID or meeting
-                         reference (e.g. ``'ORD-ACME-001'``).  Pass ``''`` when
-                         unknown; the matching rule then considers all commitments
-                         of the same type for this customer.
-        source_doc_id:   ``document_id`` of the source Hindsight retain item that
-                         triggered this event.  Guarantees idempotency.
-        source_kind:     Signal kind of the source document
-                         (e.g. ``'email.sent'``, ``'call.transcript'``).
-        occurred_at:     ISO 8601 datetime string — when the original event
-                         happened (from the source document timestamp).
-        proposed_date:   ISO 8601 date that the customer is *requesting*.
-                         ``None`` when the event carries no date proposal.
-        confirmed_date:  ISO 8601 date *confirmed* by the business.
-                         ``None`` for customer requests (``is_confirmation=False``).
-        is_confirmation: ``True`` when this is a business confirmation
-                         (agent/system says the date is set).  ``False`` for
-                         customer-side reschedule requests.
-        notes:           Optional human-readable annotation.
+        event_type:           ``'delivery'`` or ``'meeting'``.
+        contact_id:           Canonical ``cid_...`` identifier from the CRM.
+        business_key:         Specific identifier such as an order ID or
+                              meeting reference.  ``''`` when unknown.
+        source_doc_id:        ``document_id`` of the source Hindsight item.
+                              Guarantees idempotency per commitment.
+        source_kind:          Signal kind (e.g. ``'email.sent'``,
+                              ``'call.transcript'``).
+        occurred_at:          ISO 8601 datetime — when the original event
+                              happened (from the source document timestamp).
+        proposed_date:        ISO 8601 date that the customer is *requesting*.
+                              ``None`` when the event carries no proposal.
+        confirmed_date:       ISO 8601 date *confirmed* by the business.
+                              ``None`` for customer requests.
+        prior_confirmed_date: The previously-confirmed date this event is
+                              superseding, expressed in ISO 8601.  Used as
+                              cross-channel linking evidence when
+                              ``business_key`` is unavailable: the matcher
+                              finds commitments whose current confirmed date
+                              (or previous prior_confirmed_date) matches this
+                              value.  ``None`` = no prior-date restriction.
+        is_confirmation:      ``True`` when this is a business confirmation.
+                              ``False`` for customer-side proposals.
+        notes:                Optional human-readable annotation.
     """
-    event_type:      str
-    contact_id:      str
-    business_key:    str
-    source_doc_id:   str
-    source_kind:     str
-    occurred_at:     str
-    proposed_date:   Optional[str]
-    confirmed_date:  Optional[str]
-    is_confirmation: bool
-    notes: str = ""
+    event_type:           str
+    contact_id:           str
+    business_key:         str
+    source_doc_id:        str
+    source_kind:          str
+    occurred_at:          str
+    proposed_date:        Optional[str]
+    confirmed_date:       Optional[str]
+    prior_confirmed_date: Optional[str] = None
+    is_confirmation:      bool = True
+    notes:                str = ""
 
 
 # ── Result type ───────────────────────────────────────────────────────────────
@@ -176,27 +194,70 @@ def _validate(event: LedgerEvent) -> Optional[str]:
     return None
 
 
+# ── Date-based evidence helpers ───────────────────────────────────────────────
+
+def _commitment_has_date(
+    conn: sqlite3.Connection,
+    commitment_id: str,
+    date: str,
+) -> bool:
+    """Return True if the commitment's latest version contains *date*.
+
+    Checks ``confirmed_date`` and ``prior_confirmed_date`` of the latest
+    version.  This enables out-of-order arrival to produce consistent state:
+    when a transcript (prior=D, confirmed=D') arrives before an email
+    (confirmed=D), the email can still match the commitment via its stored
+    ``prior_confirmed_date``.
+    """
+    row = conn.execute(
+        "SELECT confirmed_date, prior_confirmed_date"
+        " FROM commitment_versions"
+        " WHERE commitment_id=?"
+        " ORDER BY version DESC LIMIT 1",
+        (commitment_id,),
+    ).fetchone()
+    if not row:
+        return False
+    return date in (row[0], row[1])
+
+
+def _filter_by_date(
+    conn: sqlite3.Connection,
+    candidate_ids: list[str],
+    date: str,
+) -> list[str]:
+    """Return the subset of *candidate_ids* whose latest version contains *date*."""
+    return [cid for cid in candidate_ids if _commitment_has_date(conn, cid, date)]
+
+
 # ── Matching ──────────────────────────────────────────────────────────────────
 
 def _find_matches(conn: sqlite3.Connection, event: LedgerEvent) -> list[str]:
     """Return commitment IDs matching this event's key fields.
 
-    Matching rules:
-
-    *Non-empty* ``business_key``:
+    Named events (``business_key != ''``):
       1. Try exact match on ``(contact_id, event_type, business_key)``.
-      2. If no exact match exists, return all unnamed (``business_key=''``)
-         commitments for the same ``(contact_id, event_type)``.  These are
-         *claim candidates*: when exactly one is returned the caller in
-         :func:`apply_event` will assign the business_key to that commitment
-         (cross-channel linking without a shared order ID in the email source).
-         When multiple unnamed exist the caller returns UNRESOLVED.
+      2. If no exact match, find unnamed (``business_key=''``) commitments.
+         If ``prior_confirmed_date`` is set, filter those by date.
+         0 → caller creates new named commitment.
+         1 → caller claims (assigns business_key + appends version).
+         2+ → UNRESOLVED.
 
-    *Empty* ``business_key``:
-      Return all commitments for the same ``(contact_id, event_type)``.
-      0 → new commitment; 1 → update; 2+ → UNRESOLVED.
+    Unnamed events (``business_key == ''``):
+      Determine a *match_date* as ``prior_confirmed_date ?? confirmed_date``.
+      If match_date is set, filter all same-type commitments by date:
+        0 → caller creates new unnamed commitment (distinct delivery).
+        1 → caller updates the matching commitment.
+        2+ → UNRESOLVED (ambiguous; caller must supply more evidence).
+      If no match_date, return all same-type commitments:
+        0 → create; 1 → update (single unambiguous candidate); 2+ → UNRESOLVED.
+
+    The date filter uses ``_commitment_has_date``, which checks the latest
+    version's ``confirmed_date`` and ``prior_confirmed_date`` so that
+    out-of-order arrival produces the same final state.
     """
     if event.business_key:
+        # 1. Exact match on named key
         exact = conn.execute(
             "SELECT id FROM commitments"
             " WHERE contact_id=? AND event_type=? AND business_key=?",
@@ -204,20 +265,35 @@ def _find_matches(conn: sqlite3.Connection, event: LedgerEvent) -> list[str]:
         ).fetchall()
         if exact:
             return [r[0] for r in exact]
-        # No exact match — look for claimable unnamed commitments
+
+        # 2. Claim candidates: unnamed commitments, optionally filtered by date
         unnamed = conn.execute(
             "SELECT id FROM commitments"
             " WHERE contact_id=? AND event_type=? AND business_key=''",
             (event.contact_id, event.event_type),
         ).fetchall()
-        return [r[0] for r in unnamed]
+        candidates = [r[0] for r in unnamed]
+        if candidates and event.prior_confirmed_date:
+            candidates = _filter_by_date(conn, candidates, event.prior_confirmed_date)
+        return candidates
+
     else:
-        rows = conn.execute(
+        # Unnamed event: find all same-type commitments
+        all_rows = conn.execute(
             "SELECT id FROM commitments"
             " WHERE contact_id=? AND event_type=?",
             (event.contact_id, event.event_type),
         ).fetchall()
-        return [r[0] for r in rows]
+        candidates = [r[0] for r in all_rows]
+        if not candidates:
+            return []
+
+        # Apply date-based evidence if available
+        match_date = event.prior_confirmed_date or event.confirmed_date
+        if match_date:
+            return _filter_by_date(conn, candidates, match_date)
+        # No date evidence: safe only for single candidate
+        return candidates
 
 
 # ── Idempotency ───────────────────────────────────────────────────────────────
@@ -268,13 +344,15 @@ def _write_version(
 ) -> None:
     conn.execute(
         "INSERT INTO commitment_versions"
-        " (commitment_id, version, confirmed_date, proposed_date, is_confirmed,"
-        "  source_doc_id, source_kind, occurred_at, recorded_at, notes)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " (commitment_id, version, confirmed_date, prior_confirmed_date,"
+        "  proposed_date, is_confirmed, source_doc_id, source_kind,"
+        "  occurred_at, recorded_at, notes)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (
             commitment_id,
             version,
             event.confirmed_date,
+            event.prior_confirmed_date,
             event.proposed_date,
             1 if event.is_confirmation else 0,
             event.source_doc_id,
@@ -316,9 +394,7 @@ def apply_event(
 ) -> ApplyResult:
     """Apply one event to the commitment ledger.
 
-    Does NOT commit the connection; the caller must commit (or roll back) after
-    calling this function.  This keeps the write inside the caller's
-    transaction boundary.
+    Does NOT commit the connection; the caller must commit (or roll back).
 
     Args:
         conn:        Open SQLite connection with ledger tables present.
@@ -347,8 +423,8 @@ def apply_event(
             OutcomeKind.UNRESOLVED,
             None,
             None,
-            f"{len(matches)} candidate commitments; event not applied — supply a "
-            "business_key to disambiguate",
+            f"{len(matches)} candidate commitments; supply prior_confirmed_date "
+            "or business_key to disambiguate",
         )
 
     if len(matches) == 1:
@@ -362,9 +438,7 @@ def apply_event(
                 "source_doc_id already applied to this commitment",
             )
         # Cross-channel claim: if the event names a business_key but the matched
-        # commitment is currently unnamed (business_key=''), assign the key now.
-        # This links an email-originated commitment to a later call transcript that
-        # names the specific order, without requiring the email to contain the order ID.
+        # commitment is currently unnamed, assign the business_key now.
         matched_key_row = conn.execute(
             "SELECT business_key FROM commitments WHERE id=?", (commitment_id,)
         ).fetchone()
@@ -403,29 +477,31 @@ def get_current_state(
         return None
 
     latest = conn.execute(
-        "SELECT version, confirmed_date, proposed_date, is_confirmed,"
-        "       source_doc_id, source_kind, occurred_at, recorded_at, notes"
+        "SELECT version, confirmed_date, prior_confirmed_date, proposed_date,"
+        "       is_confirmed, source_doc_id, source_kind, occurred_at,"
+        "       recorded_at, notes"
         " FROM commitment_versions"
         " WHERE commitment_id=?"
-        " ORDER BY version DESC LIMIT 1",
+        " ORDER BY occurred_at DESC, version DESC LIMIT 1",
         (commitment_id,),
     ).fetchone()
 
     return {
-        "id":             row[0],
-        "contact_id":     row[1],
-        "event_type":     row[2],
-        "business_key":   row[3],
-        "created_at":     row[4],
-        "version":        latest[0] if latest else None,
-        "confirmed_date": latest[1] if latest else None,
-        "proposed_date":  latest[2] if latest else None,
-        "is_confirmed":   bool(latest[3]) if latest else False,
-        "source_doc_id":  latest[4] if latest else None,
-        "source_kind":    latest[5] if latest else None,
-        "occurred_at":    latest[6] if latest else None,
-        "recorded_at":    latest[7] if latest else None,
-        "notes":          latest[8] if latest else "",
+        "id":                   row[0],
+        "contact_id":           row[1],
+        "event_type":           row[2],
+        "business_key":         row[3],
+        "created_at":           row[4],
+        "version":              latest[0] if latest else None,
+        "confirmed_date":       latest[1] if latest else None,
+        "prior_confirmed_date": latest[2] if latest else None,
+        "proposed_date":        latest[3] if latest else None,
+        "is_confirmed":         bool(latest[4]) if latest else False,
+        "source_doc_id":        latest[5] if latest else None,
+        "source_kind":          latest[6] if latest else None,
+        "occurred_at":          latest[7] if latest else None,
+        "recorded_at":          latest[8] if latest else None,
+        "notes":                latest[9] if latest else "",
     }
 
 
@@ -435,8 +511,9 @@ def get_all_versions(
 ) -> list[dict]:
     """Return all versions for a commitment, oldest first."""
     rows = conn.execute(
-        "SELECT version, confirmed_date, proposed_date, is_confirmed,"
-        "       source_doc_id, source_kind, occurred_at, recorded_at, notes"
+        "SELECT version, confirmed_date, prior_confirmed_date, proposed_date,"
+        "       is_confirmed, source_doc_id, source_kind, occurred_at,"
+        "       recorded_at, notes"
         " FROM commitment_versions"
         " WHERE commitment_id=?"
         " ORDER BY version ASC",
@@ -444,15 +521,16 @@ def get_all_versions(
     ).fetchall()
     return [
         {
-            "version":        r[0],
-            "confirmed_date": r[1],
-            "proposed_date":  r[2],
-            "is_confirmed":   bool(r[3]),
-            "source_doc_id":  r[4],
-            "source_kind":    r[5],
-            "occurred_at":    r[6],
-            "recorded_at":    r[7],
-            "notes":          r[8],
+            "version":              r[0],
+            "confirmed_date":       r[1],
+            "prior_confirmed_date": r[2],
+            "proposed_date":        r[3],
+            "is_confirmed":         bool(r[4]),
+            "source_doc_id":        r[5],
+            "source_kind":          r[6],
+            "occurred_at":          r[7],
+            "recorded_at":          r[8],
+            "notes":                r[9],
         }
         for r in rows
     ]
@@ -466,9 +544,7 @@ def replay_events(
 ) -> list[ApplyResult]:
     """Apply a list of events in order and commit once.
 
-    Uses a fixed ``recorded_at`` for deterministic replay so that two runs
-    with the same input sequence always produce identical database state.
-
+    Uses a fixed ``recorded_at`` for deterministic replay.
     Returns the list of :class:`ApplyResult` objects, one per event.
     """
     results: list[ApplyResult] = []

@@ -929,7 +929,7 @@ def to_hindsight_items(signals: list[SyntheticSignal]) -> list[dict]:
             # All source/kind/dc/thread/ym tags are preserved unchanged.
             tags = [t for t in tags if not t.startswith("ent:")] + [cid_ent_tag]
             item_entities = [{"text": contact_id, "type": "person"}]
-            item_obs_scopes: list | None = [[cid_ent_tag]]
+            item_obs_scopes: list | None = [[cid_ent_tag, "ym:*"]]
         else:
             item_entities = [{"text": sig.entity_id, "type": "person"}]
             item_obs_scopes = None
