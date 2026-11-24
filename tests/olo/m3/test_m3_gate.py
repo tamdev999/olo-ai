@@ -2962,9 +2962,19 @@ class TestP1TwoCheckpointDelivery:
             return op_id
 
         def _recall(query: str) -> dict:
+            # Derive the entity scope tag from the actual items so the recall
+            # filter works with both CID-scoped items (ent:cid_...) and legacy
+            # ULID-scoped items (ent:ent_01...).  Items built by to_hindsight_items
+            # after the cross-channel scope fix carry ent:cid_... tags; older
+            # or unresolved items still carry the generator ULID.
+            _conf_item = item_map.get(confirm_id, {})
+            _ent_scope = next(
+                (t for t in (_conf_item.get("tags") or []) if t.startswith("ent:")),
+                f"ent:{ent.entity_id}",  # fallback to legacy ULID
+            )
             return hs_client.recall(
                 query,
-                tag_groups=[{"tags": [f"ent:{ent.entity_id}"], "match": "all_strict"}],
+                tag_groups=[{"tags": [_ent_scope], "match": "all_strict"}],
                 max_tokens=8000, trace=True,
                 include_source_facts=True,
                 bank_id=bank,

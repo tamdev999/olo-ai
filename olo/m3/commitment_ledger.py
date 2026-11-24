@@ -179,27 +179,45 @@ def _validate(event: LedgerEvent) -> Optional[str]:
 # ── Matching ──────────────────────────────────────────────────────────────────
 
 def _find_matches(conn: sqlite3.Connection, event: LedgerEvent) -> list[str]:
-    """Return the IDs of commitments that match this event's key fields.
+    """Return commitment IDs matching this event's key fields.
 
-    Matching rule:
-    - Non-empty ``business_key``: exact match on
-      ``(contact_id, event_type, business_key)``.  At most 1 result.
-    - Empty ``business_key``: match all commitments with the same
-      ``(contact_id, event_type)``.  May return 0, 1, or many.
+    Matching rules:
+
+    *Non-empty* ``business_key``:
+      1. Try exact match on ``(contact_id, event_type, business_key)``.
+      2. If no exact match exists, return all unnamed (``business_key=''``)
+         commitments for the same ``(contact_id, event_type)``.  These are
+         *claim candidates*: when exactly one is returned the caller in
+         :func:`apply_event` will assign the business_key to that commitment
+         (cross-channel linking without a shared order ID in the email source).
+         When multiple unnamed exist the caller returns UNRESOLVED.
+
+    *Empty* ``business_key``:
+      Return all commitments for the same ``(contact_id, event_type)``.
+      0 → new commitment; 1 → update; 2+ → UNRESOLVED.
     """
     if event.business_key:
-        rows = conn.execute(
+        exact = conn.execute(
             "SELECT id FROM commitments"
             " WHERE contact_id=? AND event_type=? AND business_key=?",
             (event.contact_id, event.event_type, event.business_key),
         ).fetchall()
+        if exact:
+            return [r[0] for r in exact]
+        # No exact match — look for claimable unnamed commitments
+        unnamed = conn.execute(
+            "SELECT id FROM commitments"
+            " WHERE contact_id=? AND event_type=? AND business_key=''",
+            (event.contact_id, event.event_type),
+        ).fetchall()
+        return [r[0] for r in unnamed]
     else:
         rows = conn.execute(
             "SELECT id FROM commitments"
             " WHERE contact_id=? AND event_type=?",
             (event.contact_id, event.event_type),
         ).fetchall()
-    return [r[0] for r in rows]
+        return [r[0] for r in rows]
 
 
 # ── Idempotency ───────────────────────────────────────────────────────────────
@@ -343,9 +361,25 @@ def apply_event(
                 existing,
                 "source_doc_id already applied to this commitment",
             )
+        # Cross-channel claim: if the event names a business_key but the matched
+        # commitment is currently unnamed (business_key=''), assign the key now.
+        # This links an email-originated commitment to a later call transcript that
+        # names the specific order, without requiring the email to contain the order ID.
+        matched_key_row = conn.execute(
+            "SELECT business_key FROM commitments WHERE id=?", (commitment_id,)
+        ).fetchone()
+        matched_key = matched_key_row[0] if matched_key_row else ""
+        if event.business_key and matched_key == "":
+            conn.execute(
+                "UPDATE commitments SET business_key=? WHERE id=?",
+                (event.business_key, commitment_id),
+            )
+            outcome_msg = "commitment claimed (business_key assigned) and version appended"
+        else:
+            outcome_msg = "version appended"
         version = _next_version(conn, commitment_id)
         _write_version(conn, commitment_id, version, event, recorded_at)
-        return ApplyResult(OutcomeKind.UPDATED, commitment_id, version, "version appended")
+        return ApplyResult(OutcomeKind.UPDATED, commitment_id, version, outcome_msg)
 
     # No match — create a new commitment
     commitment_id = _create_commitment(conn, event, recorded_at)

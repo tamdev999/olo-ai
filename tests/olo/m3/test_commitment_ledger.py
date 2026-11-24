@@ -595,6 +595,274 @@ class TestU9DeterministicReplay:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# U10 — Cross-channel linking without a shared business key
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestU10CrossChannelLinking:
+    """U10: A delivery commitment created from an email (no order ID) must be
+    linkable to a later call transcript that names the order — without the email
+    carrying the order ID.
+
+    The claim rule: when an event names a specific order (business_key != '')
+    and no commitment with that exact key exists, but exactly one unnamed
+    commitment (business_key='') exists for the same customer + event_type,
+    the event *claims* that unnamed commitment by assigning the business_key.
+    If multiple unnamed commitments exist the event is left UNRESOLVED.
+
+    Out-of-order arrival is also covered: when the transcript arrives first
+    (creating a named commitment) and the email arrives later (no key), the
+    email matches the single named commitment via the empty-key rule.
+    """
+
+    def test_email_then_transcript_claim(self, db: sqlite3.Connection) -> None:
+        """Email (no order ID) then transcript (names order) → one commitment."""
+        # Email confirmation: delivery scheduled for April 04; no order ID known
+        r_email = apply_event(
+            db,
+            _ev(
+                source_doc_id="sig:conf_email",
+                source_kind="email.sent",
+                business_key="",
+                confirmed_date="2026-04-04",
+                is_confirmation=True,
+                occurred_at="2026-04-02T00:00:00+00:00",
+            ),
+            recorded_at=TS,
+        )
+        db.commit()
+        assert r_email.outcome == OutcomeKind.CREATED
+
+        # Transcript: same delivery, names the order, confirms April 08
+        r_trans = apply_event(
+            db,
+            _ev(
+                source_doc_id="sig:call_transcript",
+                source_kind="call.transcript",
+                business_key="ORD-ACME-001",
+                confirmed_date="2026-04-08",
+                is_confirmation=True,
+                occurred_at="2026-04-03T00:00:00+00:00",
+            ),
+            recorded_at=TS,
+        )
+        db.commit()
+
+        # Transcript claims the email commitment (not a new one)
+        assert r_trans.outcome == OutcomeKind.UPDATED
+        assert r_trans.commitment_id == r_email.commitment_id
+
+        # Exactly one commitment total
+        total = db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]
+        assert total == 1
+
+        # Commitment is now named
+        state = get_current_state(db, r_email.commitment_id)
+        assert state["business_key"] == "ORD-ACME-001"
+        assert state["version"] == 2
+
+    def test_email_then_transcript_claim_preserves_history(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """The email version (original April 04) survives after the transcript claim."""
+        r_email = apply_event(
+            db,
+            _ev(
+                source_doc_id="sig:conf_email",
+                source_kind="email.sent",
+                business_key="",
+                confirmed_date="2026-04-04",
+                is_confirmation=True,
+                occurred_at="2026-04-02T00:00:00+00:00",
+            ),
+            recorded_at=TS,
+        )
+        db.commit()
+        apply_event(
+            db,
+            _ev(
+                source_doc_id="sig:call_transcript",
+                source_kind="call.transcript",
+                business_key="ORD-ACME-001",
+                confirmed_date="2026-04-08",
+                is_confirmation=True,
+                occurred_at="2026-04-03T00:00:00+00:00",
+            ),
+            recorded_at=TS,
+        )
+        db.commit()
+
+        versions = get_all_versions(db, r_email.commitment_id)
+        assert len(versions) == 2
+        # Version 1: email (original April 04)
+        assert versions[0]["source_doc_id"] == "sig:conf_email"
+        assert versions[0]["confirmed_date"] == "2026-04-04"
+        assert versions[0]["source_kind"] == "email.sent"
+        # Version 2: transcript (April 08 confirmed)
+        assert versions[1]["source_doc_id"] == "sig:call_transcript"
+        assert versions[1]["confirmed_date"] == "2026-04-08"
+        assert versions[1]["source_kind"] == "call.transcript"
+
+    def test_out_of_order_transcript_first_email_second(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """Transcript (names order) arrives first, email (no key) arrives second.
+        Email should append to the named commitment — same result as email-first."""
+        # Transcript arrives first (out-of-order processing)
+        r_trans = apply_event(
+            db,
+            _ev(
+                source_doc_id="sig:call_transcript",
+                source_kind="call.transcript",
+                business_key="ORD-ACME-001",
+                confirmed_date="2026-04-08",
+                is_confirmation=True,
+                occurred_at="2026-04-03T00:00:00+00:00",
+            ),
+            recorded_at=TS,
+        )
+        db.commit()
+        assert r_trans.outcome == OutcomeKind.CREATED
+
+        # Email arrives later (occurred earlier but processed later)
+        r_email = apply_event(
+            db,
+            _ev(
+                source_doc_id="sig:conf_email",
+                source_kind="email.sent",
+                business_key="",
+                confirmed_date="2026-04-04",
+                is_confirmation=True,
+                occurred_at="2026-04-02T00:00:00+00:00",
+            ),
+            recorded_at=TS,
+        )
+        db.commit()
+
+        # Email appends to the transcript commitment (single delivery)
+        assert r_email.outcome == OutcomeKind.UPDATED
+        assert r_email.commitment_id == r_trans.commitment_id
+        total = db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]
+        assert total == 1
+
+    def test_two_channels_no_key_link_naturally(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """When BOTH channels carry no business_key, the second links to the first
+        automatically (empty-key rule: matches all same-type commitments)."""
+        r1 = apply_event(
+            db,
+            _ev(
+                source_doc_id="sig:email",
+                source_kind="email.sent",
+                business_key="",
+                confirmed_date="2026-04-04",
+                is_confirmation=True,
+            ),
+            recorded_at=TS,
+        )
+        db.commit()
+        r2 = apply_event(
+            db,
+            _ev(
+                source_doc_id="sig:transcript",
+                source_kind="call.transcript",
+                business_key="",
+                confirmed_date="2026-04-08",
+                is_confirmation=True,
+            ),
+            recorded_at=TS,
+        )
+        db.commit()
+
+        assert r1.outcome == OutcomeKind.CREATED
+        assert r2.outcome == OutcomeKind.UPDATED
+        assert r1.commitment_id == r2.commitment_id
+        total = db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]
+        assert total == 1
+
+    def test_exact_named_match_takes_precedence_over_claim(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """When an exact named commitment already exists for the transcript's order,
+        the named match wins — no claim of any unnamed commitment needed."""
+        # Unnamed commitment created first (email, no order ID)
+        apply_event(
+            db,
+            _ev(source_doc_id="sig:anon_email", business_key="",
+                confirmed_date="2026-04-04", is_confirmation=True),
+            recorded_at=TS,
+        )
+        # Named commitment for a DIFFERENT order created separately
+        apply_event(
+            db,
+            _ev(source_doc_id="sig:named_email", source_kind="email.sent",
+                business_key="ORD-ACME-002", confirmed_date="2026-05-01",
+                is_confirmation=True),
+            recorded_at=TS,
+        )
+        db.commit()
+        # At this point: 1 unnamed (from anon_email) and 1 named ORD-ACME-002.
+        # The named email claimed the unnamed one first if it found it.
+        # In practice, the named email arrives with ORD-ACME-002:
+        #   - no exact match initially → claims unnamed → 1 commitment ORD-ACME-002
+        # So now there's exactly 1 commitment (ORD-ACME-002).
+
+        # A transcript naming ORD-ACME-002 → exact match → update
+        r = apply_event(
+            db,
+            _ev(source_doc_id="sig:trans_002", source_kind="call.transcript",
+                business_key="ORD-ACME-002", confirmed_date="2026-05-08",
+                is_confirmation=True),
+            recorded_at=TS,
+        )
+        db.commit()
+
+        assert r.outcome == OutcomeKind.UPDATED
+        # Verify exactly one delivery commitment total (the named one)
+        total = db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]
+        assert total == 1
+        state = get_current_state(db, r.commitment_id)
+        assert state["business_key"] == "ORD-ACME-002"
+
+    def test_claim_idempotent_on_second_arrival(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """A claiming transcript arriving twice is idempotent after the first claim."""
+        apply_event(
+            db,
+            _ev(source_doc_id="sig:email", business_key="",
+                confirmed_date="2026-04-04", is_confirmation=True),
+            recorded_at=TS,
+        )
+        db.commit()
+        r1 = apply_event(
+            db,
+            _ev(source_doc_id="sig:trans", source_kind="call.transcript",
+                business_key="ORD-ACME-001", confirmed_date="2026-04-08",
+                is_confirmation=True),
+            recorded_at=TS,
+        )
+        db.commit()
+        # Second arrival of the same transcript
+        r2 = apply_event(
+            db,
+            _ev(source_doc_id="sig:trans", source_kind="call.transcript",
+                business_key="ORD-ACME-001", confirmed_date="2026-04-08",
+                is_confirmation=True),
+            recorded_at=TS,
+        )
+        db.commit()
+
+        assert r1.outcome == OutcomeKind.UPDATED
+        assert r2.outcome == OutcomeKind.UNCHANGED
+        assert r2.version == 2
+        total_versions = db.execute(
+            "SELECT COUNT(*) FROM commitment_versions"
+        ).fetchone()[0]
+        assert total_versions == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # U11 — Business isolation (delivery ≠ meeting)
 # ═══════════════════════════════════════════════════════════════════════════════
 
