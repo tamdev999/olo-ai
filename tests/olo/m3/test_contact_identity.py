@@ -45,6 +45,8 @@ from olo.adapters.contacts import (
     get_identifier_conflicts,
     AUTHORIZED_OPERATORS,
     IdentityResolutionError,
+    OperatorToken,
+    create_operator_token,
 )
 from olo.m3.synthetic.crm_fixture import (
     CRM_CONTACTS,
@@ -1013,7 +1015,7 @@ class TestIdentifierConflictDefectB:
 
         # Explicit resolution: transfer to new owner
         resolved = resolve_identifier_conflict(
-            "phone", "+18001112222", cid_new, "admin", conn
+            "phone", "+18001112222", cid_new, create_operator_token("admin"), conn
         )
         assert resolved >= 1, "Must have resolved at least one conflict"
 
@@ -1025,7 +1027,7 @@ class TestIdentifierConflictDefectB:
 
         # Resolution is idempotent (no duplicate conflict events)
         resolved2 = resolve_identifier_conflict(
-            "phone", "+18001112222", cid_new, "admin", conn
+            "phone", "+18001112222", cid_new, create_operator_token("admin"), conn
         )
         assert resolved2 == 0, "Second resolution call must be a no-op"
 

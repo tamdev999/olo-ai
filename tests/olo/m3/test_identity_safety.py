@@ -35,6 +35,8 @@ from olo.adapters.contacts import (
     get_identifier_conflicts,
     AUTHORIZED_OPERATORS,
     IdentityResolutionError,
+    OperatorToken,
+    create_operator_token,
 )
 from olo.m3.synthetic.crm_fixture import CRM_CONTACTS, get_contact_id_for_email
 from olo.m3.synthetic.generator import ENTITIES
@@ -114,7 +116,7 @@ class TestP1FailClosed:
         assert idx.get(("phone", ALICE_PHONE)) is None
 
         # Admin resolves to Bob
-        resolve_identifier_conflict("phone", ALICE_PHONE, bob_cid, "admin", conn)
+        resolve_identifier_conflict("phone", ALICE_PHONE, bob_cid, create_operator_token("admin"), conn)
 
         # After resolution: phone assigned to Bob only
         idx2, _ = load_contact_index(conn)
@@ -181,7 +183,7 @@ class TestP2ConflictRecording:
         assert n_r1 >= 1, "First dispute must be recorded"
 
         # Resolve to B
-        resolve_identifier_conflict("phone", "+19991112222", cid_b, "admin", conn)
+        resolve_identifier_conflict("phone", "+19991112222", cid_b, create_operator_token("admin"), conn)
         assert len(get_identifier_conflicts(conn, unresolved_only=True)) == 0, (
             "No unresolved conflicts after resolution"
         )
@@ -256,7 +258,7 @@ class TestP3RestrictedResolution:
         """P3: an arbitrary resolved_by string is rejected with IdentityResolutionError."""
         conn, cid_a, cid_b, _ = self._setup_conflict(tmp_path, "p3_unauth")
         with pytest.raises(IdentityResolutionError, match="not an authorized operator"):
-            resolve_identifier_conflict("phone", "+18001234567", cid_b, "anyone", conn)
+            resolve_identifier_conflict("phone", "+18001234567", cid_b, create_operator_token("anyone"), conn)
         # Conflict remains unresolved
         assert len(get_identifier_conflicts(conn, unresolved_only=True)) >= 1
         conn.close()
@@ -265,7 +267,7 @@ class TestP3RestrictedResolution:
         """P3: resolving to a non-claimant contact is rejected."""
         conn, cid_a, cid_b, cid_c = self._setup_conflict(tmp_path, "p3_nonclaim")
         with pytest.raises(IdentityResolutionError, match="not a claimant"):
-            resolve_identifier_conflict("phone", "+18001234567", cid_c, "admin", conn)
+            resolve_identifier_conflict("phone", "+18001234567", cid_c, create_operator_token("admin"), conn)
         # Conflict remains unresolved
         assert len(get_identifier_conflicts(conn, unresolved_only=True)) >= 1
         conn.close()
@@ -273,7 +275,7 @@ class TestP3RestrictedResolution:
     def test_authorized_claimant_succeeds(self, tmp_path: Path) -> None:
         """P3: authorized resolution to a legitimate claimant succeeds."""
         conn, cid_a, cid_b, _ = self._setup_conflict(tmp_path, "p3_ok")
-        resolved = resolve_identifier_conflict("phone", "+18001234567", cid_b, "admin", conn)
+        resolved = resolve_identifier_conflict("phone", "+18001234567", cid_b, create_operator_token("admin"), conn)
         assert resolved >= 1
         idx, _ = load_contact_index(conn)
         assert idx.get(("phone", "+18001234567")) == cid_b
@@ -282,8 +284,8 @@ class TestP3RestrictedResolution:
     def test_repeated_resolution_is_noop(self, tmp_path: Path) -> None:
         """P3: calling resolve twice with same target is a no-op."""
         conn, cid_a, cid_b, _ = self._setup_conflict(tmp_path, "p3_idem")
-        resolve_identifier_conflict("phone", "+18001234567", cid_b, "admin", conn)
-        second = resolve_identifier_conflict("phone", "+18001234567", cid_b, "admin", conn)
+        resolve_identifier_conflict("phone", "+18001234567", cid_b, create_operator_token("admin"), conn)
+        second = resolve_identifier_conflict("phone", "+18001234567", cid_b, create_operator_token("admin"), conn)
         assert second == 0, "Second call with same resolution must return 0"
         conn.close()
 
@@ -293,7 +295,7 @@ class TestP3RestrictedResolution:
         conn_b, cid_a_b, cid_b_b, _ = self._setup_conflict(tmp_path, "p3_biz_b")
 
         # Resolve in biz_a
-        resolve_identifier_conflict("phone", "+18001234567", cid_b_a, "admin", conn_a)
+        resolve_identifier_conflict("phone", "+18001234567", cid_b_a, create_operator_token("admin"), conn_a)
 
         # biz_b's conflict must remain unresolved
         biz_b_conflicts = get_identifier_conflicts(conn_b, unresolved_only=True)

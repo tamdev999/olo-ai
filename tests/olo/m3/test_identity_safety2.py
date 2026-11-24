@@ -40,6 +40,8 @@ from olo.adapters.contacts import (
     PhoneNormalizationError,
     IdentityResolutionError,
     AUTHORIZED_OPERATORS,
+    OperatorToken,
+    create_operator_token,
 )
 from olo.m3.synthetic.crm_fixture import CRM_CONTACTS, get_contact_id_for_email
 
@@ -207,7 +209,7 @@ class TestOwnershipProvenance:
         populate_contacts_from_crm(fix_b, conn, source="crm_b_v1")
 
         # Resolve to B
-        resolve_identifier_conflict("phone", "+19001112222", cid_b, "admin", conn)
+        resolve_identifier_conflict("phone", "+19001112222", cid_b, create_operator_token("admin"), conn)
 
         # History for phone must show:
         # 1. assigned (A, source=crm_a_v1)
@@ -260,7 +262,7 @@ class TestOwnershipProvenance:
             "identifiers": [("phone", ALICE_PHONE_E164)],
         }]
         populate_contacts_from_crm(hijack, conn, source="crm_v2")
-        resolve_identifier_conflict("phone", ALICE_PHONE_E164, bob_cid, "admin", conn)
+        resolve_identifier_conflict("phone", ALICE_PHONE_E164, bob_cid, create_operator_token("admin"), conn)
 
         history = get_identifier_ownership_history(
             conn, identifier_type="phone", identifier_value=ALICE_PHONE_E164
@@ -295,7 +297,7 @@ class TestOwnershipProvenance:
         n_before = len(get_identifier_ownership_history(conn))
 
         with pytest.raises(IdentityResolutionError):
-            resolve_identifier_conflict("phone", "+18005559999", cid_y, "badactor", conn)
+            resolve_identifier_conflict("phone", "+18005559999", cid_y, create_operator_token("badactor"), conn)
 
         n_after = len(get_identifier_ownership_history(conn))
         assert n_before == n_after, "Failed transfer must not add history events"
@@ -315,10 +317,10 @@ class TestOwnershipProvenance:
              "identifiers": [("email", "b@p4.com"), ("phone", "+18001234444")]},
         ]
         populate_contacts_from_crm(fix, conn, source="crm_fix")
-        resolve_identifier_conflict("phone", "+18001234444", cid_b, "admin", conn)
+        resolve_identifier_conflict("phone", "+18001234444", cid_b, create_operator_token("admin"), conn)
         n1 = len(get_identifier_ownership_history(conn))
         # Replay (second call returns 0 — idempotent)
-        resolve_identifier_conflict("phone", "+18001234444", cid_b, "admin", conn)
+        resolve_identifier_conflict("phone", "+18001234444", cid_b, create_operator_token("admin"), conn)
         n2 = len(get_identifier_ownership_history(conn))
         assert n1 == n2, f"Replay must not add history events: {n1} → {n2}"
         conn.close()

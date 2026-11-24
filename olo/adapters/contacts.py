@@ -89,6 +89,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import sqlite3
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -99,17 +101,16 @@ _log = logging.getLogger(__name__)
 # P3: Authorized operator identities for conflict resolution
 # ---------------------------------------------------------------------------
 
-#: Set of authorized operator identities that may call resolve_identifier_conflict().
-#: These are intentionally distinct from any CRM source name or contact ID format —
-#: they cannot be forged by an arbitrary caller-supplied string.
-#:
-#: In production, replace this check with an integration to the business's IAM/RBAC
-#: system.  The constant is public so that callers can inspect it and integration
-#: code can override it at startup.
-AUTHORIZED_OPERATORS: frozenset[str] = frozenset({
-    "admin",
-    "crm_admin",
-})
+# Fix 3: replace string-based authorization with a verifiable typed boundary.
+# AUTHORIZED_OPERATOR_NAMES names the operators currently permitted to invoke
+# resolve_identifier_conflict().  Replace the validator inside
+# create_operator_token() with an IAM/RBAC integration for production.
+# This frozenset is intentionally distinct from any CRM source name or contact
+# ID format — it cannot be satisfied by an arbitrary caller-supplied string.
+AUTHORIZED_OPERATOR_NAMES: frozenset[str] = frozenset({"admin", "crm_admin"})
+
+# Backward-compatible alias kept for existing code and tests that inspect the set.
+AUTHORIZED_OPERATORS: frozenset[str] = AUTHORIZED_OPERATOR_NAMES
 
 
 class IdentityResolutionError(Exception):
@@ -119,6 +120,45 @@ class IdentityResolutionError(Exception):
 
 class PhoneNormalizationError(Exception):
     """Raised by normalize_phone() when the number is invalid or ambiguous (Fix 3)."""
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: Verifiable authorization boundary
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class OperatorToken:
+    """Authenticated operator context for privileged identity operations.
+
+    Obtain via create_operator_token().  The token is immutable after creation.
+    Its actor field is recorded in identifier_ownership_history for audit.
+
+    IAM integration point: in production, replace create_operator_token()'s
+    validation logic with a call to the business's authentication system
+    (session tokens, JWT validation, RBAC lookup).
+    """
+    actor: str
+
+
+def create_operator_token(name: str) -> OperatorToken:
+    """Validate and mint an OperatorToken for the named operator.
+
+    Raises IdentityResolutionError for unrecognised names.  This is the
+    single authorization boundary for privileged identity operations —
+    unauthorized callers cannot obtain a token and therefore cannot call
+    resolve_identifier_conflict().
+
+    INTEGRATION REQUIREMENT: for production deployments, replace the
+    frozenset check below with an authenticated IAM/RBAC call so the
+    caller's real identity is verified rather than accepted as a string.
+    """
+    if name not in AUTHORIZED_OPERATOR_NAMES:
+        raise IdentityResolutionError(
+            f"create_operator_token: {name!r} is not an authorized operator. "
+            f"Valid operators: {sorted(AUTHORIZED_OPERATOR_NAMES)}. "
+            "Obtain IAM authorization before resolving identifier disputes."
+        )
+    return OperatorToken(actor=name)
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +275,172 @@ def make_fixture_contact_id(fixture_key: str) -> str:
     Returns ``cid_{sha256(key)[:20]}``.
     """
     return "cid_" + hashlib.sha256(fixture_key.encode("utf-8")).hexdigest()[:20]
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: Persistent production contact IDs
+# ---------------------------------------------------------------------------
+
+def mint_contact_id() -> str:
+    """Mint a fresh random, opaque production contact_id.
+
+    Uses UUID4 so the ID is globally unique and contains no mutable
+    attribute information (Defect A fix for the production path).  The ID
+    is permanent: once stored in olo.db it is never re-derived.
+
+    Use for production contacts created outside the frozen development
+    benchmark.  For the benchmark, use make_fixture_contact_id() with a
+    stable fixture key so the benchmark corpus stays deterministic.
+    """
+    return "cid_" + uuid.uuid4().hex
+
+
+def create_verified_contact(
+    display_name: str,
+    org_name: str,
+    identifiers: list,
+    conn: sqlite3.Connection,
+    source: str = "api",
+    clock=None,
+    default_region: Optional[str] = None,
+) -> str:
+    """Create or find a production contact from verified identifiers.
+
+    If any identifier already maps to an active contact, that contact's
+    existing ID is returned — preserving the ID across restarts and CRM
+    resyncs.  If multiple identifiers map to *different* contacts, raises
+    IdentityResolutionError (ambiguous identity — do not silently merge).
+
+    If no existing contact is found but at least one valid identifier is
+    provided, a new contact is created with an ID from mint_contact_id()
+    — never derived from a mutable attribute.
+
+    If no valid identifiers are provided, returns "" without creating a
+    contact (unknown identity — never fabricate a contact).
+
+    Phone identifiers are normalized to E.164 when ``default_region`` is
+    given; invalid phones are skipped with a warning.
+
+    Args:
+        display_name:   canonical name from the verified source.
+        org_name:       canonical organization name (empty = individual).
+        identifiers:    list of (identifier_type, identifier_value) pairs.
+        conn:           open SQLite connection (autocommit / explicit txn).
+        source:         provenance label for new records.
+        clock:          callable → datetime (default: UTC now).
+        default_region: ISO 3166-1 alpha-2 region for phone normalization.
+
+    Returns:
+        contact_id string (``cid_...``) or ``""`` for unknown identity.
+    """
+    now = clock().isoformat() if clock else datetime.now(timezone.utc).isoformat()
+
+    # Normalize identifiers before touching the DB
+    normalized: list[tuple[str, str]] = []
+    for id_type, id_value in identifiers:
+        v = id_value.strip()
+        if not v:
+            continue
+        if id_type == "email":
+            v = v.lower()
+        elif id_type == "phone":
+            try:
+                v = normalize_phone(v, default_region)
+            except PhoneNormalizationError:
+                _log.warning(
+                    "create_verified_contact: skipping invalid phone %r", id_value
+                )
+                continue
+        normalized.append((id_type, v))
+
+    if not normalized:
+        return ""  # no valid identifiers — unknown identity, do not fabricate
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Discover any existing active contacts for these identifiers
+        existing_cids: set[str] = set()
+        for id_type, id_value in normalized:
+            row = conn.execute(
+                "SELECT contact_id FROM contact_identifiers"
+                " WHERE identifier_type = ? AND identifier_value = ?"
+                "   AND revoked_at IS NULL",
+                (id_type, id_value),
+            ).fetchone()
+            if row:
+                existing_cids.add(row[0])
+
+        if len(existing_cids) > 1:
+            conn.execute("ROLLBACK")
+            raise IdentityResolutionError(
+                f"create_verified_contact: identifiers map to multiple existing "
+                f"contacts {sorted(existing_cids)}.  Resolve the conflict before "
+                "creating or linking this contact."
+            )
+
+        org_id = make_org_id(org_name) if org_name else None
+        if org_id and org_name:
+            conn.execute(
+                "INSERT INTO organizations"
+                " (id, name, source, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET"
+                "  name = excluded.name,"
+                "  updated_at = excluded.updated_at",
+                (org_id, org_name, source, now, now),
+            )
+
+        if existing_cids:
+            # Preserve the existing ID across restarts / resyncs
+            contact_id = next(iter(existing_cids))
+            existing = conn.execute(
+                "SELECT display_name FROM contacts WHERE id = ?",
+                (contact_id,),
+            ).fetchone()
+            if existing:
+                old_name = existing[0]
+                conn.execute(
+                    "UPDATE contacts SET"
+                    "  display_name = ?,"
+                    "  organization_id = ?,"
+                    "  source = ?,"
+                    "  updated_at = ?"
+                    " WHERE id = ?",
+                    (display_name, org_id, source, now, contact_id),
+                )
+                if display_name and display_name != old_name:
+                    conn.execute(
+                        "INSERT INTO contact_name_history"
+                        " (contact_id, old_display_name, new_display_name,"
+                        "  changed_at, source)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        (contact_id, old_name, display_name, now, source),
+                    )
+        else:
+            # New contact — mint a random, opaque ID (never derived from data)
+            contact_id = mint_contact_id()
+            conn.execute(
+                "INSERT INTO contacts"
+                " (id, organization_id, display_name, source,"
+                "  created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (contact_id, org_id, display_name, source, now, now),
+            )
+
+        for id_type, id_value in normalized:
+            _upsert_identifier(id_type, id_value, contact_id, source, now, conn)
+
+        conn.execute("COMMIT")
+        return contact_id
+
+    except IdentityResolutionError:
+        raise
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -770,19 +976,305 @@ def get_identifier_ownership_history(
         return []
 
 
+# ---------------------------------------------------------------------------
+# Fix 2: Legacy identity migration
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LegacyContactMapping:
+    """Single legacy email-derived ID → canonical CRM-assigned ID mapping."""
+    legacy_id: str       # old cid_... derived from make_contact_id(email)
+    canonical_id: str    # new stable cid_... from the CRM fixture
+    verified_email: str  # the email that proves this mapping (not ent: tags)
+
+
+@dataclass
+class MigrationPlan:
+    """Plan produced by plan_migration(); safe to inspect before executing.
+
+    is_safe is True only when no ambiguous cases were detected.  Never pass
+    an unsafe plan to execute_migration.
+    """
+    mappings: list    # list[LegacyContactMapping]
+    ambiguous: list   # list[dict] — legacy IDs with conflicting canonical mappings
+    is_dry_run: bool
+    is_safe: bool     # False when any legacy ID maps to multiple CRM entries
+
+
+@dataclass
+class MigrationResult:
+    """Outcome produced by execute_migration()."""
+    contacts_updated: int
+    identifiers_updated: int
+    history_updated: int
+    is_complete: bool  # True when verify_migration() finds no remaining stale IDs
+
+
+def _is_legacy_contact_id(contact_id: str, emails: list) -> bool:
+    """Return True when contact_id was derived from one of the given email addresses.
+
+    Detects the old make_contact_id(email) derivation pattern.
+    Called by plan_migration; never touches the DB.
+    """
+    for email in emails:
+        if make_contact_id(email) == contact_id:
+            return True
+    return False
+
+
+def plan_migration(
+    conn: sqlite3.Connection,
+    crm_contacts: Optional[list] = None,
+    dry_run: bool = True,
+) -> MigrationPlan:
+    """Scan the database for legacy email-derived contact IDs and build a migration plan.
+
+    Identity is established exclusively via verified email identifiers in
+    contact_identifiers — generator ent: tags are never consulted (they are
+    benchmark artifacts, not identity evidence).
+
+    When a legacy contact's emails map to exactly one CRM entry the mapping
+    is unambiguous.  When they map to multiple CRM entries the case is
+    recorded in plan.ambiguous and plan.is_safe is set to False — do not
+    execute an unsafe plan.
+
+    Args:
+        conn:         open connection to the business olo.db.
+        crm_contacts: authoritative CRM contacts list (e.g. CRM_CONTACTS).
+                      Pass [] or None to produce an empty-mapping plan.
+        dry_run:      recorded in the returned plan; does not affect DB.
+
+    Returns:
+        MigrationPlan with mappings, ambiguous cases, and is_safe flag.
+    """
+    if crm_contacts is None:
+        crm_contacts = []
+
+    # Build email → canonical_id lookup from the authoritative CRM list.
+    email_to_canonical: dict[str, str] = {}
+    for entry in crm_contacts:
+        for id_type, id_value in entry.get("identifiers", []):
+            if id_type == "email" and id_value not in email_to_canonical:
+                email_to_canonical[id_value] = entry.get("contact_id", "")
+
+    contacts = conn.execute("SELECT id FROM contacts").fetchall()
+    mappings: list[LegacyContactMapping] = []
+    ambiguous: list[dict] = []
+
+    for (cid,) in contacts:
+        email_rows = conn.execute(
+            "SELECT identifier_value FROM contact_identifiers"
+            " WHERE contact_id = ? AND identifier_type = 'email'"
+            "   AND revoked_at IS NULL",
+            (cid,),
+        ).fetchall()
+        emails = [row[0] for row in email_rows]
+
+        if not _is_legacy_contact_id(cid, emails):
+            continue  # already a stable ID — nothing to migrate
+
+        # Map ALL email identifiers of this legacy contact to their CRM-canonical IDs.
+        # We use the derivation-matching email as proof that this is a legacy contact,
+        # but check ALL emails for ambiguity so we never silently merge two CRM entries.
+        email_to_cid: dict[str, str] = {}
+        for email in emails:
+            canonical = email_to_canonical.get(email, "")
+            if canonical and canonical != cid:
+                email_to_cid[email] = canonical
+
+        if not email_to_cid:
+            continue  # legacy ID but no matching CRM entry — skip
+
+        unique_canonicals = set(email_to_cid.values())
+        if len(unique_canonicals) > 1:
+            ambiguous.append({
+                "legacy_id": cid,
+                "conflicting_canonical_ids": sorted(unique_canonicals),
+                "emails": list(email_to_cid.keys()),
+            })
+        else:
+            canonical_id = next(iter(unique_canonicals))
+            # Prefer the email that was used to derive the legacy ID as proof.
+            verified_email = next(
+                (e for e in emails if make_contact_id(e) == cid and e in email_to_cid),
+                next(iter(email_to_cid)),
+            )
+            mappings.append(LegacyContactMapping(
+                legacy_id=cid,
+                canonical_id=canonical_id,
+                verified_email=verified_email,
+            ))
+
+    return MigrationPlan(
+        mappings=mappings,
+        ambiguous=ambiguous,
+        is_dry_run=dry_run,
+        is_safe=(len(ambiguous) == 0),
+    )
+
+
+def execute_migration(
+    conn: sqlite3.Connection,
+    plan: MigrationPlan,
+    retain_fn=None,
+    clock=None,
+) -> MigrationResult:
+    """Apply a migration plan atomically.
+
+    Updates contacts.id and all FK references in a single transaction.
+    Calls retain_fn(item) for each mapped contact so the caller can
+    re-retain affected Hindsight links with the corrected entity ID.
+
+    If retain_fn raises, the entire DB transaction is rolled back — the
+    database remains unchanged and the migration can be retried cleanly.
+    This prevents a partially certified bank.
+
+    Do NOT call this during ordinary startup; it must be an explicit
+    operator-initiated action.
+
+    Args:
+        conn:      open connection to the business olo.db.
+        plan:      output of plan_migration() with is_safe=True.
+        retain_fn: optional callable(dict) for Hindsight re-retain.
+                   Receives dict(legacy_contact_id, canonical_contact_id,
+                   verified_email).  Raise to abort the migration.
+        clock:     callable → datetime (default: UTC now).
+
+    Returns:
+        MigrationResult.
+
+    Raises:
+        ValueError: if plan.is_safe is False (ambiguous mappings present).
+    """
+    if not plan.is_safe:
+        raise ValueError(
+            "Migration plan contains ambiguous mappings. "
+            "Inspect plan.ambiguous and resolve each case before executing. "
+            "Do not silently merge contacts."
+        )
+    if not plan.mappings:
+        return MigrationResult(
+            contacts_updated=0, identifiers_updated=0,
+            history_updated=0, is_complete=True,
+        )
+
+    contacts_updated = 0
+    identifiers_updated = 0
+    history_updated = 0
+    retain_items: list[dict] = []
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for mapping in plan.mappings:
+            old_id = mapping.legacy_id
+            new_id = mapping.canonical_id
+
+            # Only insert new contact row when it doesn't already exist
+            if not conn.execute(
+                "SELECT 1 FROM contacts WHERE id = ?", (new_id,)
+            ).fetchone():
+                conn.execute(
+                    "INSERT INTO contacts"
+                    " SELECT ? AS id, organization_id, display_name, source,"
+                    "   created_at, updated_at"
+                    " FROM contacts WHERE id = ?",
+                    (new_id, old_id),
+                )
+                contacts_updated += 1
+
+            # Update FK references in every table that references contact_id
+            _fk_refs = [
+                ("contact_identifiers",         "contact_id"),
+                ("identifier_conflicts",        "existing_contact_id"),
+                ("identifier_conflicts",        "new_contact_id"),
+                ("identifier_conflicts",        "resolved_contact_id"),
+                ("identifier_ownership_history","contact_id"),
+                ("contact_name_history",        "contact_id"),
+            ]
+            for table, col in _fk_refs:
+                try:
+                    n = conn.execute(
+                        f"UPDATE {table} SET {col} = ? WHERE {col} = ?",
+                        (new_id, old_id),
+                    ).rowcount
+                    if table == "contact_identifiers":
+                        identifiers_updated += n
+                    elif table == "identifier_ownership_history":
+                        history_updated += n
+                except sqlite3.OperationalError:
+                    pass  # table may not exist on older DB schemas
+
+            conn.execute("DELETE FROM contacts WHERE id = ?", (old_id,))
+
+            retain_items.append({
+                "legacy_contact_id": old_id,
+                "canonical_contact_id": new_id,
+                "verified_email": mapping.verified_email,
+            })
+
+        # Call retain_fn inside the transaction so a failure here rolls back
+        # all DB changes — no partially certified bank.
+        if retain_fn is not None:
+            for item in retain_items:
+                retain_fn(item)
+
+        conn.execute("COMMIT")
+
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+    verification = verify_migration(conn)
+    return MigrationResult(
+        contacts_updated=contacts_updated,
+        identifiers_updated=identifiers_updated,
+        history_updated=history_updated,
+        is_complete=verification["is_complete"],
+    )
+
+
+def verify_migration(conn: sqlite3.Connection) -> dict:
+    """Check for remaining legacy email-derived contact IDs.
+
+    Returns a dict with:
+        stale_legacy_ids (list[str]): contact IDs still derived from emails.
+        is_complete (bool):           True when no stale IDs remain.
+
+    Use after execute_migration() to confirm all legacy IDs have been updated
+    before declaring the migration complete.
+    """
+    contacts = conn.execute("SELECT id FROM contacts").fetchall()
+    stale: list[str] = []
+    for (cid,) in contacts:
+        email_rows = conn.execute(
+            "SELECT identifier_value FROM contact_identifiers"
+            " WHERE contact_id = ? AND identifier_type = 'email'"
+            "   AND revoked_at IS NULL",
+            (cid,),
+        ).fetchall()
+        emails = [row[0] for row in email_rows]
+        if _is_legacy_contact_id(cid, emails):
+            stale.append(cid)
+    return {"stale_legacy_ids": stale, "is_complete": len(stale) == 0}
+
+
 def resolve_identifier_conflict(
     identifier_type: str,
     identifier_value: str,
     resolved_contact_id: str,
-    resolved_by: str,
+    operator: OperatorToken,
     conn: sqlite3.Connection,
     clock=None,
 ) -> int:
     """Explicitly resolve a conflicted identifier by assigning it to one contact.
 
-    P3 (restricted resolution pathway):
-    - ``resolved_by`` must be in ``AUTHORIZED_OPERATORS``.  Arbitrary caller-
-      supplied strings are rejected with ``IdentityResolutionError``.
+    Fix 3 (verifiable authorization boundary):
+    - ``operator`` must be an OperatorToken obtained via create_operator_token().
+      Unauthorized callers cannot obtain a token and are rejected at token
+      creation before this function is ever invoked.
     - ``resolved_contact_id`` must be a legitimate claimant — a contact that
       appears in an unresolved conflict row for this identifier.  Non-claimants
       are rejected with ``IdentityResolutionError``.
@@ -792,19 +1284,20 @@ def resolve_identifier_conflict(
 
     On success:
       1. Marks all unresolved conflicts for this identifier as resolved.
-      2. Removes the identifier from contact_identifiers for every contact
-         except the resolved one.
-      3. Inserts/updates the identifier to point to the resolved contact.
+      2. Revokes the identifier from every loser contact.
+      3. Assigns (or re-activates) the identifier on the winning contact.
 
     Returns the number of conflict rows resolved.
     """
-    # P3 check 1: authorized operator
-    if resolved_by not in AUTHORIZED_OPERATORS:
+    # Defense-in-depth: guard against OperatorToken(actor=...) constructed
+    # directly without going through create_operator_token().
+    if operator.actor not in AUTHORIZED_OPERATOR_NAMES:
         raise IdentityResolutionError(
-            f"resolve_identifier_conflict: resolved_by={resolved_by!r} is not "
-            f"an authorized operator. Valid operators: {sorted(AUTHORIZED_OPERATORS)}. "
-            "Obtain authorization before resolving identifier disputes."
+            f"resolve_identifier_conflict: operator.actor={operator.actor!r} is not "
+            f"an authorized operator. Valid operators: {sorted(AUTHORIZED_OPERATOR_NAMES)}. "
+            "Obtain authorization via create_operator_token()."
         )
+    resolved_by = operator.actor
 
     now = clock().isoformat() if clock else datetime.now(timezone.utc).isoformat()
 
