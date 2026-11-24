@@ -35,13 +35,20 @@ import pytest
 
 from olo.adapters.contacts import (
     make_contact_id,
+    make_fixture_contact_id,
     make_org_id,
     migrate_contacts,
     populate_contacts_from_crm,
     load_contact_index,
     resolve_contact_from_signal,
+    resolve_identifier_conflict,
+    get_identifier_conflicts,
 )
-from olo.m3.synthetic.crm_fixture import CRM_CONTACTS
+from olo.m3.synthetic.crm_fixture import (
+    CRM_CONTACTS,
+    get_contact_id_for_email,
+    get_contact_id_for_phone,
+)
 from olo.m3.synthetic.generator import ENTITIES, generate_timeline
 from olo.m3.feeder import populate_olo_db, build_hindsight_items
 from olo.signals import NormalizedSignal, ContentBlob
@@ -177,8 +184,8 @@ class TestTwoEmailsOneContact:
             f"Both emails must map to the same contact_id. "
             f"primary={cid_primary!r}, alt={cid_alt!r}"
         )
-        assert cid_primary == make_contact_id(ALICE_EMAIL), (
-            "contact_id must equal make_contact_id(canonical_email)"
+        assert cid_primary == get_contact_id_for_email(ALICE_EMAIL), (
+            "contact_id must be the fixture-defined stable ID for alice's email"
         )
 
     def test_alt_email_signal_resolves_to_alice(self) -> None:
@@ -191,7 +198,7 @@ class TestTwoEmailsOneContact:
             conn.close()
         alt_signal = _email_received("alt_email_sig", "Alice", ALICE_ALT_EMAIL)
         cid = resolve_contact_from_signal("email.received", alt_signal.payload, idx)
-        assert cid == make_contact_id(ALICE_EMAIL), (
+        assert cid == get_contact_id_for_email(ALICE_EMAIL), (
             f"Alt email signal must resolve to Alice's contact_id, got {cid!r}"
         )
 
@@ -211,7 +218,7 @@ class TestAllConnectorsSameEntity:
         populate_olo_db(tl, db)
         items = build_hindsight_items(db)
 
-        alice_cid = make_contact_id(ALICE_EMAIL)
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
         alice_entity_id = ENTITIES[0].entity_id  # ULID (for tag lookup)
 
         email_cids, cal_cids, call_cids, inv_cids = set(), set(), set(), set()
@@ -253,8 +260,8 @@ class TestTwoEmployeesOneOrg:
         conn = _db(tmp_path, "t3")
         populate_contacts_from_crm(CRM_CONTACTS, conn, source="crm_fixture")
 
-        alice_cid = make_contact_id(ALICE_EMAIL)
-        dan_cid   = make_contact_id(DAN_EMAIL)
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
+        dan_cid   = make_fixture_contact_id("crm:v1:dan_park:acme")
         acme_oid  = make_org_id("Acme Corp")
 
         # Different contact_ids
@@ -315,7 +322,7 @@ class TestForgedIdentity:
         forged_item = items.get("sig:mallory_forged")
         assert forged_item is not None, "Forged call must produce an item"
         forged_entity = (forged_item.get("entities") or [{}])[0].get("text", "")
-        alice_cid = make_contact_id(ALICE_EMAIL)
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
 
         assert forged_entity != alice_cid, (
             f"Forged call must NOT link to Alice's contact_id={alice_cid!r}. "
@@ -330,7 +337,7 @@ class TestForgedIdentity:
         """Test 5: Forged call's customer_name='Mallory Imposter' cannot rename Alice."""
         conn, db_path = self._build_forged_corpus(tmp_path)
         _, contact_info = load_contact_index(conn)
-        alice_cid = make_contact_id(ALICE_EMAIL)
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
         display_name, _ = contact_info.get(alice_cid, ("", ""))
         conn.close()
 
@@ -374,7 +381,7 @@ class TestLegitimateNameUpdate:
         ]
         populate_contacts_from_crm(updated, conn, source="crm_update_v2")
 
-        alice_cid = make_contact_id(ALICE_EMAIL)
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
 
         # Current name must reflect the update
         new_name = conn.execute(
@@ -418,44 +425,62 @@ class TestUnresolvedSignals:
         )
 
     def test_ambiguous_phone_unassigned(self, tmp_path: Path) -> None:
-        """Test 8: Phone mapped to >1 contact remains unassigned (conflict)."""
+        """Test 8: Phone mapped to >1 contact is detected as a conflict (Defect B).
+
+        After the Defect B repair, the phone is NOT silently reassigned.
+        Instead, a conflict is recorded and the identifier is excluded from
+        automatic attribution until explicitly resolved.
+        """
         conn = _db(tmp_path, "t8")
         # Register the same phone for two different contacts
+        cid_a = make_fixture_contact_id("test:person_a")
+        cid_b = make_fixture_contact_id("test:person_b")
         ambiguous_fixture = [
-            {**CRM_CONTACTS[0],
+            {
+             "contact_id": cid_a,
              "canonical_email": "person_a@example.com",
              "display_name": "Person A",
              "organization_name": "Org A",
              "identifiers": [("email", "person_a@example.com"), ("phone", "+18005550000")]},
-            {**CRM_CONTACTS[1],
+            {
+             "contact_id": cid_b,
              "canonical_email": "person_b@example.com",
              "display_name": "Person B",
              "organization_name": "Org B",
              "identifiers": [("email", "person_b@example.com"), ("phone", "+18005550000")]},
         ]
-        # In contact_identifiers, (phone, +18005550000) can only map to ONE contact
-        # (PRIMARY KEY constraint).  When a second contact claims the same phone,
-        # the fixture loader overwrites the first mapping → ambiguity by design.
-        # Production behavior: the last-registered CRM record wins; signal gets that cid.
-        # This test simply verifies that at most one contact can own a phone.
+        # Defect B repair: phone conflict is DETECTED and RECORDED.
+        # The phone is excluded from automatic attribution — both contacts
+        # keep their own email identifiers.
         populate_contacts_from_crm(ambiguous_fixture, conn, source="crm_fixture")
         idx, _ = _idx(conn)
-        conn.close()
 
+        # The conflicted phone must NOT resolve to either contact
         ambiguous_call = _call("ambig_call", "+18005550000")
         cid = resolve_contact_from_signal("call.transcript", ambiguous_call.payload, idx)
-        # With conflict-on-duplicate, only one contact owns the phone.
-        # The resolved cid is predictable (last writer wins in UPSERT).
-        # The important property: exactly 0 or 1 contact is returned, never multiple.
-        assert cid == "" or cid.startswith("cid_"), (
-            f"Ambiguous phone must resolve to 0 or 1 contact, got {cid!r}"
+        # First registrant (person_a) wins; new claim from person_b is refused.
+        # The phone resolves to person_a's contact_id.
+        assert cid == cid_a, (
+            f"First registrant must keep the phone after conflict. "
+            f"Expected {cid_a!r}, got {cid!r}. "
+            "Defect B repair: new claims FAIL (fail-closed), original owner keeps identifier."
         )
-        # For this test, demonstrate that an email without ambiguity is unaffected
+
+        # A conflict must be recorded (person_b's claim was refused)
+        conflicts = get_identifier_conflicts(conn, unresolved_only=True)
+        assert any(c["identifier_type"] == "phone" and c["identifier_value"] == "+18005550000"
+                   for c in conflicts), (
+            f"A conflict for the phone must be recorded. Got: {conflicts}"
+        )
+
+        # Unambiguous emails are unaffected by the phone conflict
         email_call_a = _email_received("email_a", "Person A", "person_a@example.com")
-        cid_a = resolve_contact_from_signal("email.received", email_call_a.payload, idx)
-        assert cid_a == make_contact_id("person_a@example.com"), (
-            "Email resolution must not be affected by phone ambiguity"
+        cid_resolved = resolve_contact_from_signal("email.received", email_call_a.payload, idx)
+        assert cid_resolved == cid_a, (
+            f"Email resolution must not be affected by phone conflict. "
+            f"Expected {cid_a!r}, got {cid_resolved!r}"
         )
+        conn.close()
 
     def test_no_identifiers_unassigned(self, tmp_path: Path) -> None:
         """A signal with no recognizable source identifiers remains unassigned."""
@@ -498,8 +523,8 @@ class TestEntTagIndependence:
             f"Removing ent: tags must not change resolved contact_id. "
             f"with_tag={cid_with!r}, without_tag={cid_without!r}"
         )
-        assert cid_with == make_contact_id(ALICE_EMAIL), (
-            "Resolved contact_id must equal make_contact_id(alice_email)"
+        assert cid_with == get_contact_id_for_email(ALICE_EMAIL), (
+            "Resolved contact_id must be Alice's fixture-defined stable ID"
         )
 
 
@@ -713,7 +738,7 @@ class TestLiveEntityLinks:
         populate_olo_db(tl, db)
         items = build_hindsight_items(db)
 
-        alice_cid = make_contact_id(ALICE_EMAIL)
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
         alice_items = [i for i in items if
                        (i.get("entities") or [{}])[0].get("text") == alice_cid][:1]
         assert alice_items, "Must have at least one Alice item with cid_ entity link"
@@ -746,6 +771,400 @@ class TestLiveEntityLinks:
             assert found or len(hits) > 0, (
                 f"Entity-scoped recall with cid_ entity link must return results. "
                 f"contact_id={alice_cid!r}, hits={len(hits)}"
+            )
+        finally:
+            try:
+                client.delete_bank(bank_id)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Defect A tests: stable contact ID across email changes
+# ---------------------------------------------------------------------------
+
+class TestContactIdStabilityDefectA:
+    """Defect A repair: contact_id is now fixture-assigned and never changes."""
+
+    def test_alice_cid_is_fixture_defined_not_email_derived(self) -> None:
+        """contact_id must be the fixture-assigned stable ID, not sha256(email)."""
+        from olo.adapters.contacts import make_contact_id
+        alice_fixture_cid = get_contact_id_for_email(ALICE_EMAIL)
+        alice_email_cid   = make_contact_id(ALICE_EMAIL)  # old deprecated derivation
+        assert alice_fixture_cid != alice_email_cid, (
+            "Fixture-defined contact_id must differ from the deprecated "
+            "email-derived cid_. The ID must not change when email changes."
+        )
+        assert alice_fixture_cid.startswith("cid_"), (
+            f"Fixture contact_id must have cid_ prefix, got {alice_fixture_cid!r}"
+        )
+
+    def test_primary_email_change_preserves_contact_id(self, tmp_path: Path) -> None:
+        """Test 1 (Defect A): Alice changes her primary email; contact_id stays the same."""
+        conn = _db(tmp_path, "defA_1")
+        # Initial registration
+        populate_contacts_from_crm(CRM_CONTACTS, conn, source="crm_fixture")
+        alice_cid_before = get_contact_id_for_email(ALICE_EMAIL)
+
+        # Simulate a CRM update: Alice's canonical email changes.
+        # In the new model, the fixture_key (hence contact_id) does NOT change.
+        # We just ADD the new email as an additional identifier.
+        new_email = "alice.chen-wong@acme-corp.example"
+        updated_fixture = []
+        for entry in CRM_CONTACTS:
+            if entry["contact_id"] == alice_cid_before:
+                new_ids = list(entry["identifiers"]) + [("email", new_email)]
+                updated_fixture.append({**entry, "identifiers": new_ids})
+            else:
+                updated_fixture.append(entry)
+        populate_contacts_from_crm(updated_fixture, conn, source="crm_update_v2")
+
+        # contact_id must be unchanged
+        idx, info = load_contact_index(conn)
+        old_cid_resolve = idx.get(("email", ALICE_EMAIL))
+        new_cid_resolve = idx.get(("email", new_email))
+
+        assert old_cid_resolve == alice_cid_before, (
+            f"Original email must still resolve to alice's contact_id. "
+            f"Got {old_cid_resolve!r}"
+        )
+        assert new_cid_resolve == alice_cid_before, (
+            f"New email must also resolve to alice's (unchanged) contact_id. "
+            f"Got {new_cid_resolve!r}"
+        )
+
+        # contact record count: exactly one Alice (no duplicate)
+        n_alice = conn.execute(
+            "SELECT count(*) FROM contacts WHERE id = ?", (alice_cid_before,)
+        ).fetchone()[0]
+        assert n_alice == 1, (
+            f"Must be exactly one Alice contact record (no duplicate). Got {n_alice}"
+        )
+        conn.close()
+
+    def test_existing_records_retain_contact_association(self, tmp_path: Path) -> None:
+        """Test 2 (Defect A): Old email, calendar, call and invoice records keep their cid."""
+        tl = generate_timeline()
+        db = tmp_path / "defA_2" / "olo.db"
+        db.parent.mkdir(parents=True)
+        populate_olo_db(tl, db)
+        items_before = build_hindsight_items(db)
+
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
+
+        # Simulate updating the fixture (adding a new email, NOT changing contact_id)
+        new_email = "alice.new@acme-corp.example"
+        updated_fixture = []
+        for entry in CRM_CONTACTS:
+            if entry["contact_id"] == alice_cid:
+                updated_fixture.append({**entry,
+                    "identifiers": list(entry["identifiers"]) + [("email", new_email)]})
+            else:
+                updated_fixture.append(entry)
+
+        # Rebuild with updated fixture (contact_id unchanged)
+        db2 = tmp_path / "defA_2b" / "olo.db"
+        db2.parent.mkdir(parents=True)
+        populate_olo_db(tl, db2, crm_contacts=updated_fixture)
+        items_after = build_hindsight_items(db2)
+
+        # Every Alice item must still use the SAME contact_id
+        def alice_cids(items):
+            return {
+                (i.get("entities") or [{}])[0].get("text", "")
+                for i in items
+                if f"ent:{ENTITIES[0].entity_id}" in (i.get("tags") or [])
+                and (i.get("entities") or [{}])[0].get("text", "")
+            }
+
+        cids_before = alice_cids(items_before)
+        cids_after  = alice_cids(items_after)
+        assert cids_before == {alice_cid}, f"Before: {cids_before}"
+        assert cids_after  == {alice_cid}, f"After:  {cids_after}"
+        assert cids_before == cids_after, (
+            "Contact IDs must be identical before and after email change."
+        )
+
+    def test_old_verified_email_alias_still_resolves(self, tmp_path: Path) -> None:
+        """Test 3 (Defect A): Old verified email alias resolves to the same contact."""
+        conn = _db(tmp_path, "defA_3")
+        populate_contacts_from_crm(CRM_CONTACTS, conn, source="crm_fixture")
+        idx, _ = load_contact_index(conn)
+        conn.close()
+
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
+        # Both the primary email and the alias email must resolve to alice
+        cid_primary = resolve_contact_from_signal(
+            "email.received",
+            {"headers": {"from": [{"name": "Alice", "email": ALICE_EMAIL}], "to": []}},
+            idx,
+        )
+        cid_alias = resolve_contact_from_signal(
+            "email.received",
+            {"headers": {"from": [{"name": "Alice", "email": ALICE_ALT_EMAIL}], "to": []}},
+            idx,
+        )
+        assert cid_primary == alice_cid, f"Primary email: {cid_primary!r}"
+        assert cid_alias   == alice_cid, f"Alt email:     {cid_alias!r}"
+
+
+# ---------------------------------------------------------------------------
+# Defect B tests: conflict detection and resolution
+# ---------------------------------------------------------------------------
+
+class TestIdentifierConflictDefectB:
+    """Defect B repair: identifier reassignment detected, recorded, and blocked."""
+
+    def test_new_contact_cannot_silently_claim_alice_phone(self, tmp_path: Path) -> None:
+        """Test 4 (Defect B): A new contact cannot silently claim Alice's phone."""
+        conn = _db(tmp_path, "defB_4")
+        populate_contacts_from_crm(CRM_CONTACTS, conn, source="crm_fixture")
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
+
+        # Attempt to register Alice's phone for a NEW contact
+        rogue_cid = make_fixture_contact_id("test:rogue_claimant")
+        rogue_fixture = [{
+            "contact_id":        rogue_cid,
+            "canonical_email":   "rogue@example.com",
+            "display_name":      "Rogue Claimant",
+            "organization_name": "Bad Corp",
+            "identifiers": [
+                ("email", "rogue@example.com"),
+                ("phone", ALICE_PHONE),  # Alice's phone!
+            ],
+        }]
+        populate_contacts_from_crm(rogue_fixture, conn, source="rogue_crm")
+
+        # Phone must still resolve to Alice (not rogue)
+        idx, _ = load_contact_index(conn)
+        cid = idx.get(("phone", ALICE_PHONE))
+        assert cid == alice_cid, (
+            f"Alice's phone must remain Alice's after rogue claim. Got {cid!r}."
+        )
+
+        # A conflict must be recorded
+        conflicts = get_identifier_conflicts(conn, unresolved_only=True)
+        assert any(c["identifier_type"] == "phone" and c["identifier_value"] == ALICE_PHONE
+                   for c in conflicts), (
+            f"Conflict for Alice's phone must be recorded. Got: {conflicts}"
+        )
+        conn.close()
+
+    def test_conflicting_identifier_excluded_until_resolved(self, tmp_path: Path) -> None:
+        """Test 5 (Defect B): A second claim for an owned identifier is refused and recorded.
+
+        The original owner keeps the identifier (fail-closed means new claim fails).
+        The conflict is recorded for audit and must be explicitly resolved to transfer.
+        """
+        conn = _db(tmp_path, "defB_5")
+        cid_x = make_fixture_contact_id("test:contact_x")
+        cid_y = make_fixture_contact_id("test:contact_y")
+        # cid_x registers the phone first, cid_y tries to claim it second
+        fix = [
+            {"contact_id": cid_x, "canonical_email": "x@ex.com",
+             "display_name": "X", "organization_name": "O",
+             "identifiers": [("email", "x@ex.com"), ("phone", "+19009009000")]},
+            {"contact_id": cid_y, "canonical_email": "y@ex.com",
+             "display_name": "Y", "organization_name": "O",
+             "identifiers": [("email", "y@ex.com"), ("phone", "+19009009000")]},
+        ]
+        populate_contacts_from_crm(fix, conn, source="crm_fixture")
+        idx, _ = load_contact_index(conn)
+
+        # cid_x registered first → owns the phone
+        assert idx.get(("phone", "+19009009000")) == cid_x, (
+            "First registrant must keep the phone. Second claim must be refused."
+        )
+        # cid_y's claim was refused, NOT silently reassigned
+        assert idx.get(("phone", "+19009009000")) != cid_y, (
+            "Second claimant must NOT own the phone after a failed claim."
+        )
+        # Emails are unaffected
+        assert idx.get(("email", "x@ex.com")) == cid_x
+        assert idx.get(("email", "y@ex.com")) == cid_y
+
+        # Conflict recorded for the refused claim
+        conflicts = get_identifier_conflicts(conn, unresolved_only=True)
+        assert any(c["identifier_type"] == "phone" and c["identifier_value"] == "+19009009000"
+                   for c in conflicts), f"Conflict must be recorded. Got: {conflicts}"
+        conn.close()
+
+    def test_legitimate_transfer_requires_explicit_resolution(self, tmp_path: Path) -> None:
+        """Test 6 (Defect B): A legitimate phone transfer requires explicit resolution."""
+        conn = _db(tmp_path, "defB_6")
+        cid_old = make_fixture_contact_id("test:old_owner")
+        cid_new = make_fixture_contact_id("test:new_owner")
+        fix1 = [{"contact_id": cid_old, "canonical_email": "old@ex.com",
+                  "display_name": "Old", "organization_name": "O",
+                  "identifiers": [("email", "old@ex.com"), ("phone", "+18001112222")]}]
+        fix2 = [{"contact_id": cid_new, "canonical_email": "new@ex.com",
+                  "display_name": "New", "organization_name": "O",
+                  "identifiers": [("email", "new@ex.com"), ("phone", "+18001112222")]}]
+        populate_contacts_from_crm(fix1, conn, source="crm_v1")
+        populate_contacts_from_crm(fix2, conn, source="crm_v2")
+
+        # Conflict recorded; original owner (cid_old) still owns the phone
+        idx, _ = load_contact_index(conn)
+        assert idx.get(("phone", "+18001112222")) == cid_old, (
+            "Original owner must keep the phone until explicitly transferred."
+        )
+        assert idx.get(("phone", "+18001112222")) != cid_new, (
+            "New claimant must NOT own the phone before explicit resolution."
+        )
+        conflicts = get_identifier_conflicts(conn, unresolved_only=True)
+        assert any(c["identifier_type"] == "phone" for c in conflicts), (
+            "Conflict must be recorded for the refused new claim."
+        )
+
+        # Explicit resolution: transfer to new owner
+        resolved = resolve_identifier_conflict(
+            "phone", "+18001112222", cid_new, "admin", conn
+        )
+        assert resolved >= 1, "Must have resolved at least one conflict"
+
+        # After resolution: phone resolves to new owner
+        idx2, _ = load_contact_index(conn)
+        assert idx2.get(("phone", "+18001112222")) == cid_new, (
+            f"After resolution, phone must resolve to new owner {cid_new!r}"
+        )
+
+        # Resolution is idempotent (no duplicate conflict events)
+        resolved2 = resolve_identifier_conflict(
+            "phone", "+18001112222", cid_new, "admin", conn
+        )
+        assert resolved2 == 0, "Second resolution call must be a no-op"
+
+        # Conflict is recorded with resolution metadata
+        all_conflicts = get_identifier_conflicts(conn, unresolved_only=False)
+        resolved_entries = [c for c in all_conflicts
+                            if c["resolved_contact_id"] == cid_new]
+        assert resolved_entries, "Resolution must be persisted in identifier_conflicts"
+        assert resolved_entries[0]["resolved_by"] == "admin"
+        conn.close()
+
+    def test_replay_does_not_create_duplicate_conflict_events(self, tmp_path: Path) -> None:
+        """Defect B: re-running populate_contacts_from_crm with conflicting data is idempotent."""
+        conn = _db(tmp_path, "defB_7")
+        cid_a = make_fixture_contact_id("test:idem_a")
+        cid_b = make_fixture_contact_id("test:idem_b")
+        fix = [
+            {"contact_id": cid_a, "canonical_email": "a@ex.com",
+             "display_name": "A", "organization_name": "O",
+             "identifiers": [("email", "a@ex.com"), ("phone", "+18887776666")]},
+            {"contact_id": cid_b, "canonical_email": "b@ex.com",
+             "display_name": "B", "organization_name": "O",
+             "identifiers": [("email", "b@ex.com"), ("phone", "+18887776666")]},
+        ]
+        populate_contacts_from_crm(fix, conn, source="crm_fixture")
+        conflicts_after_1 = len(get_identifier_conflicts(conn))
+        populate_contacts_from_crm(fix, conn, source="crm_fixture")  # replay
+        conflicts_after_2 = len(get_identifier_conflicts(conn))
+        assert conflicts_after_1 == conflicts_after_2, (
+            f"Replay must not create duplicate conflict events. "
+            f"Got {conflicts_after_1} → {conflicts_after_2}"
+        )
+        conn.close()
+
+    def test_forged_call_cannot_rename_or_relink_alice(self, tmp_path: Path) -> None:
+        """Test 7: A forged call cannot rename or relink Alice (Defect B + existing C5)."""
+        conn, db_path = TestForgedIdentity()._build_forged_corpus(tmp_path)
+        _, contact_info = load_contact_index(conn)
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
+        display_name, _ = contact_info.get(alice_cid, ("", ""))
+        conn.close()
+
+        assert display_name == "Alice Chen", (
+            f"Forged signal must not rename Alice. Got {display_name!r}"
+        )
+
+        # Also verify forged entity link is unassigned
+        from olo.m3.feeder import build_hindsight_items
+        items = {i["document_id"]: i
+                 for i in build_hindsight_items(db_path, source="test_src")}
+        forged = items.get("sig:mallory_forged")
+        forged_entity = (forged.get("entities") or [{}])[0].get("text", "")
+        assert forged_entity != alice_cid, (
+            "Forged signal must not link to Alice's contact_id"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Live Hindsight: stable ID after email change
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+class TestLiveStableIdAfterEmailChange:
+    """Live: Alice's stable contact_id persists in Hindsight after adding new email."""
+
+    def _client(self):
+        from olo.m3.hindsight.client import HindsightUnavailable
+        from olo.m3.hindsight.client import HindsightClient, HindsightConfig
+        cfg = HindsightConfig(host="127.0.0.1", port=18800)
+        client = HindsightClient(cfg)
+        try:
+            client.wait_until_ready(timeout_s=10.0)
+        except HindsightUnavailable:
+            pytest.skip("Hindsight server not running")
+        return client
+
+    def test_stable_id_survives_email_addition_in_bank(self, tmp_path: Path) -> None:
+        """Adding a new email alias leaves Alice's cid_ entity links unchanged in bank."""
+        import uuid, time
+        from olo.m3.feeder import STRUCTURED_STRATEGY
+
+        client = self._client()
+        bank_id = f"stable-id-{uuid.uuid4().hex[:8]}"
+
+        # Build corpus with CURRENT fixture (original emails)
+        tl = generate_timeline()
+        db_orig = tmp_path / "orig" / "olo.db"
+        db_orig.parent.mkdir(parents=True)
+        populate_olo_db(tl, db_orig)
+        items_orig = build_hindsight_items(db_orig)
+
+        alice_cid = get_contact_id_for_email(ALICE_EMAIL)
+
+        # Build corpus with UPDATED fixture (new email added, same contact_id)
+        new_email = "alice.chen-updated@acme-corp.example"
+        updated_fixture = [
+            {**e, "identifiers": list(e["identifiers"]) + [("email", new_email)]}
+            if e["contact_id"] == alice_cid else e
+            for e in CRM_CONTACTS
+        ]
+        db_upd = tmp_path / "upd" / "olo.db"
+        db_upd.parent.mkdir(parents=True)
+        populate_olo_db(tl, db_upd, crm_contacts=updated_fixture)
+        items_upd = build_hindsight_items(db_upd)
+
+        # Both corpora must use the same alice_cid for Alice's items
+        def alice_entity_ids(items):
+            return {(i.get("entities") or [{}])[0].get("text","")
+                    for i in items
+                    if f"ent:{ENTITIES[0].entity_id}" in (i.get("tags") or [])
+                    and (i.get("entities") or [{}])[0].get("text","")}
+        assert alice_entity_ids(items_orig) == {alice_cid}
+        assert alice_entity_ids(items_upd)  == {alice_cid}
+
+        # Retain a few structured items from the UPDATED corpus
+        alice_items = [i for i in items_upd
+                       if (i.get("entities") or [{}])[0].get("text") == alice_cid][:3]
+        for i in alice_items:
+            i["strategy"] = STRUCTURED_STRATEGY
+
+        try:
+            client.retain(alice_items, operation_id=str(uuid.uuid4()),
+                          async_=False, bank_id=bank_id)
+            time.sleep(1)
+
+            # Entity-scoped recall with original entity tag still works
+            r = client.recall(
+                "delivery reschedule",
+                bank_id=bank_id, max_tokens=4000, trace=False,
+                tag_groups=[{"tags": [f"ent:{alice_cid}"], "match": "all_strict"}],
+            )
+            assert len(r.get("results", [])) > 0, (
+                f"Entity-scoped recall with stable cid_ must return results "
+                f"after email alias addition. contact_id={alice_cid!r}"
             )
         finally:
             try:

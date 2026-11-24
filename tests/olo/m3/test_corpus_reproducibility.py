@@ -558,7 +558,9 @@ class TestEntityLinkFallback:
         assert transcript_items, "Must have call.transcript items"
 
         from olo.adapters.contacts import make_contact_id
-        expected_cids = {make_contact_id(ent.email) for ent in ENTITIES}
+        from olo.m3.synthetic.crm_fixture import get_contact_id_for_email
+        expected_cids = {get_contact_id_for_email(ent.email) for ent in ENTITIES}
+        expected_cids.discard("")  # skip entities not in CRM fixture
         for item in transcript_items:
             entities = item.get("entities") or []
             assert entities, (
@@ -585,7 +587,9 @@ class TestEntityLinkFallback:
             if (i.get("metadata") or {}).get("kind") == "call.transcript"
         ]
         from olo.adapters.contacts import make_contact_id
-        expected_cids = {make_contact_id(ent.email) for ent in ENTITIES}
+        from olo.m3.synthetic.crm_fixture import get_contact_id_for_email
+        expected_cids = {get_contact_id_for_email(ent.email) for ent in ENTITIES}
+        expected_cids.discard("")  # skip entities not in CRM fixture
         for item in transcript_items:
             entities = item.get("entities") or []
             if not entities:
@@ -760,7 +764,9 @@ class TestEntityLinkFallback:
         ]
         assert invoice_items, "Must have invoice.created items"
         from olo.adapters.contacts import make_contact_id
-        expected_cids = {make_contact_id(ent.email) for ent in ENTITIES}
+        from olo.m3.synthetic.crm_fixture import get_contact_id_for_email
+        expected_cids = {get_contact_id_for_email(ent.email) for ent in ENTITIES}
+        expected_cids.discard("")  # skip entities not in CRM fixture
         for item in invoice_items:
             entities = item.get("entities") or []
             assert entities, (
