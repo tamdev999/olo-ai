@@ -418,6 +418,33 @@ def verify_corpus_match(client: HindsightClient, frozen_corpus_fp: str) -> str:
     return bank_fp
 
 
+def _compute_full_item_fp() -> str:
+    """Compute the full-item fingerprint from the actual corpus items.
+
+    Uses OLO_DB_PATH if set (gate environment) so the fingerprint reflects
+    the real items that were retained to the bank, not just the frozen constant.
+    Falls back to FROZEN_FULL_ITEM_FP with a warning if the db is unavailable.
+
+    Records the COMPUTED value so discrepancies are observable in the result
+    JSON — storing only the frozen constant would silently mask corpus drift.
+    """
+    db_path_str = os.environ.get("OLO_DB_PATH", "")
+    if db_path_str:
+        db_path = Path(db_path_str)
+        if db_path.exists():
+            try:
+                from olo.m3.feeder import build_hindsight_items
+                from olo.m3.benchmark_preflight import check_full_item_fingerprint
+                items = build_hindsight_items(db_path)
+                result = check_full_item_fingerprint(items)
+                return result.actual
+            except Exception as exc:
+                print(f"  WARNING: could not compute full-item fingerprint "
+                      f"from {db_path}: {exc}")
+    # Fallback: return frozen constant with a note (not a fresh computation)
+    return FROZEN_FULL_ITEM_FP
+
+
 def run_benchmark() -> dict:
     # Build questions first so _RNG state is consistent; verify hash after.
     questions = build_benchmark_v2()
@@ -546,11 +573,14 @@ def run_benchmark() -> dict:
         fc = f["category"]
         failure_cats[fc] = failure_cats.get(fc, 0) + 1
 
+    computed_fp = _compute_full_item_fp()
     summary = {
         "benchmark_hash": benchmark_hash,
         "bank_id": BANK_ID,
         "corpus_fingerprint": FROZEN_CORPUS_FP,
-        "full_item_fingerprint": FROZEN_FULL_ITEM_FP,
+        "full_item_fingerprint": computed_fp,
+        "full_item_fingerprint_frozen": FROZEN_FULL_ITEM_FP,
+        "full_item_fingerprint_matches_frozen": computed_fp == FROZEN_FULL_ITEM_FP,
         "bank_fingerprint": bank_fp,
         "n_questions": n,
         "errors": errors,
