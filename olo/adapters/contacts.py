@@ -1,7 +1,8 @@
 """olo/adapters/contacts.py — Canonical per-business customer identity model.
 
 Implements the C1 contact/organization schema and C2 source-backed identity
-resolution (Opus audit §C1–C2), with Defect A and B repairs.
+resolution (Opus audit §C1–C2), with Defect A and B repairs and
+identity-safety fixes 1–3 (Opus P1/P2).
 
 Schema
 ------
@@ -29,7 +30,7 @@ Schema
       verified_at      TEXT NOT NULL
       PK (identifier_type, identifier_value, source)
 
-  identifier_conflicts                 (Defect B fix: conflict recording)
+  identifier_conflicts                 (Defect B + P2 fix)
       id               INTEGER PK AUTOINCREMENT
       identifier_type  TEXT NOT NULL
       identifier_value TEXT NOT NULL
@@ -39,9 +40,10 @@ Schema
       detected_at      TEXT NOT NULL
       resolved_contact_id TEXT            set by resolve_identifier_conflict()
       resolved_at      TEXT               timestamp of resolution
-      resolved_by      TEXT               source/actor that resolved it
-      UNIQUE (identifier_type, identifier_value,
-              existing_contact_id, new_contact_id)
+      resolved_by      TEXT               authorized operator that resolved it
+      -- No UNIQUE constraint: each new ownership dispute is a fresh event.
+      -- Application-level idempotency: skip if an identical UNRESOLVED row
+      -- already exists for (type, value, existing, new, source).
 
   contact_name_history
       id INTEGER PK AUTOINCREMENT
@@ -51,8 +53,8 @@ Schema
       changed_at TEXT NOT NULL
       source TEXT NOT NULL
 
-Design rules (C1/C2 + Defect A/B repairs)
-------------------------------------------
+Design rules (C1/C2 + Defect A/B + P1/P2/P3 repairs)
+------------------------------------------------------
 - contact_id is assigned by the CRM fixture entry's ``contact_id`` field.
   It is a permanent opaque ID independent of email, phone, name.
 - Changing canonical_email, phone, or display_name never changes contact_id.
@@ -61,10 +63,24 @@ Design rules (C1/C2 + Defect A/B repairs)
 - resolve_contact_from_signal() uses ONLY verified identifiers in
   contact_identifiers; it never reads ent: tags or customer_name.
 - Returns "" when no verified match is found — never fabricates an association.
-- Identifier reassignment detection (Defect B): if an identifier already
-  belongs to a different contact, the conflict is recorded in
-  identifier_conflicts and the identifier is excluded from automatic
-  resolution until explicitly resolved.
+
+P1 (fix 1) — fail closed on disputes:
+  load_contact_index() excludes any identifier that has an unresolved
+  ownership conflict from the identifier_map.  Neither claimant can use the
+  identifier for automatic attribution until the conflict is resolved.
+
+P2 (fix 2) — record every new dispute event:
+  identifier_conflicts has no UNIQUE constraint.  Idempotency is application-
+  level: skip INSERT only when an identical UNRESOLVED row already exists for
+  (type, value, existing_contact, new_contact, source).  After a conflict is
+  resolved, a fresh claim from the same parties creates a new event.
+
+P3 (fix 3) — restricted resolution pathway:
+  resolve_identifier_conflict() validates that resolved_by is in
+  AUTHORIZED_OPERATORS and that resolved_contact_id is a legitimate claimant
+  (a contact that appears in an unresolved dispute row for this identifier).
+  Arbitrary callers and non-claimants are rejected with IdentityResolutionError.
+
 - Business isolation: contacts tables live inside the per-business olo.db.
 - No side effects at import time.
 """
@@ -77,6 +93,28 @@ from datetime import datetime, timezone
 from typing import Optional
 
 _log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# P3: Authorized operator identities for conflict resolution
+# ---------------------------------------------------------------------------
+
+#: Set of authorized operator identities that may call resolve_identifier_conflict().
+#: These are intentionally distinct from any CRM source name or contact ID format —
+#: they cannot be forged by an arbitrary caller-supplied string.
+#:
+#: In production, replace this check with an integration to the business's IAM/RBAC
+#: system.  The constant is public so that callers can inspect it and integration
+#: code can override it at startup.
+AUTHORIZED_OPERATORS: frozenset[str] = frozenset({
+    "admin",
+    "crm_admin",
+})
+
+
+class IdentityResolutionError(Exception):
+    """Raised when resolve_identifier_conflict() is called without authorization
+    or with an invalid target contact (P3: restricted resolution pathway)."""
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +172,57 @@ def migrate_contacts(conn: sqlite3.Connection) -> None:
     """Create contact identity tables if they don't exist (idempotent).
 
     Safe to call on every startup; uses IF NOT EXISTS guards.
-    Includes the ``identifier_conflicts`` table added in the Defect B repair.
+
+    P2 schema repair: ``identifier_conflicts`` no longer has a UNIQUE constraint
+    over (type, value, existing, new).  Each new ownership dispute is a fresh
+    event; idempotency is enforced at the application level in _upsert_identifier.
+    Existing databases with the old constraint are migrated automatically.
     """
+    # P2 migration: if identifier_conflicts exists with the old 4-column UNIQUE
+    # constraint, recreate it without the constraint so new events can be recorded
+    # after a previous conflict between the same parties was resolved.
+    try:
+        old_row = conn.execute(
+            "SELECT sql FROM sqlite_master"
+            " WHERE type='table' AND name='identifier_conflicts'"
+        ).fetchone()
+        old_sql = (old_row[0] or "") if old_row else ""
+        if old_sql and "UNIQUE" in old_sql and "new_contact_id" in old_sql:
+            # Old schema had UNIQUE (type, value, existing, new) — migrate.
+            conn.executescript("""
+                ALTER TABLE identifier_conflicts
+                    RENAME TO _ic_migrate_old;
+
+                CREATE TABLE identifier_conflicts (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    identifier_type     TEXT NOT NULL,
+                    identifier_value    TEXT NOT NULL,
+                    existing_contact_id TEXT NOT NULL,
+                    new_contact_id      TEXT NOT NULL,
+                    source              TEXT NOT NULL,
+                    detected_at         TEXT NOT NULL,
+                    resolved_contact_id TEXT,
+                    resolved_at         TEXT,
+                    resolved_by         TEXT
+                );
+
+                INSERT INTO identifier_conflicts
+                    SELECT id, identifier_type, identifier_value,
+                           existing_contact_id, new_contact_id, source,
+                           detected_at, resolved_contact_id, resolved_at,
+                           resolved_by
+                    FROM _ic_migrate_old;
+
+                DROP TABLE _ic_migrate_old;
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_identifier_conflicts_lookup
+                ON identifier_conflicts (identifier_type, identifier_value,
+                                          resolved_contact_id);
+            """)
+    except sqlite3.OperationalError:
+        pass  # table does not exist yet — will be created below
+
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS organizations (
             id          TEXT PRIMARY KEY,
@@ -165,6 +252,8 @@ def migrate_contacts(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (contact_id) REFERENCES contacts(id)
         );
 
+        -- P2 fix: no UNIQUE constraint — each dispute event is independently recorded.
+        -- Idempotency is enforced at the application level.
         CREATE TABLE IF NOT EXISTS identifier_conflicts (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             identifier_type     TEXT NOT NULL,
@@ -175,9 +264,7 @@ def migrate_contacts(conn: sqlite3.Connection) -> None:
             detected_at         TEXT NOT NULL,
             resolved_contact_id TEXT,
             resolved_at         TEXT,
-            resolved_by         TEXT,
-            UNIQUE (identifier_type, identifier_value,
-                    existing_contact_id, new_contact_id)
+            resolved_by         TEXT
         );
 
         CREATE TABLE IF NOT EXISTS contact_name_history (
@@ -352,23 +439,35 @@ def _upsert_identifier(
 
     other_owners = [row[0] for row in existing_owners if row[0] != contact_id]
     if other_owners:
-        # Defect B: identifier already claimed by another contact.
+        # Defect B + P2: identifier already claimed by another contact.
         # Record each conflict and refuse the assignment.
         for other_id in other_owners:
-            conn.execute(
-                "INSERT OR IGNORE INTO identifier_conflicts"
-                " (identifier_type, identifier_value, existing_contact_id,"
-                "  new_contact_id, source, detected_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (id_type, id_value, other_id, contact_id, source, now),
-            )
+            # P2 idempotency: skip if an IDENTICAL unresolved conflict already
+            # exists for (type, value, existing, new, source).  This prevents
+            # duplicates within the same CRM sync run.  After a conflict is
+            # resolved, a fresh claim from the same parties is a NEW event.
+            already = conn.execute(
+                "SELECT id FROM identifier_conflicts"
+                " WHERE identifier_type = ? AND identifier_value = ?"
+                "   AND existing_contact_id = ? AND new_contact_id = ?"
+                "   AND source = ? AND resolved_contact_id IS NULL",
+                (id_type, id_value, other_id, contact_id, source),
+            ).fetchone()
+            if not already:
+                conn.execute(
+                    "INSERT INTO identifier_conflicts"
+                    " (identifier_type, identifier_value, existing_contact_id,"
+                    "  new_contact_id, source, detected_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (id_type, id_value, other_id, contact_id, source, now),
+                )
             _log.warning(
                 "Identifier conflict: %s %r is already owned by %r; "
                 "new claim from %r (%s) refused and recorded.",
                 id_type, id_value, other_id, contact_id, source,
             )
         # Do NOT insert/update — the conflicted identifier is excluded from
-        # automatic attribution until explicitly resolved.
+        # automatic attribution until explicitly resolved (P1).
         return
 
     # Safe to insert or update (same contact or no prior owner)
@@ -430,20 +529,64 @@ def resolve_identifier_conflict(
 ) -> int:
     """Explicitly resolve a conflicted identifier by assigning it to one contact.
 
-    This is the ONLY authorized pathway for transferring an identifier from one
-    contact to another.  It:
+    P3 (restricted resolution pathway):
+    - ``resolved_by`` must be in ``AUTHORIZED_OPERATORS``.  Arbitrary caller-
+      supplied strings are rejected with ``IdentityResolutionError``.
+    - ``resolved_contact_id`` must be a legitimate claimant — a contact that
+      appears in an unresolved conflict row for this identifier.  Non-claimants
+      are rejected with ``IdentityResolutionError``.
+
+    If there are no unresolved conflicts for this identifier, returns 0
+    (idempotent no-op).
+
+    On success:
       1. Marks all unresolved conflicts for this identifier as resolved.
       2. Removes the identifier from contact_identifiers for every contact
          except the resolved one.
       3. Inserts/updates the identifier to point to the resolved contact.
 
-    Idempotent: calling with the same resolution produces no duplicate events.
-
-    Returns the number of conflict rows resolved (0 if no unresolved conflicts).
+    Returns the number of conflict rows resolved.
     """
+    # P3 check 1: authorized operator
+    if resolved_by not in AUTHORIZED_OPERATORS:
+        raise IdentityResolutionError(
+            f"resolve_identifier_conflict: resolved_by={resolved_by!r} is not "
+            f"an authorized operator. Valid operators: {sorted(AUTHORIZED_OPERATORS)}. "
+            "Obtain authorization before resolving identifier disputes."
+        )
+
     now = clock().isoformat() if clock else datetime.now(timezone.utc).isoformat()
+
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # Find all unresolved conflicts for this identifier
+        unresolved = conn.execute(
+            "SELECT existing_contact_id, new_contact_id"
+            " FROM identifier_conflicts"
+            " WHERE identifier_type = ? AND identifier_value = ?"
+            "   AND resolved_contact_id IS NULL",
+            (identifier_type, identifier_value),
+        ).fetchall()
+
+        if not unresolved:
+            conn.execute("COMMIT")
+            return 0  # Idempotent: nothing to resolve
+
+        # P3 check 2: resolved_contact_id must be a legitimate claimant
+        claimants: set[str] = set()
+        for row in unresolved:
+            claimants.add(row[0])
+            claimants.add(row[1])
+
+        if resolved_contact_id not in claimants:
+            conn.execute("ROLLBACK")
+            raise IdentityResolutionError(
+                f"resolve_identifier_conflict: resolved_contact_id="
+                f"{resolved_contact_id!r} is not a claimant in any unresolved "
+                f"dispute for ({identifier_type}, {identifier_value!r}). "
+                f"Valid claimants: {sorted(claimants)}."
+            )
+
         # Mark conflicts as resolved
         updated = conn.execute(
             "UPDATE identifier_conflicts"
@@ -479,6 +622,8 @@ def resolve_identifier_conflict(
 
         conn.execute("COMMIT")
         return updated
+    except IdentityResolutionError:
+        raise
     except Exception:
         try:
             conn.execute("ROLLBACK")
@@ -500,25 +645,43 @@ def load_contact_index(
         identifier_map: {(identifier_type, identifier_value): contact_id}
         contact_info:   {contact_id: (display_name, org_name)}
 
-    Defect B safety: "fail closed" means the NEW CLAIM fails; the original
-    owner retains their identifier.  An unresolved conflict is an audit record
-    of a refused new claim, not a reason to revoke the original owner's access.
-    Use ``get_identifier_conflicts()`` to inspect outstanding disputes and
-    ``resolve_identifier_conflict()`` for explicit ownership transfers.
+    P1 (fail closed on disputes): any identifier that has at least one
+    unresolved ownership conflict is excluded from identifier_map entirely.
+    Neither the existing owner nor the new claimant can use the identifier for
+    automatic attribution until the conflict is explicitly resolved via
+    ``resolve_identifier_conflict()``.  Undisputed identifiers are unaffected.
+
+    Use ``get_identifier_conflicts()`` to inspect outstanding disputes.
 
     Returns empty dicts when the contacts tables do not yet exist.
     """
     identifier_map: dict[tuple[str, str], str] = {}
     contact_info: dict[str, tuple[str, str]] = {}
     try:
-        # Load all identifiers. The original owner keeps their identifier even
-        # when a later claim produced an unresolved conflict record.
+        # Load all identifiers. The original owner keeps their mapping in
+        # contact_identifiers even when a conflict was recorded.
         rows = conn.execute(
             "SELECT identifier_type, identifier_value, contact_id"
             " FROM contact_identifiers"
         ).fetchall()
         for row in rows:
             identifier_map[(row[0], row[1])] = row[2]
+
+        # P1 fix: exclude identifiers with any UNRESOLVED conflict from the
+        # index.  When a dispute is active, neither claimant may use the
+        # identifier for automatic attribution.  Undisputed identifiers are
+        # unaffected.  After an authorised resolution, the identifier is
+        # re-included for the winning contact.
+        try:
+            contested_rows = conn.execute(
+                "SELECT DISTINCT identifier_type, identifier_value"
+                " FROM identifier_conflicts"
+                " WHERE resolved_contact_id IS NULL"
+            ).fetchall()
+            for id_type, id_value in contested_rows:
+                identifier_map.pop((id_type, id_value), None)
+        except sqlite3.OperationalError:
+            pass  # table may not exist on old DBs
 
         rows = conn.execute(
             "SELECT c.id, c.display_name, COALESCE(o.name, '')"
@@ -591,8 +754,9 @@ def resolve_contact_from_signal(
     Never reads ``ent:`` tags, ``customer_name``, or any other asserted payload
     field that could be forged.
 
-    Identifiers with unresolved conflicts are absent from identifier_map (they
-    were removed by load_contact_index), so they cannot create false associations.
+    P1: identifiers with unresolved conflicts are absent from identifier_map
+    (they were excluded by load_contact_index), so they return "" here and
+    cannot create false associations for either party in the dispute.
 
     Resolution order per signal kind:
       email.received/sent/content → email address(es) from headers

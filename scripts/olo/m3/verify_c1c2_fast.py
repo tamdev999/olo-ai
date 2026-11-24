@@ -144,8 +144,8 @@ try:
         # First registrant (person_a) keeps the phone; person_b's claim is refused
         cid_a = make_fixture_contact_id("live:test:person_a")
         phone_cid = idx.get(("phone","+18001234567"))
-        chk("Conflicting phone: first registrant keeps identifier (fail-closed new claim)",
-            phone_cid == cid_a, f"cid={phone_cid!r}, expected={cid_a!r}")
+        chk("P1: Conflicting phone excluded from map (neither contact)",
+            phone_cid is None, f"cid={phone_cid!r}, expected=None (P1 fail-closed)")
         # Unambiguous email is unaffected
         email_cid_a = idx.get(("email","a@test.example"))
         email_cid_b = idx.get(("email","b@test.example"))
