@@ -194,7 +194,7 @@ class TestIdentifierRemovals:
 class TestOwnershipProvenance:
 
     def test_original_source_preserved_after_transfer(self, tmp_path: Path) -> None:
-        """After a conflict transfer, the original CRM source is preserved in history."""
+        """DenyAll: resolution is disabled; original CRM source remains in assignment history."""
         conn = _db(tmp_path, "prov1")
         cid_a = make_fixture_contact_id("test:prov_a")
         cid_b = make_fixture_contact_id("test:prov_b")
@@ -208,46 +208,29 @@ class TestOwnershipProvenance:
         populate_contacts_from_crm(fix_a, conn, source="crm_a_v1")
         populate_contacts_from_crm(fix_b, conn, source="crm_b_v1")
 
-        # Resolve to B
-        resolve_identifier_conflict("phone", "+19001112222", cid_b, create_operator_token("admin"), conn)
+        # Resolution attempt must fail (DenyAll)
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict("phone", "+19001112222", cid_b, create_operator_token("admin"), conn)
 
-        # History for phone must show:
-        # 1. assigned (A, source=crm_a_v1)
-        # 2. transferred_out (A, source=crm_a_v1, actor=admin)
-        # 3. transferred_in (B, source=crm_b_v1, actor=admin)
+        # Assignment history must preserve the original source
         history = get_identifier_ownership_history(
             conn, identifier_type="phone", identifier_value="+19001112222"
         )
-        events = {(h["contact_id"], h["event_type"]): h for h in history}
-
-        assert ("cid_" in h["source"] or "crm" in h["source"]
-                for h in history), "History must have source fields"
-
-        assigned = next((h for h in history
-                         if h["contact_id"] == cid_a and h["event_type"] == "assigned"), None)
+        assigned = next(
+            (h for h in history if h["contact_id"] == cid_a and h["event_type"] == "assigned"),
+            None,
+        )
         assert assigned is not None, "Assignment event for A must exist"
         assert assigned["source"] == "crm_a_v1", (
             f"Original CRM source must be preserved. Got {assigned['source']!r}"
         )
-
-        t_out = next((h for h in history
-                      if h["contact_id"] == cid_a and h["event_type"] == "transferred_out"),
-                     None)
-        assert t_out is not None, "transferred_out event for A must exist"
-        assert t_out["actor"] == "admin", "Actor must be recorded"
-        assert t_out["source"] == "crm_a_v1", (
-            "transferred_out must carry A's ORIGINAL source, not actor name"
-        )
-
-        t_in = next((h for h in history
-                     if h["contact_id"] == cid_b and h["event_type"] == "transferred_in"),
-                    None)
-        assert t_in is not None, "transferred_in event for B must exist"
-        assert t_in["actor"] == "admin"
+        # No transfer events recorded (resolution was denied)
+        assert not any(h["event_type"] in ("transferred_in", "transferred_out")
+                       for h in history), "No transfer events when resolution is denied"
         conn.close()
 
     def test_full_history_reconstructable(self, tmp_path: Path) -> None:
-        """Alice → Bob phone transfer: full ownership history is reconstructable."""
+        """DenyAll: resolution is disabled; assignment history is preserved for future use."""
         conn = _db(tmp_path, "prov2")
         alice_cid = get_contact_id_for_email(ALICE_EMAIL)
         bob_cid   = get_contact_id_for_email("bob.torres@beta-tech.example")
@@ -262,26 +245,31 @@ class TestOwnershipProvenance:
             "identifiers": [("phone", ALICE_PHONE_E164)],
         }]
         populate_contacts_from_crm(hijack, conn, source="crm_v2")
-        resolve_identifier_conflict("phone", ALICE_PHONE_E164, bob_cid, create_operator_token("admin"), conn)
 
+        # Resolution fails (DenyAll)
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", ALICE_PHONE_E164, bob_cid, create_operator_token("admin"), conn
+            )
+
+        # Assignment history preserved for future resolution once IAM is integrated
         history = get_identifier_ownership_history(
             conn, identifier_type="phone", identifier_value=ALICE_PHONE_E164
         )
         event_types = [h["event_type"] for h in history]
         assert "assigned" in event_types, "Assignment event must exist"
-        assert "transferred_out" in event_types, "transferred_out event must exist"
-        assert "transferred_in" in event_types, "transferred_in event must exist"
 
-        # Original source (crm_v1) must appear for the assignment
-        assignment = next(h for h in history if h["event_type"] == "assigned"
-                          and h["contact_id"] == alice_cid)
-        assert assignment["source"] == "crm_v1", (
-            f"Original CRM source must be preserved. Got {assignment['source']!r}"
-        )
+        assignment = next(h for h in history
+                          if h["event_type"] == "assigned" and h["contact_id"] == alice_cid)
+        assert assignment["source"] == "crm_v1"
+
+        # No transfer events (resolution was denied)
+        assert "transferred_out" not in event_types
+        assert "transferred_in" not in event_types
         conn.close()
 
     def test_failed_transfer_does_not_modify_history(self, tmp_path: Path) -> None:
-        """An unauthorized transfer attempt must not alter history."""
+        """DenyAll: every resolution attempt is refused before any DB write."""
         conn = _db(tmp_path, "prov3")
         cid_x = make_fixture_contact_id("test:prov_x")
         cid_y = make_fixture_contact_id("test:prov_y")
@@ -296,15 +284,19 @@ class TestOwnershipProvenance:
         populate_contacts_from_crm(fix, conn, source="crm_fix")
         n_before = len(get_identifier_ownership_history(conn))
 
-        with pytest.raises(IdentityResolutionError):
-            resolve_identifier_conflict("phone", "+18005559999", cid_y, create_operator_token("badactor"), conn)
+        # Every actor is denied (DenyAll), not just bad actors
+        for name in ("badactor", "admin", "crm_admin"):
+            with pytest.raises(IdentityResolutionError, match="disabled"):
+                resolve_identifier_conflict(
+                    "phone", "+18005559999", cid_y, create_operator_token(name), conn
+                )
 
         n_after = len(get_identifier_ownership_history(conn))
         assert n_before == n_after, "Failed transfer must not add history events"
         conn.close()
 
     def test_replay_does_not_duplicate_history(self, tmp_path: Path) -> None:
-        """Running the same resolution twice does not duplicate history events."""
+        """DenyAll: resolution attempts do not create history events."""
         conn = _db(tmp_path, "prov4")
         cid_a = make_fixture_contact_id("test:prov4_a")
         cid_b = make_fixture_contact_id("test:prov4_b")
@@ -317,12 +309,19 @@ class TestOwnershipProvenance:
              "identifiers": [("email", "b@p4.com"), ("phone", "+18001234444")]},
         ]
         populate_contacts_from_crm(fix, conn, source="crm_fix")
-        resolve_identifier_conflict("phone", "+18001234444", cid_b, create_operator_token("admin"), conn)
-        n1 = len(get_identifier_ownership_history(conn))
-        # Replay (second call returns 0 — idempotent)
-        resolve_identifier_conflict("phone", "+18001234444", cid_b, create_operator_token("admin"), conn)
-        n2 = len(get_identifier_ownership_history(conn))
-        assert n1 == n2, f"Replay must not add history events: {n1} → {n2}"
+        n_after_crm = len(get_identifier_ownership_history(conn))
+
+        # Multiple resolution attempts — all denied, none add history
+        for _ in range(3):
+            with pytest.raises(IdentityResolutionError, match="disabled"):
+                resolve_identifier_conflict(
+                    "phone", "+18001234444", cid_b, create_operator_token("admin"), conn
+                )
+        n_final = len(get_identifier_ownership_history(conn))
+        assert n_final == n_after_crm, (
+            f"Denied resolution attempts must not add history events: "
+            f"{n_after_crm} → {n_final}"
+        )
         conn.close()
 
 
@@ -342,14 +341,15 @@ class TestPhoneNormalization:
         formats = [
             ("+14155550101",    None),    # E.164 — no region needed
             ("+1 415-555-0101", None),    # E.164 with separators
-            ("(415) 555-0101",  "US"),    # US national
-            ("4155550101",      "US"),    # bare digits + US region
+            ("(415) 555-0101",  "US"),    # US national — region from business config
+            ("4155550101",      "US"),    # bare digits + US region from business config
         ]
         for raw, region in formats:
             payload = {"phone": raw}
-            if region:
-                payload["phone_region"] = region
-            cid = resolve_contact_from_signal("call.transcript", payload, idx)
+            # Region comes from business configuration, NOT from the payload
+            cid = resolve_contact_from_signal(
+                "call.transcript", payload, idx, default_region=region
+            )
             assert cid == alice_cid, (
                 f"Phone {raw!r} (region={region!r}) must resolve to Alice. Got {cid!r}"
             )

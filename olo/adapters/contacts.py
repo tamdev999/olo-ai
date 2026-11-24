@@ -101,16 +101,16 @@ _log = logging.getLogger(__name__)
 # P3: Authorized operator identities for conflict resolution
 # ---------------------------------------------------------------------------
 
-# Fix 3: replace string-based authorization with a verifiable typed boundary.
-# AUTHORIZED_OPERATOR_NAMES names the operators currently permitted to invoke
-# resolve_identifier_conflict().  Replace the validator inside
-# create_operator_token() with an IAM/RBAC integration for production.
-# This frozenset is intentionally distinct from any CRM source name or contact
-# ID format — it cannot be satisfied by an arbitrary caller-supplied string.
-AUTHORIZED_OPERATOR_NAMES: frozenset[str] = frozenset({"admin", "crm_admin"})
-
-# Backward-compatible alias kept for existing code and tests that inspect the set.
-AUTHORIZED_OPERATORS: frozenset[str] = AUTHORIZED_OPERATOR_NAMES
+# Authorization boundary — DenyAll until a real IAM/RBAC integration is wired.
+#
+# Manual identifier transfers are DISABLED.  No string, token, or allowlist
+# currently authorizes a transfer.  AUTHORIZED_OPERATORS is intentionally empty;
+# adding names here does nothing — the enforcement is in create_operator_token()
+# and resolve_identifier_conflict(), not in this set.
+#
+# Integration requirement: replace create_operator_token()'s body with a call
+# to the business's authentication system (session tokens, JWT, RBAC lookup).
+AUTHORIZED_OPERATORS: frozenset[str] = frozenset()
 
 
 class IdentityResolutionError(Exception):
@@ -141,24 +141,22 @@ class OperatorToken:
 
 
 def create_operator_token(name: str) -> OperatorToken:
-    """Validate and mint an OperatorToken for the named operator.
+    """Attempt to mint an OperatorToken — currently always raises (DenyAll).
 
-    Raises IdentityResolutionError for unrecognised names.  This is the
-    single authorization boundary for privileged identity operations —
-    unauthorized callers cannot obtain a token and therefore cannot call
-    resolve_identifier_conflict().
+    Manual identifier transfers are disabled until an authenticated IAM/RBAC
+    integration is configured.  No string value, including previously accepted
+    names, can authorize a transfer through this function.
 
-    INTEGRATION REQUIREMENT: for production deployments, replace the
-    frozenset check below with an authenticated IAM/RBAC call so the
-    caller's real identity is verified rather than accepted as a string.
+    INTEGRATION REQUIREMENT: replace this function's body with a call to the
+    business's authentication system (session tokens, JWT validation, RBAC
+    lookup) before enabling conflict resolution.
     """
-    if name not in AUTHORIZED_OPERATOR_NAMES:
-        raise IdentityResolutionError(
-            f"create_operator_token: {name!r} is not an authorized operator. "
-            f"Valid operators: {sorted(AUTHORIZED_OPERATOR_NAMES)}. "
-            "Obtain IAM authorization before resolving identifier disputes."
-        )
-    return OperatorToken(actor=name)
+    raise IdentityResolutionError(
+        "create_operator_token: manual conflict resolution is currently disabled. "
+        "An authenticated IAM/RBAC integration is required to authorize identifier "
+        "transfers.  Conflicts are recorded and preserved for future resolution "
+        "once an integration is configured."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +193,15 @@ def normalize_phone(raw: str, default_region: Optional[str] = None) -> str:
         raise PhoneNormalizationError("Empty phone number.")
     raw = raw.strip()
     has_plus = raw.startswith("+")
+
+    # Reject alphabetic characters — vanity numbers and text-bearing inputs are
+    # invalid; we never silently strip letters to produce a numeric result.
+    if any(c.isalpha() for c in raw):
+        raise PhoneNormalizationError(
+            f"Phone {raw!r} contains alphabetic characters. "
+            "Only numeric phone numbers are accepted."
+        )
+
     digits = "".join(c for c in raw if c.isdigit())
 
     if has_plus:
@@ -736,11 +743,8 @@ def populate_contacts_from_crm(
             upserted += 1
 
         # Fix 1 — snapshot-mode revocation.
-        # Revoke any active identifier for a contact that is NOT present in
-        # the authoritative snapshot.  Only contacts present in this call are
-        # eligible; contacts absent from crm_contacts are untouched (this is
-        # explicitly NOT a full-database wipe).
         if snapshot_mode:
+            # Part A: revoke identifiers removed from contacts present in the snapshot.
             for contact_id, in_snapshot in snapshot_identifiers.items():
                 active_rows = conn.execute(
                     "SELECT identifier_type, identifier_value, source"
@@ -750,7 +754,6 @@ def populate_contacts_from_crm(
                 ).fetchall()
                 for id_type, id_value, orig_source in active_rows:
                     if (id_type, id_value) not in in_snapshot:
-                        # This identifier was removed from the CRM snapshot.
                         conn.execute(
                             "UPDATE contact_identifiers"
                             "  SET revoked_at = ?, revocation_source = ?"
@@ -763,6 +766,36 @@ def populate_contacts_from_crm(
                             orig_source, None, now,
                             reason=f"removed from CRM snapshot ({source})",
                         )
+
+            # Part B: revoke all identifiers for contacts omitted entirely from the
+            # authoritative snapshot.  Partial/delta updates (snapshot_mode=False)
+            # never trigger this path.
+            snapshot_cids = set(snapshot_identifiers.keys())
+            omitted = conn.execute(
+                "SELECT id FROM contacts"
+            ).fetchall()
+            for (cid,) in omitted:
+                if cid in snapshot_cids:
+                    continue  # contact is in the snapshot — handled by Part A
+                active_rows = conn.execute(
+                    "SELECT identifier_type, identifier_value, source"
+                    " FROM contact_identifiers"
+                    " WHERE contact_id = ? AND revoked_at IS NULL",
+                    (cid,),
+                ).fetchall()
+                for id_type, id_value, orig_source in active_rows:
+                    conn.execute(
+                        "UPDATE contact_identifiers"
+                        "  SET revoked_at = ?, revocation_source = ?"
+                        " WHERE identifier_type = ? AND identifier_value = ?"
+                        "   AND contact_id = ? AND revoked_at IS NULL",
+                        (now, source, id_type, id_value, cid),
+                    )
+                    _record_ownership_event(
+                        conn, id_type, id_value, cid, "revoked",
+                        orig_source, None, now,
+                        reason=f"contact omitted from CRM snapshot ({source})",
+                    )
 
         conn.execute("COMMIT")
     except Exception:
@@ -1289,15 +1322,15 @@ def resolve_identifier_conflict(
 
     Returns the number of conflict rows resolved.
     """
-    # Defense-in-depth: guard against OperatorToken(actor=...) constructed
-    # directly without going through create_operator_token().
-    if operator.actor not in AUTHORIZED_OPERATOR_NAMES:
-        raise IdentityResolutionError(
-            f"resolve_identifier_conflict: operator.actor={operator.actor!r} is not "
-            f"an authorized operator. Valid operators: {sorted(AUTHORIZED_OPERATOR_NAMES)}. "
-            "Obtain authorization via create_operator_token()."
-        )
-    resolved_by = operator.actor
+    # DenyAll boundary: manual conflict resolution is disabled until a real
+    # IAM/RBAC integration is wired.  An OperatorToken constructed directly
+    # (OperatorToken(actor=...)) still cannot authorize a transfer — this check
+    # is the enforcement point, not the token type.
+    raise IdentityResolutionError(
+        "resolve_identifier_conflict: manual conflict resolution is currently "
+        "disabled.  An authenticated IAM/RBAC integration is required.  "
+        "Conflicts are recorded and preserved for future resolution."
+    )
 
     now = clock().isoformat() if clock else datetime.now(timezone.utc).isoformat()
 
@@ -1423,18 +1456,15 @@ def resolve_identifier_conflict(
                      winner_source, now),
                 )
 
-            # Record 'transferred_in' for the winner (once; idempotent check).
-            already_in = conn.execute(
-                "SELECT id FROM identifier_ownership_history"
-                " WHERE identifier_type = ? AND identifier_value = ?"
-                "   AND contact_id = ? AND event_type = 'transferred_in'",
-                (identifier_type, identifier_value, resolved_contact_id),
-            ).fetchone()
-            if not already_in:
-                _record_ownership_event(
-                    conn, identifier_type, identifier_value, resolved_contact_id,
-                    "transferred_in", winner_source, resolved_by, now,
-                )
+            # Record 'transferred_in' for the winner.
+            # No idempotency check here: each resolution is a distinct event.
+            # The old "already_in" guard incorrectly suppressed events on
+            # repeated A→B→A→B transfers; replay safety is provided by the
+            # "if not unresolved: return 0" guard earlier in this function.
+            _record_ownership_event(
+                conn, identifier_type, identifier_value, resolved_contact_id,
+                "transferred_in", winner_source, resolved_by, now,
+            )
 
         conn.execute("COMMIT")
         return updated
@@ -1563,12 +1593,18 @@ def resolve_contact_from_signal(
     kind: str,
     payload: dict,
     identifier_map: dict[tuple[str, str], str],
+    default_region: Optional[str] = None,
 ) -> str:
     """Resolve a canonical contact_id from a signal's verified source identifiers.
 
     Uses ONLY the contact_identifiers table (pre-loaded into *identifier_map*).
     Never reads ``ent:`` tags, ``customer_name``, or any other asserted payload
     field that could be forged.
+
+    ``default_region`` is the business-configured ISO 3166-1 alpha-2 region code
+    for national-number phone lookup (e.g. ``'US'``).  It must come from trusted
+    business configuration — never from the signal payload.  When None, only
+    E.164 phone numbers (starting with '+') resolve.
 
     P1: identifiers with unresolved conflicts are absent from identifier_map
     (they were excluded by load_contact_index), so they return "" here and
@@ -1600,12 +1636,12 @@ def resolve_contact_from_signal(
 
     elif kind == "call.transcript":
         # Verified identifier: the caller's phone number from the call metadata.
-        # Fix 3: normalize to E.164 before lookup.  Numbers already in E.164
-        # pass through unchanged; national numbers require a default_region.
+        # Use only the business-configured default_region — never trust an
+        # arbitrary region value from the signal payload.
         phone = (payload.get("phone") or "").strip()
         if phone:
             try:
-                phone = normalize_phone(phone, payload.get("phone_region"))
+                phone = normalize_phone(phone, default_region)
             except PhoneNormalizationError:
                 _log.debug(
                     "resolve_contact_from_signal: could not normalize phone %r — "
@@ -1631,11 +1667,9 @@ def resolve_contact_from_signal(
                 candidates.append(("qbo_customer_id", cust_id))
 
     for id_type, id_value in candidates:
-        # Fix 3: normalize phone identifiers before lookup so callers can
-        # supply numbers in any common format.
         if id_type == "phone":
             try:
-                id_value = normalize_phone(id_value, payload.get("phone_region"))
+                id_value = normalize_phone(id_value, default_region)
             except PhoneNormalizationError:
                 continue  # skip unnormalizable phone
         contact_id = identifier_map.get((id_type, id_value))

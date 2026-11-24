@@ -414,73 +414,68 @@ class TestAuthorizationBoundary:
     def test_unauthorized_resolution_fails_at_token_creation(
         self, tmp_path: Path
     ) -> None:
-        """Unauthorized callers cannot obtain a token — rejected before any DB write."""
+        """DenyAll: ALL actors are denied — token creation always raises."""
         conn = _db(tmp_path, "auth_unauth")
         cid_a, cid_b = self._setup_conflict(conn)
 
         conflicts_before = len(get_identifier_conflicts(conn, unresolved_only=True))
 
-        # Any unrecognised name must raise IdentityResolutionError
-        for bad_name in ("anyone", "", "crm_fixture", "crm_v1", "operator"):
-            with pytest.raises(IdentityResolutionError, match="not an authorized operator"):
-                create_operator_token(bad_name)
+        # Every name — including previously accepted ones — must be denied
+        for name in ("anyone", "", "crm_fixture", "crm_v1", "operator",
+                     "admin", "crm_admin"):
+            with pytest.raises(IdentityResolutionError, match="disabled"):
+                create_operator_token(name)
 
         # Conflict must remain untouched — no DB writes occurred
         conflicts_after = len(get_identifier_conflicts(conn, unresolved_only=True))
         assert conflicts_after == conflicts_before, (
-            "Unauthorized token attempt must not modify the DB"
+            "Denied token attempts must not modify the DB"
         )
         conn.close()
 
     def test_authorized_resolution_records_verified_actor(
         self, tmp_path: Path
     ) -> None:
-        """Authorized resolution must record the authenticated actor in audit history."""
+        """DenyAll: resolution is refused even with a directly constructed token."""
         conn = _db(tmp_path, "auth_ok")
         cid_a, cid_b = self._setup_conflict(conn)
 
-        token = create_operator_token("admin")
-        assert isinstance(token, OperatorToken)
-        assert token.actor == "admin"
-
-        resolve_identifier_conflict(
-            "phone", "+18887771234", cid_b, token, conn
-        )
-
-        # Both transfer events must carry actor = "admin"
-        history = get_identifier_ownership_history(
-            conn, identifier_type="phone", identifier_value="+18887771234"
-        )
-        transfer_events = [
-            h for h in history
-            if h["event_type"] in ("transferred_in", "transferred_out")
-        ]
-        assert transfer_events, "Transfer events must exist in ownership history"
-        for event in transfer_events:
-            assert event["actor"] == "admin", (
-                f"Actor must be 'admin'. Got {event['actor']!r}"
+        # Direct token construction bypasses create_operator_token but not the
+        # DenyAll boundary inside resolve_identifier_conflict.
+        forged_token = OperatorToken(actor="admin")
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", "+18887771234", cid_b, forged_token, conn
             )
+
+        # Disputed phone remains excluded
+        idx, _ = load_contact_index(conn)
+        assert idx.get(("phone", "+18887771234")) is None
         conn.close()
 
     def test_crm_admin_token_also_valid(self, tmp_path: Path) -> None:
-        """crm_admin is also a recognized authorized operator."""
+        """DenyAll: crm_admin is also denied — the allowlist is empty."""
         conn = _db(tmp_path, "auth_crm_admin")
         cid_a, cid_b = self._setup_conflict(conn)
 
-        token = create_operator_token("crm_admin")
-        assert token.actor == "crm_admin"
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            create_operator_token("crm_admin")
 
-        resolved = resolve_identifier_conflict(
-            "phone", "+18887771234", cid_a, token, conn
-        )
-        assert resolved >= 1
+        # Directly constructed crm_admin token is also denied
+        forged = OperatorToken(actor="crm_admin")
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", "+18887771234", cid_a, forged, conn
+            )
         conn.close()
 
     def test_authorized_operators_set_unchanged(self) -> None:
-        """AUTHORIZED_OPERATORS frozenset content must match the expected set."""
-        assert "admin" in AUTHORIZED_OPERATORS
-        assert "crm_admin" in AUTHORIZED_OPERATORS
-        assert "" not in AUTHORIZED_OPERATORS
+        """DenyAll: AUTHORIZED_OPERATORS is empty — no string currently authorizes transfers."""
+        assert len(AUTHORIZED_OPERATORS) == 0, (
+            "AUTHORIZED_OPERATORS must be empty (DenyAll boundary)"
+        )
+        assert "admin" not in AUTHORIZED_OPERATORS
+        assert "crm_admin" not in AUTHORIZED_OPERATORS
         assert "crm_fixture" not in AUTHORIZED_OPERATORS
         assert "crm_v1" not in AUTHORIZED_OPERATORS
 
@@ -551,25 +546,20 @@ class TestRegressionCorrectness:
             "Post-normalization collision must create a conflict"
         )
 
-        # Resolve with a typed token
-        token = create_operator_token("crm_admin")
-        resolve_identifier_conflict(
-            "phone", "+18001231235", cid_a, token, conn
-        )
-
-        # History must show transfer events with actor recorded
+        # History shows assignment events
         history = get_identifier_ownership_history(
             conn, identifier_type="phone", identifier_value="+18001231235"
         )
-        transfer_events = [h for h in history if "transfer" in h["event_type"]]
-        assert transfer_events, "Transfer events must exist in history"
-        assert all(e["actor"] == "crm_admin" for e in transfer_events), (
-            "All transfer events must carry actor='crm_admin'"
-        )
+        assert any(h["event_type"] == "assigned" for h in history)
 
-        # Phone now resolves to winner
+        # Resolution is disabled; disputed phone stays excluded
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", "+18001231235", cid_a,
+                create_operator_token("crm_admin"), conn
+            )
         idx, _ = load_contact_index(conn)
-        assert idx.get(("phone", "+18001231235")) == cid_a
+        assert idx.get(("phone", "+18001231235")) is None
         conn.close()
 
     def test_benchmark_fingerprint_unchanged(self, tmp_path: Path) -> None:

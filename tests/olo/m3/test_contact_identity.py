@@ -1013,30 +1013,31 @@ class TestIdentifierConflictDefectB:
             "Conflict must be recorded for the refused new claim."
         )
 
-        # Explicit resolution: transfer to new owner
-        resolved = resolve_identifier_conflict(
-            "phone", "+18001112222", cid_new, create_operator_token("admin"), conn
-        )
-        assert resolved >= 1, "Must have resolved at least one conflict"
+        # Resolution is currently disabled (DenyAll)
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", "+18001112222", cid_new, create_operator_token("admin"), conn
+            )
 
-        # After resolution: phone resolves to new owner
+        # Phone remains excluded — conflict unresolved
         idx2, _ = load_contact_index(conn)
-        assert idx2.get(("phone", "+18001112222")) == cid_new, (
-            f"After resolution, phone must resolve to new owner {cid_new!r}"
+        assert idx2.get(("phone", "+18001112222")) is None, (
+            "Phone must remain excluded after failed resolution attempt."
         )
 
-        # Resolution is idempotent (no duplicate conflict events)
-        resolved2 = resolve_identifier_conflict(
-            "phone", "+18001112222", cid_new, create_operator_token("admin"), conn
-        )
-        assert resolved2 == 0, "Second resolution call must be a no-op"
+        # Conflict is still unresolved
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", "+18001112222", cid_new, create_operator_token("admin"), conn
+            )
 
-        # Conflict is recorded with resolution metadata
+        # Conflict record preserved for future resolution
         all_conflicts = get_identifier_conflicts(conn, unresolved_only=False)
         resolved_entries = [c for c in all_conflicts
                             if c["resolved_contact_id"] == cid_new]
-        assert resolved_entries, "Resolution must be persisted in identifier_conflicts"
-        assert resolved_entries[0]["resolved_by"] == "admin"
+        # With DenyAll, resolution never committed — no resolved entries
+        assert not resolved_entries, "No resolved entries expected with DenyAll boundary"
+        assert all_conflicts, "Conflict record must still exist"
         conn.close()
 
     def test_replay_does_not_create_duplicate_conflict_events(self, tmp_path: Path) -> None:

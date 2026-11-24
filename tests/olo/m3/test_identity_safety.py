@@ -115,17 +115,14 @@ class TestP1FailClosed:
         idx, _ = load_contact_index(conn)
         assert idx.get(("phone", ALICE_PHONE)) is None
 
-        # Admin resolves to Bob
-        resolve_identifier_conflict("phone", ALICE_PHONE, bob_cid, create_operator_token("admin"), conn)
+        # Resolution is disabled (DenyAll) — phone remains unassigned
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict("phone", ALICE_PHONE, bob_cid, create_operator_token("admin"), conn)
 
-        # After resolution: phone assigned to Bob only
+        # Phone stays excluded from both parties
         idx2, _ = load_contact_index(conn)
-        assert idx2.get(("phone", ALICE_PHONE)) == bob_cid, (
-            f"After resolution to Bob, phone must resolve to Bob. "
-            f"Got {idx2.get(('phone', ALICE_PHONE))!r}"
-        )
-        assert idx2.get(("phone", ALICE_PHONE)) != alice_cid, (
-            "Phone must NOT resolve to Alice after resolution to Bob"
+        assert idx2.get(("phone", ALICE_PHONE)) is None, (
+            "Phone must remain unassigned while resolution is disabled"
         )
         conn.close()
 
@@ -165,42 +162,35 @@ class TestP2ConflictRecording:
     """P2: New disputes are always recorded; replay stays idempotent."""
 
     def test_new_dispute_recorded_after_resolution(self, tmp_path: Path) -> None:
-        """P2: After a conflict is resolved, a fresh claim creates a new event."""
+        """P2: each new ownership claim is independently recorded; replay of same source is idempotent."""
         conn = _db(tmp_path, "p2_new")
         cid_a = make_fixture_contact_id("test:p2_a")
         cid_b = make_fixture_contact_id("test:p2_b")
         fix_a = [{"contact_id": cid_a, "canonical_email": "a@p2.com",
                    "display_name": "A", "organization_name": "O",
                    "identifiers": [("email", "a@p2.com"), ("phone", "+19991112222")]}]
-        fix_b = [{"contact_id": cid_b, "canonical_email": "b@p2.com",
-                   "display_name": "B", "organization_name": "O",
-                   "identifiers": [("email", "b@p2.com"), ("phone", "+19991112222")]}]
+        fix_b_v2 = [{"contact_id": cid_b, "canonical_email": "b@p2.com",
+                      "display_name": "B", "organization_name": "O",
+                      "identifiers": [("email", "b@p2.com"), ("phone", "+19991112222")]}]
+        fix_b_v3 = [{**fix_b_v2[0]}]  # same data, different source below
 
-        # Round 1: A owns phone; B tries to claim → 1 conflict
+        # A owns phone; B claims with crm_v2 → first conflict
         populate_contacts_from_crm(fix_a, conn, source="crm_v1")
-        populate_contacts_from_crm(fix_b, conn, source="crm_v2")
-        n_r1 = len(get_identifier_conflicts(conn, unresolved_only=True))
-        assert n_r1 >= 1, "First dispute must be recorded"
+        populate_contacts_from_crm(fix_b_v2, conn, source="crm_v2")
+        n1 = len(get_identifier_conflicts(conn, unresolved_only=False))
+        assert n1 >= 1, "First dispute must be recorded"
 
-        # Resolve to B
-        resolve_identifier_conflict("phone", "+19991112222", cid_b, create_operator_token("admin"), conn)
-        assert len(get_identifier_conflicts(conn, unresolved_only=True)) == 0, (
-            "No unresolved conflicts after resolution"
+        # Replay same source → idempotent, no duplicate
+        populate_contacts_from_crm(fix_b_v2, conn, source="crm_v2")
+        assert len(get_identifier_conflicts(conn, unresolved_only=False)) == n1, (
+            "P2: Replay with same source must not create duplicates"
         )
 
-        # Round 2: A re-claims the phone → NEW unresolved conflict
-        populate_contacts_from_crm(fix_a, conn, source="crm_v3")
-        n_r2 = len(get_identifier_conflicts(conn, unresolved_only=True))
-        assert n_r2 >= 1, (
-            f"P2: A fresh claim after resolution must create a new conflict event. "
-            f"Got {n_r2} unresolved."
-        )
-
-        # Total conflict rows: at least 2
-        all_conflicts = get_identifier_conflicts(conn, unresolved_only=False)
-        assert len(all_conflicts) >= 2, (
-            f"P2: At least 2 conflict events expected (one per round). "
-            f"Got {len(all_conflicts)}"
+        # B re-imports from a NEW source (crm_v3) → fresh conflict event
+        populate_contacts_from_crm(fix_b_v3, conn, source="crm_v3")
+        n2 = len(get_identifier_conflicts(conn, unresolved_only=False))
+        assert n2 >= 2, (
+            f"P2: New source must create a new conflict event. Got {n2}"
         )
         conn.close()
 
@@ -255,64 +245,82 @@ class TestP3RestrictedResolution:
         return conn, cid_a, cid_b, cid_c
 
     def test_unauthorized_actor_raises(self, tmp_path: Path) -> None:
-        """P3: an arbitrary resolved_by string is rejected with IdentityResolutionError."""
+        """DenyAll: ALL actors are denied — no string can authorize a transfer."""
         conn, cid_a, cid_b, _ = self._setup_conflict(tmp_path, "p3_unauth")
-        with pytest.raises(IdentityResolutionError, match="not an authorized operator"):
-            resolve_identifier_conflict("phone", "+18001234567", cid_b, create_operator_token("anyone"), conn)
+        for name in ("anyone", "admin", "crm_admin", "", "root", "crm_fixture"):
+            with pytest.raises(IdentityResolutionError, match="disabled"):
+                resolve_identifier_conflict(
+                    "phone", "+18001234567", cid_b, create_operator_token(name), conn
+                )
         # Conflict remains unresolved
         assert len(get_identifier_conflicts(conn, unresolved_only=True)) >= 1
         conn.close()
 
     def test_non_claimant_raises(self, tmp_path: Path) -> None:
-        """P3: resolving to a non-claimant contact is rejected."""
+        """DenyAll: resolution is refused before claimant validation — all callers denied."""
         conn, cid_a, cid_b, cid_c = self._setup_conflict(tmp_path, "p3_nonclaim")
-        with pytest.raises(IdentityResolutionError, match="not a claimant"):
-            resolve_identifier_conflict("phone", "+18001234567", cid_c, create_operator_token("admin"), conn)
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", "+18001234567", cid_c, create_operator_token("admin"), conn
+            )
         # Conflict remains unresolved
         assert len(get_identifier_conflicts(conn, unresolved_only=True)) >= 1
         conn.close()
 
     def test_authorized_claimant_succeeds(self, tmp_path: Path) -> None:
-        """P3: authorized resolution to a legitimate claimant succeeds."""
+        """DenyAll: resolution is currently disabled for all callers."""
         conn, cid_a, cid_b, _ = self._setup_conflict(tmp_path, "p3_ok")
-        resolved = resolve_identifier_conflict("phone", "+18001234567", cid_b, create_operator_token("admin"), conn)
-        assert resolved >= 1
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", "+18001234567", cid_b, create_operator_token("admin"), conn
+            )
+        # Disputed identifier remains excluded
         idx, _ = load_contact_index(conn)
-        assert idx.get(("phone", "+18001234567")) == cid_b
+        assert idx.get(("phone", "+18001234567")) is None
         conn.close()
 
     def test_repeated_resolution_is_noop(self, tmp_path: Path) -> None:
-        """P3: calling resolve twice with same target is a no-op."""
+        """DenyAll: every resolution attempt raises, never commits."""
         conn, cid_a, cid_b, _ = self._setup_conflict(tmp_path, "p3_idem")
-        resolve_identifier_conflict("phone", "+18001234567", cid_b, create_operator_token("admin"), conn)
-        second = resolve_identifier_conflict("phone", "+18001234567", cid_b, create_operator_token("admin"), conn)
-        assert second == 0, "Second call with same resolution must return 0"
+        for _ in range(2):
+            with pytest.raises(IdentityResolutionError, match="disabled"):
+                resolve_identifier_conflict(
+                    "phone", "+18001234567", cid_b, create_operator_token("admin"), conn
+                )
+        # Conflict still unresolved
+        assert len(get_identifier_conflicts(conn, unresolved_only=True)) >= 1
         conn.close()
 
     def test_cross_business_isolation(self, tmp_path: Path) -> None:
-        """P3: resolution on biz_a's db cannot affect biz_b's db."""
+        """DenyAll: failed resolution in biz_a leaves biz_b's conflict untouched."""
         conn_a, cid_a_a, cid_b_a, _ = self._setup_conflict(tmp_path, "p3_biz_a")
         conn_b, cid_a_b, cid_b_b, _ = self._setup_conflict(tmp_path, "p3_biz_b")
 
-        # Resolve in biz_a
-        resolve_identifier_conflict("phone", "+18001234567", cid_b_a, create_operator_token("admin"), conn_a)
+        # Resolution attempt in biz_a fails
+        with pytest.raises(IdentityResolutionError, match="disabled"):
+            resolve_identifier_conflict(
+                "phone", "+18001234567", cid_b_a, create_operator_token("admin"), conn_a
+            )
 
-        # biz_b's conflict must remain unresolved
+        # biz_b's conflict must remain unresolved and untouched
         biz_b_conflicts = get_identifier_conflicts(conn_b, unresolved_only=True)
         assert len(biz_b_conflicts) >= 1, "biz_b's conflict must not be affected"
         idx_b, _ = load_contact_index(conn_b)
         assert idx_b.get(("phone", "+18001234567")) is None, (
-            "biz_b's phone must remain excluded after biz_a's resolution"
+            "biz_b's phone must remain excluded"
         )
         conn_a.close()
         conn_b.close()
 
     def test_authorized_operators_not_satisfiable_by_source_names(self) -> None:
-        """P3: AUTHORIZED_OPERATORS are distinct from CRM source names."""
-        assert "admin" in AUTHORIZED_OPERATORS
-        assert "crm_admin" in AUTHORIZED_OPERATORS
-        assert "" not in AUTHORIZED_OPERATORS
+        """DenyAll: AUTHORIZED_OPERATORS is empty — no string authorizes transfers."""
+        # The set is intentionally empty until an IAM integration is configured.
+        assert len(AUTHORIZED_OPERATORS) == 0, (
+            "AUTHORIZED_OPERATORS must be empty (DenyAll boundary)"
+        )
+        # Neither previously accepted names nor CRM source names are present.
+        assert "admin" not in AUTHORIZED_OPERATORS
+        assert "crm_admin" not in AUTHORIZED_OPERATORS
         assert "crm_fixture" not in AUTHORIZED_OPERATORS
         assert "crm_v1" not in AUTHORIZED_OPERATORS
-        # Cannot be satisfied by arbitrary caller-supplied text
         assert "anyone" not in AUTHORIZED_OPERATORS
