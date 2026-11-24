@@ -67,60 +67,41 @@ def _build_signal_map():
 # ---------------------------------------------------------------------------
 
 class TestEmailBodySubjectConsistency:
-    """Document the email_confirm_orig body/subject inconsistency as a known defect.
+    """email_confirm_orig body and subject are now consistent (CM-01 applied).
 
-    KNOWN DEFECT (proposed correction — corpus regeneration required):
-      email_confirm_orig has:
-        - Subject: "RE: Delivery for {date}" (correctly says Delivery)
-        - Body:    "our meeting is still on for {date}" (incorrectly says meeting)
-        - Thread:  linked to the delivery-reschedule thread
-
-      This body/subject mismatch means DeepSeek would extract a "meeting" observation
-      from a delivery context. The P1 contradiction test relies on BOTH confirm_orig
-      and transcript_reschedule being about delivery so DeepSeek can detect the
-      contradiction and update the observation. With the body saying "meeting" instead
-      of "delivery", the P1 gate test is expected to produce a "meeting" observation
-      that is never superseded by the delivery reschedule (different entity types).
-
-      The fix (body → "delivery") requires a corpus regeneration and fingerprint update.
-      Proposed for a separate corpus-refresh commit.
+    Before CM-01: body said 'our meeting is still on' (delivery context, meeting language).
+    After CM-01:  body says 'your delivery is still scheduled' (consistent with subject
+                  'RE: Delivery for {date}' and the delivery-reschedule thread).
     """
 
-    def test_confirm_orig_body_says_meeting_known_defect(self):
-        """KNOWN DEFECT: email_confirm_orig body says 'meeting' in a delivery context.
-
-        This documents the inconsistency. The fix (body → 'delivery') requires a
-        corpus regeneration; it is proposed for a separate corpus-refresh commit.
-        """
+    def test_confirm_orig_body_says_delivery_not_meeting(self):
+        """CM-01 applied: email_confirm_orig body must say 'delivery', not 'meeting'."""
         sig_map = _build_signal_map()
         for ent in ENTITIES:
             sid = _sig_id(f"email_confirm_orig_{ent.entity_id}")
             sig = sig_map.get(sid)
             assert sig is not None, f"email_confirm_orig missing for {ent.entity_id}"
             body = (sig.body_text or "").lower()
-            # Document current (defective) state
-            assert "meeting" in body, (
-                f"DOCUMENTATION: email_confirm_orig body currently says 'meeting'. "
-                f"This is the known defect to be fixed in a future corpus regeneration. "
-                f"body={sig.body_text!r}"
+            assert "delivery" in body, (
+                f"CM-01: body must say 'delivery'. Got: {sig.body_text!r}"
+            )
+            assert "meeting" not in body, (
+                f"CM-01: body must NOT say 'meeting'. Got: {sig.body_text!r}"
             )
 
-    def test_confirm_orig_subject_says_delivery_inconsistent_with_body(self):
-        """Document the subject/body inconsistency that creates the semantic confusion."""
+    def test_confirm_orig_subject_and_body_are_now_consistent(self):
+        """Subject says 'Delivery'; after CM-01 body also says 'delivery'."""
         sig_map = _build_signal_map()
         for ent in ENTITIES:
             sid = _sig_id(f"email_confirm_orig_{ent.entity_id}")
             sig = sig_map[sid]
             subject = (sig.subject or "").lower()
             body = (sig.body_text or "").lower()
-            # Subject correctly says delivery
             assert "delivery" in subject or "re:" in subject, (
                 f"Subject should reference delivery context. Got: {sig.subject!r}"
             )
-            # Body incorrectly says meeting — this is the documented defect
-            assert "meeting" in body, (
-                f"KNOWN DEFECT: body says 'meeting' while subject says delivery. "
-                f"body={sig.body_text!r}, subject={sig.subject!r}"
+            assert "delivery" in body, (
+                f"CM-01: body must say 'delivery' to match subject. Got: {sig.body_text!r}"
             )
 
     def test_confirm_orig_is_in_reschedule_thread(self):
@@ -134,33 +115,24 @@ class TestEmailBodySubjectConsistency:
             resc = sig_map[resc_id]
             assert conf.thread_id is not None, "email_confirm_orig must have a thread_id"
             assert conf.thread_id == resc.thread_id, (
-                f"email_confirm_orig must be in the same thread as "
-                f"email_reschedule (delivery thread). "
-                f"confirm.thread_id={conf.thread_id!r}, "
-                f"reschedule.thread_id={resc.thread_id!r}"
+                f"email_confirm_orig must be in the same thread as email_reschedule."
             )
 
-    def test_p1_contradiction_has_semantic_mismatch(self):
-        """Document the P1 scenario semantic mismatch.
-
-        The original confirmation body says 'meeting' and the reschedule transcript
-        says 'delivery'. These are different entity types, so DeepSeek may not detect
-        them as a contradiction. This is the production defect.
-        """
+    def test_p1_contradiction_is_now_semantically_coherent(self):
+        """After CM-01 both P1 signals use delivery language — contradiction is detectable."""
         sig_map = _build_signal_map()
         for ent in ENTITIES:
             conf = sig_map[_sig_id(f"email_confirm_orig_{ent.entity_id}")]
             trans = sig_map[_sig_id(f"transcript_reschedule_{ent.entity_id}")]
             conf_body = (conf.body_text or "").lower()
             trans_body = (trans.body_text or "").lower()
-            # Confirm says "meeting", transcript says "delivery" — mismatch
-            assert "meeting" in conf_body, "confirm body says meeting (the defect)"
-            assert "delivery" in trans_body or "reschedul" in trans_body, (
-                "transcript body is about delivery/reschedule"
+            assert "delivery" in conf_body, (
+                f"Confirm body must say 'delivery' for a coherent P1 contradiction. "
+                f"Got: {conf.body_text!r}"
             )
-            # They disagree on entity type — this is the semantic inconsistency
-            assert "delivery" not in conf_body, (
-                "confirm body does NOT say delivery (it should, to match the transcript)"
+            assert "delivery" in trans_body or "reschedul" in trans_body
+            assert "meeting" not in conf_body, (
+                f"Confirm body must not say 'meeting' in delivery context (CM-01 applied)."
             )
 
 
@@ -452,25 +424,17 @@ class TestEvaluatorV22Predicates:
             )
 
     def test_confirm_orig_body_now_says_delivery_not_meeting_for_predicates(self):
-        """With the current body ('meeting'), email_confirm_orig IS classified as meeting evidence.
-
-        This is a consequence of the known body/subject defect. The v2.2 evaluator
-        would classify email_confirm_orig as meeting-related because the body says
-        'meeting', even though the signal is in a delivery context.
-        """
+        """CM-01 applied: body says 'delivery' so is_meeting_evidence returns False."""
         from olo.m3.benchmark_eval_v2_2 import is_meeting_evidence
         tl = generate_timeline()
         for ent in ENTITIES:
             sig = next(s for s in tl if s.signal_id == _sig_id(f"email_confirm_orig_{ent.entity_id}"))
             body = (sig.body_text or "").lower()
-            # Current (defective) body says "meeting"
-            assert "meeting" in body, f"body currently says meeting (the known defect)"
-            # So is_meeting_evidence returns True — this is correct given the current body
-            assert is_meeting_evidence(sig), (
-                f"With current body ('meeting'), is_meeting_evidence must return True. "
-                f"This aligns with mtg_05 label (which points to this signal for "
-                f"'meeting confirmation' queries). The proposed fix (body → 'delivery') "
-                f"would change this to False and require mtg_05 label update."
+            assert "delivery" in body, f"CM-01: body must say delivery. Got: {sig.body_text!r}"
+            assert "meeting" not in body, f"CM-01: body must NOT say meeting. Got: {sig.body_text!r}"
+            assert not is_meeting_evidence(sig), (
+                f"CM-01 applied: body says 'delivery' so is_meeting_evidence must return False. "
+                f"body={sig.body_text!r}"
             )
 
 

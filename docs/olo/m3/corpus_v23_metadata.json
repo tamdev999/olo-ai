@@ -1,0 +1,29 @@
+{
+  "version": "v2.3-corpus-cm01",
+  "description": "CM-01: email_confirm_orig body corrected from meeting to delivery language",
+  "base_sha": "220ae8f5bc6084eba3a18c49cd7542844653173d",
+  "change_summary": "Three email_confirm_orig signals had body text 'our meeting is still on for {date}' corrected to 'your delivery is still scheduled for {date} as originally planned. We haven't made any changes.' Subject, thread, direction, source, and position unchanged.",
+  "changed_document_ids": [
+    "sig:sig_67d70d5b3e95a57eb6493a19",
+    "sig:sig_8be758642a3e80889947453d",
+    "sig:sig_73573f4352378ff8dccabd5c"
+  ],
+  "changed_entities": [
+    "Alice Chen / Acme Corp (ent_01ACME000000000000000000)",
+    "Bob Torres / Beta Tech (ent_01BETA000000000000000000)",
+    "Carla Osei / Gamma Retail (ent_01GAMM000000000000000000)"
+  ],
+  "fingerprints": {
+    "corpus_fp_old": "1877ca71d6fbbe64a6ef0b728159ceb4acc2595a14e05d0f9e44db2aa6759a0b",
+    "corpus_fp_new": "5eb1b5753f85204d8d012e258671c40b91142608822da9dbb0b58fcd564de9ce",
+    "full_item_fp_old": "c675903d1cc31d917a4c2d0e9fde5fbb45d4b93aefbea1dec2b16b85cb08e02a",
+    "full_item_fp_new": "8bc0a791420ef0c5b53397ebd7ded571f4b5f30584d9bf576ebfe4a51af3a1cf"
+  },
+  "notes": [
+    "Historical benchmark results (pre-CM01) remain valid under the old fingerprints.",
+    "New banks must be built against the corrected corpus before running Recall@10.",
+    "Label corrections (CM-02 through CM-05 and additional defects from Opus audit) are Part 2.",
+    "FROZEN_CORPUS_FP and FROZEN_FULL_ITEM_FP in source are updated to new values in this commit.",
+    "V1 gate questions reschedule_a and contradiction queries will need versioning in Part 2."
+  ]
+}

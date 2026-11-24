@@ -121,14 +121,15 @@ class TestDeterministicBuilds:
         )
 
     def test_frozen_corpus_fingerprint_unchanged(self) -> None:
-        """The corpus fingerprint must match the FROZEN_CORPUS_FP constant."""
-        FROZEN = "1877ca71d6fbbe64a6ef0b728159ceb4acc2595a14e05d0f9e44db2aa6759a0b"
+        """The corpus fingerprint must match the CM-01-updated FROZEN_CORPUS_FP constant."""
+        FROZEN = "5eb1b5753f85204d8d012e258671c40b91142608822da9dbb0b58fcd564de9ce"
         tl = generate_timeline()
         actual = corpus_fingerprint(tl)
         assert actual == FROZEN, (
             f"Corpus fingerprint changed: got {actual[:16]}... "
             f"expected {FROZEN[:16]}... — "
-            "entity IDs, body text, or signal IDs changed unexpectedly."
+            "entity IDs, body text, or signal IDs changed unexpectedly. "
+            "CM-01 pre-fix value: 1877ca71d6fbbe64..."
         )
 
     def test_full_item_fingerprint_stable(self, tmp_path: Path) -> None:

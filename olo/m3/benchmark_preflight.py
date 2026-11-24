@@ -52,6 +52,11 @@ _log = logging.getLogger(__name__)
 #:   python scripts/olo/m3/build_corpus.py --db-dir /tmp/fip_check
 #:   # then read Full-item fingerprint from output
 FROZEN_FULL_ITEM_FP: str = (
+    "8bc0a791420ef0c5b53397ebd7ded571f4b5f30584d9bf576ebfe4a51af3a1cf"
+)
+
+#: Pre-CM01 fingerprint (historical reference — corpus before email_confirm_orig fix).
+FROZEN_FULL_ITEM_FP_PRE_CM01: str = (
     "c675903d1cc31d917a4c2d0e9fde5fbb45d4b93aefbea1dec2b16b85cb08e02a"
 )
 

@@ -669,8 +669,9 @@ def _add_entity_signals(
     # (creates a contradiction with the reschedule email above)
     day_91 = start + timedelta(days=91)
     confirm_original_body = (
-        f"Hi {ent.display_name}, just to confirm, our meeting is still on "
-        f"for {date_orig} as originally scheduled. See you then. - Owner"
+        f"Hi {ent.display_name}, just to confirm, your delivery is still "
+        f"scheduled for {date_orig} as originally planned. "
+        f"We haven't made any changes. — Owner"
     )
     out.append(SyntheticSignal(
         signal_id=_sig_id(f"email_confirm_orig_{ent.entity_id}"),
