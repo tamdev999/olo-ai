@@ -242,6 +242,25 @@ def main() -> None:
         print("ERROR: Fingerprint/hash mismatch — stopping.")
         sys.exit(1)
 
+    # --- Benchmark pre-flight: scope-equivalence + full-item fingerprint ---
+    print("\n--- Running benchmark pre-flight checks ---")
+    from olo.m3.feeder import populate_olo_db, build_hindsight_items
+    from olo.m3.benchmark_preflight import run_preflight, PreflightError
+    import tempfile
+    with tempfile.TemporaryDirectory() as _pf_td:
+        _pf_db = Path(_pf_td) / "preflight.db"
+        populate_olo_db(tl, _pf_db)
+        _pf_items = build_hindsight_items(_pf_db)
+    _pf_result = run_preflight(_pf_items)
+    print(f"  Scope-equivalence: {_pf_result.scope.passed}/{_pf_result.scope.total} pass")
+    print(f"  Full-item FP: {_pf_result.fingerprint.actual[:32]}... match={_pf_result.fingerprint.ok}")
+    try:
+        _pf_result.raise_if_failed()
+        print("  [ok] Pre-flight PASSED")
+    except PreflightError as _pfe:
+        print(f"  [FAIL] Pre-flight FAILED: {_pfe}")
+        sys.exit(1)
+
     # voice_qbo diagnostic
     from olo.m3.synthetic.generator import ENTITIES, _sig_id
     vq_missing = []

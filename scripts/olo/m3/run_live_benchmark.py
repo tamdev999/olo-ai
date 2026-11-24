@@ -30,10 +30,15 @@ K_TARGETS  = [1, 5, 10, 20, 50, 100]
 # PRE_P1_FIX_HASH = "e9ac10c347caff427e28126bfc336be67d1316145a7f408a2702af7fb6b47ef5"
 # PRE_P2_FIX_HASH = "fbede725aeb89d3557e048803e0891d134c10734ac1ff2c4a7e80f139d28a3be"
 FROZEN_HASH = "1fb288817e141ee50aaf92a816009e4e76adabcd0ff129a074f7023ac3538972"
-# Corpus fingerprint -- SHA-256 of all 388 authoritative source signals.
-# Computed from generate_timeline() with _DEFAULT_SEED.
-# A mismatch means the bank was built from a different corpus than the benchmark labels expect.
+# Corpus fingerprint — SHA-256 of sorted (signal_id, kind, entity_id, body_sha)
+# for all 388 authoritative source signals.  Proves the signal corpus is intact.
+# A mismatch means the bank was built from a different corpus than expected.
 FROZEN_CORPUS_FP = "1877ca71d6fbbe64a6ef0b728159ceb4acc2595a14e05d0f9e44db2aa6759a0b"
+# Full-item fingerprint — SHA-256 of all Hindsight retain-item fields including
+# context strings, entity links and recall tags.  Proves retained inputs are
+# reproducible (does NOT prove DeepSeek extraction is deterministic).
+# Computed under commit 11535c3880; stable across 3 independent corpus builds.
+FROZEN_FULL_ITEM_FP = "c675903d1cc31d917a4c2d0e9fde5fbb45d4b93aefbea1dec2b16b85cb08e02a"
 OUT_DIR     = Path("/tmp/benchmark_results")
 
 def _connect() -> HindsightClient:
@@ -545,6 +550,7 @@ def run_benchmark() -> dict:
         "benchmark_hash": benchmark_hash,
         "bank_id": BANK_ID,
         "corpus_fingerprint": FROZEN_CORPUS_FP,
+        "full_item_fingerprint": FROZEN_FULL_ITEM_FP,
         "bank_fingerprint": bank_fp,
         "n_questions": n,
         "errors": errors,

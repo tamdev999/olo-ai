@@ -249,7 +249,18 @@ def build_corpus(
     # to document IDs and body hashes.  Detects context-enrichment and entity-
     # link changes that the body-only item_fingerprint cannot.
     from olo.m3.feeder import full_item_fingerprint as _full_fp
+    from olo.m3.benchmark_preflight import FROZEN_FULL_ITEM_FP
     full_fingerprint = _full_fp(items)
+    if full_fingerprint != FROZEN_FULL_ITEM_FP:
+        print(
+            f"ERROR: Full-item fingerprint mismatch.\n"
+            f"  Computed: {full_fingerprint}\n"
+            f"  Expected: {FROZEN_FULL_ITEM_FP}\n"
+            "The corpus retain inputs differ from the committed baseline. "
+            "If this is intentional, update FROZEN_FULL_ITEM_FP in benchmark_preflight.py.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # --- Step 7: Identity and context coverage ---
     with_name = sum(
@@ -302,8 +313,8 @@ def build_corpus(
         "corpus": {
             "signal_count": signal_count,
             "item_count": len(items),
-            "fingerprint": expected_fp,
-            "item_fingerprint": item_fingerprint,
+            "corpus_fingerprint": expected_fp,
+            "body_item_fingerprint": item_fingerprint,
             "full_item_fingerprint": full_fingerprint,
             "benchmark_hash": expected_bh,
             "kind_counts": kind_counts,
@@ -369,9 +380,9 @@ def main() -> int:
         json.dump(manifest, f, indent=2)
     print(f"\nBuild manifest written to: {out_path}")
     print(
-        f"\nCorpus fingerprint:    {manifest['corpus']['fingerprint']}\n"
-        f"Item fingerprint:      {manifest['corpus']['item_fingerprint']}\n"
-        f"Full-item fingerprint: {manifest['corpus']['full_item_fingerprint']}"
+        f"\nCorpus fingerprint (body+id):  {manifest['corpus']['corpus_fingerprint']}\n"
+        f"Body-item fingerprint:         {manifest['corpus']['body_item_fingerprint']}\n"
+        f"Full-item fingerprint:         {manifest['corpus']['full_item_fingerprint']}"
     )
     print("\nCorpus built successfully.")
     return 0
