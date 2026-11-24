@@ -201,10 +201,15 @@ def _resolve_to_canonical(
     identifier_map: dict,
     entity_email_map: dict,
     crm_contacts: list,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> Optional[str]:
     """Map an old entity link to its canonical cid_ from the CRM fixture.
 
     Uses authoritative crm_contacts list -- never generator answer-key tags.
+
+    ``conn`` is used as a fallback for cid_email_derived to find emails that
+    are currently in an identifier conflict (and thus excluded from the
+    identifier_map by load_contact_index).
 
     Returns:
         str  -- the unique canonical cid_
@@ -219,13 +224,29 @@ def _resolve_to_canonical(
                 email_to_canonical[id_value] = entry.get("contact_id", "")
 
     if legacy_format == "cid_email_derived":
+        # Primary: emails from the active identifier_map
         emails = [
             id_val
             for (id_type, id_val), cid in identifier_map.items()
             if id_type == "email" and cid == old_link
         ]
+        # Fallback: query contact_identifiers directly so conflicted emails
+        # (which load_contact_index excludes from the identifier_map) are
+        # still used for resolution.
+        if not emails and conn is not None:
+            try:
+                rows = conn.execute(
+                    "SELECT identifier_value FROM contact_identifiers"
+                    " WHERE contact_id = ? AND identifier_type = 'email'",
+                    (old_link,),
+                ).fetchall()
+                emails = [r[0] for r in rows]
+            except sqlite3.OperationalError:
+                pass
+
     elif legacy_format in ("ent_email_derived", "ent_ulid"):
         emails = entity_email_map.get(old_link, [])
+
     else:
         return None
 
@@ -316,8 +337,18 @@ def discover_legacy_links(
     unknown: list = []
 
     for doc in hindsight_docs:
-        doc_id = doc.get("document_id", "")
-        entities = doc.get("entities") or []
+        doc_id = doc.get("document_id") or doc.get("id", "")
+        if not doc_id:
+            continue
+        # Hindsight v1.2.1 stores entities inside retain_params, not at the
+        # top level.  Accept both formats so unit tests (which use top-level
+        # entities) and live Hindsight responses both work.
+        _retain_params = doc.get("retain_params") or {}
+        entities = (
+            doc.get("entities")                 # unit-test / legacy format
+            or _retain_params.get("entities")   # Hindsight v1.2.1 actual
+            or []
+        )
         if not entities:
             continue
         old_link = (entities[0].get("text") or "").strip()
@@ -330,7 +361,8 @@ def discover_legacy_links(
 
         try:
             new_cid = _resolve_to_canonical(
-                old_link, fmt, identifier_map, entity_email_map, crm_contacts
+                old_link, fmt, identifier_map, entity_email_map, crm_contacts,
+                conn=conn,
             )
         except LegacyMigrationAmbiguous as exc:
             ambiguous.append(
@@ -500,6 +532,23 @@ def step_alias(run_id: str, conn: sqlite3.Connection) -> int:
                     pass
             conn.execute("DELETE FROM contacts WHERE id = ?", (old_cid,))
 
+        # Clean up any self-referential conflicts created by the rename.
+        # When LEGACY_CID is renamed to ALICE_CID, any conflict row that now
+        # has existing_contact_id == new_contact_id is spurious and must be
+        # resolved so load_contact_index includes the identifier in future runs.
+        try:
+            conn.execute(
+                "UPDATE identifier_conflicts"
+                " SET resolved_contact_id = existing_contact_id,"
+                "     resolved_at = ?,"
+                "     resolved_by = 'migration_alias'"
+                " WHERE existing_contact_id = new_contact_id"
+                "   AND resolved_contact_id IS NULL",
+                (now,),
+            )
+        except sqlite3.OperationalError:
+            pass  # table may not exist on older schemas
+
         doc_ids = [r[0] for r in rows]
         conn.executemany(
             "UPDATE identity_migration_docs"
@@ -599,7 +648,11 @@ def step_retain(
 
     Protocol per document:
       1. Assign a stable operation_id; commit it BEFORE the retain call
-         (crash-safe checkpoint for idempotent retry).
+         (crash-safe checkpoint).  For synchronous Hindsight retains,
+         idempotency is guaranteed via document_id (Hindsight v1.2.1 does
+         not echo operation_id on sync retains and uses document_id for
+         deduplication).  The persisted op_id is kept for consistent state
+         tracking and retry correlation.
       2. Call retain_fn(item_dict, operation_id).
       3. If successful: commit state='retained'.
       4. If raises: commit state='failed', last_error.
@@ -696,7 +749,11 @@ def step_verify(
             failed += 1
             continue
 
-        entities = doc.get("entities") or []
+        entities = (
+            doc.get("entities")
+            or (doc.get("retain_params") or {}).get("entities")
+            or []
+        )
         actual_link = (entities[0].get("text") or "") if entities else ""
 
         if actual_link == new_link:
