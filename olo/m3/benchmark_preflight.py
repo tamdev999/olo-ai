@@ -42,22 +42,35 @@ _log = logging.getLogger(__name__)
 #: SHA-256 of the canonical serialisation of all 388 Hindsight retain-item
 #: fields under commit ``11535c3880``.  Covers: document_id, body sha,
 #: context string, entity links (sorted text+type), recall tags (sorted),
-#: retain strategy and signal kind.
+#: retain strategy, signal kind, and observation_scopes (sorted inner+outer).
 #:
-#: This fingerprint changes when contexts or entity links change, but NOT
-#: when only body text changes (use FROZEN_CORPUS_FP for that).
+#: observation_scopes is now included because those scopes directly change
+#: consolidation behaviour: different scopes yield different observation tag
+#: sets, cross-channel and cross-month candidate pools, and memory state.
+#:
+#: This fingerprint changes when contexts, entity links, or consolidation
+#: configuration changes — but NOT when only body text changes (use
+#: FROZEN_CORPUS_FP for that).
 #:
 #: Recompute after intentional corpus changes::
 #:
 #:   python scripts/olo/m3/build_corpus.py --db-dir /tmp/fip_check
 #:   # then read Full-item fingerprint from output
 FROZEN_FULL_ITEM_FP: str = (
-    "a9d589ecc34fbb4849d5d4f2b1721f307a725a8925e7fec273a07711b61d2333"
+    "faadf17d3fdaace9b7ff6c275852302dfbfa22d33efb06c62406cf0ae6ce34e0"
 )
 
 #: Pre-CM01 fingerprint (historical reference — corpus before email_confirm_orig fix).
 FROZEN_FULL_ITEM_FP_PRE_CM01: str = (
     "c675903d1cc31d917a4c2d0e9fde5fbb45d4b93aefbea1dec2b16b85cb08e02a"
+)
+
+#: Pre-scope fingerprint (historical reference — before observation_scopes was
+#: added to full_item_fingerprint; also before two-pass scope [[cid,ym:*],[cid]]).
+#: Retained for audit trail: items had observation_scopes but it was not
+#: fingerprinted, so this value is not strictly reproducible without that code.
+FROZEN_FULL_ITEM_FP_PRE_SCOPE: str = (
+    "a9d589ecc34fbb4849d5d4f2b1721f307a725a8925e7fec273a07711b61d2333"
 )
 
 

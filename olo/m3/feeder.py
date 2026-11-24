@@ -334,15 +334,17 @@ def build_hindsight_items(
         # C3 ablation: suppress entity links when requested.
         if contact_id and include_entity_links:
             item["entities"] = [{"text": contact_id, "type": "person"}]
-            # Scope consolidation candidates by canonical customer identity.
-            # Include ym:* glob so observations also inherit the item's month tag —
-            # without this, observations lose ym:YYYY-MM and cannot be found by
-            # month-filtered recall even though world facts retain the tag.
-            # Cross-month boundary limitation: items in different months will scope
-            # separately; acceptable for the foundation.
+            # Two-pass observation scope:
+            #   Pass 1 [[cid, ym:*]] — writes observations with {cid, ym:YYYY-MM};
+            #     month-filtered recall (all_strict with {cid, ym:YYYY-MM}) finds them.
+            #   Pass 2 [[cid]]      — searches with {cid} only; since all_strict is
+            #     superset matching ("result must have ALL queried tags, may have more"),
+            #     this pass finds observations from ANY month that carry this cid —
+            #     enabling cross-month supersession without breaking customer isolation.
+            # Trade-off: 2× consolidation LLM calls per batch (accepted for foundation).
             cid_ent_tag = f"ent:{contact_id}"
             item["tags"] = [t for t in item["tags"] if not t.startswith("ent:")] + [cid_ent_tag]
-            item["observation_scopes"] = [[cid_ent_tag, "ym:*"]]
+            item["observation_scopes"] = [[cid_ent_tag, "ym:*"], [cid_ent_tag]]
 
         # Map signal kinds to human-readable source descriptors
         _KIND_DESCRIPTORS: dict[str, str] = {
@@ -426,19 +428,19 @@ def full_item_fingerprint(items: list[dict]) -> str:
     """SHA-256 fingerprint over ALL Hindsight retain-item fields.
 
     Covers document_id, body content, context string, entity links (type+text),
-    recall tags, and retain strategy.  Ordering is normalised where the API
-    treats order as semantically irrelevant (entities list, tags list).
+    recall tags, retain strategy, and observation_scopes.  Ordering is
+    normalised where the API treats order as semantically irrelevant (entities
+    list, tags list, scope lists).
 
-    This fingerprint detects differences in context enrichment and entity links
-    that the evidence-only corpus fingerprint (body-text + doc_id) does not:
+    observation_scopes is included because those scopes directly change
+    consolidation behaviour: different scopes yield different observation tag
+    sets, different cross-channel and cross-month candidate pools, and
+    therefore different memory state.  Fingerprinting them ensures that any
+    scope change is detected before deployment.
 
-    - Corpus fingerprint stable   → body content and document IDs unchanged.
-    - Full-item fingerprint differs → context strings or entity links changed.
-
-    Example differences captured:
-        f99c5dd3a6:  entities=ULID, context="Email received · Alice Chen · Subject"
-        98a1e9ebd9:  entities=ULID (via ent: tag), same context (crm_tag path)
-        e20e72fda8:  entities=cid_..., context="Email received · Alice Chen (Acme Corp) · Subject"
+    This fingerprint detects differences in context enrichment, entity links,
+    and consolidation configuration that the evidence-only corpus fingerprint
+    (body-text + doc_id) does not.
 
     Returns a 64-character hex SHA-256 string.
     """
@@ -452,14 +454,26 @@ def full_item_fingerprint(items: list[dict]) -> str:
             ],
             key=lambda e: (e["text"], e["type"]),
         )
+        # Normalise observation_scopes: sort inner lists, then sort outer list.
+        # None / absent is preserved as None so the fingerprint distinguishes
+        # "no scope set" from "scope is empty list".
+        raw_scopes = item.get("observation_scopes")
+        if raw_scopes is not None:
+            obs_scopes_canon = sorted(
+                [sorted(scope) for scope in raw_scopes],
+                key=lambda s: s,
+            )
+        else:
+            obs_scopes_canon = None
         canon_items.append({
-            "document_id": item.get("document_id", ""),
-            "content_sha256": (item.get("metadata") or {}).get("content_sha256", ""),
-            "context": item.get("context", ""),
-            "entities": entities_sorted,
-            "tags": sorted(item.get("tags") or []),
-            "strategy": item.get("strategy", ""),
-            "kind": (item.get("metadata") or {}).get("kind", ""),
+            "document_id":      item.get("document_id", ""),
+            "content_sha256":   (item.get("metadata") or {}).get("content_sha256", ""),
+            "context":          item.get("context", ""),
+            "entities":         entities_sorted,
+            "observation_scopes": obs_scopes_canon,
+            "tags":             sorted(item.get("tags") or []),
+            "strategy":         item.get("strategy", ""),
+            "kind":             (item.get("metadata") or {}).get("kind", ""),
         })
     canon = _json.dumps(canon_items, sort_keys=True, ensure_ascii=True,
                         separators=(",", ":"))
