@@ -15,13 +15,14 @@ import sqlite3
 
 import pytest
 
-from olo.m3.commitment_ledger import (
+from olo.ledger import (
     ApplyResult,
     LedgerEvent,
     OutcomeKind,
     apply_event,
     get_all_versions,
     get_current_state,
+    get_pending_proposal,
     migrate,
     replay_events,
 )
@@ -55,10 +56,12 @@ def _ev(**kw) -> LedgerEvent:
         source_doc_id="sig:test_default",
         source_kind="email.sent",
         occurred_at="2026-04-02T00:00:00+00:00",
+        actor_role="business",
+        action="commit",
         proposed_date=None,
         confirmed_date="2026-04-04",
         prior_confirmed_date=None,
-        is_confirmation=True,
+        thread_id="",
         notes="",
     )
     defaults.update(kw)
@@ -110,7 +113,7 @@ class TestU2CustomerRequestIsProposal:
         r_conf = apply_event(
             db,
             _ev(source_doc_id="sig:orig", confirmed_date="2026-04-04",
-                is_confirmation=True),
+                actor_role="business", action="commit"),
             recorded_at=TS,
         )
         db.commit()
@@ -122,17 +125,25 @@ class TestU2CustomerRequestIsProposal:
                 proposed_date="2026-04-08",
                 confirmed_date=None,
                 prior_confirmed_date="2026-04-04",
-                is_confirmation=False,
+                actor_role="customer", action="request_change",
             ),
             recorded_at=TS,
         )
         db.commit()
 
         assert r_req.outcome == OutcomeKind.UPDATED
+
+        # D1 fix: confirmed state must NOT be overridden by a customer proposal.
+        # get_current_state returns the latest CONFIRMED version.
         state = get_current_state(db, r_conf.commitment_id)
-        assert state["proposed_date"] == "2026-04-08"
-        assert state["is_confirmed"] is False
-        assert state["confirmed_date"] is None
+        assert state["confirmed_date"] == "2026-04-04"  # still confirmed Apr 04
+        assert state["is_confirmed"] is True             # still confirmed
+
+        # The pending proposal is accessible via get_pending_proposal.
+        pending = get_pending_proposal(db, r_conf.commitment_id)
+        assert pending is not None
+        assert pending["proposed_date"] == "2026-04-08"
+        assert pending["action"] == "request_change"
 
     def test_prior_confirmed_date_still_in_history(
         self, db: sqlite3.Connection
@@ -150,7 +161,7 @@ class TestU2CustomerRequestIsProposal:
                 proposed_date="2026-04-08",
                 confirmed_date=None,
                 prior_confirmed_date="2026-04-04",
-                is_confirmation=False,
+                actor_role="customer", action="request_change",
             ),
             recorded_at=TS,
         )
@@ -171,15 +182,15 @@ class TestU3ConfirmationSupersedes:
     def test_confirmation_appends_new_version(self, db: sqlite3.Connection) -> None:
         events = [
             _ev(source_doc_id="sig:orig",
-                confirmed_date="2026-04-04", is_confirmation=True),
+                confirmed_date="2026-04-04", actor_role="business", action="commit"),
             _ev(source_doc_id="sig:req",
                 source_kind="email.received",
                 proposed_date="2026-04-08", confirmed_date=None,
-                prior_confirmed_date="2026-04-04", is_confirmation=False),
+                prior_confirmed_date="2026-04-04", actor_role="customer", action="request_change"),
             _ev(source_doc_id="sig:trans",
                 source_kind="call.transcript",
                 prior_confirmed_date="2026-04-04",
-                confirmed_date="2026-04-08", is_confirmation=True),
+                confirmed_date="2026-04-08", actor_role="business", action="commit"),
         ]
         results = replay_events(db, events, recorded_at=TS)
         assert results[2].outcome == OutcomeKind.UPDATED
@@ -219,7 +230,7 @@ class TestU4HistoryPreserved:
             _ev(source_doc_id="sig:v1", confirmed_date="2026-04-04"),
             _ev(source_doc_id="sig:v2", source_kind="email.received",
                 proposed_date="2026-04-08", confirmed_date=None,
-                prior_confirmed_date="2026-04-04", is_confirmation=False),
+                prior_confirmed_date="2026-04-04", actor_role="customer", action="request_change"),
             _ev(source_doc_id="sig:v3", source_kind="call.transcript",
                 prior_confirmed_date="2026-04-04",
                 confirmed_date="2026-04-08"),
@@ -503,11 +514,11 @@ class TestU9DeterministicReplay:
         migrate(conn)
         events = [
             _ev(source_doc_id="sig:conf",
-                confirmed_date="2026-04-04", is_confirmation=True),
+                confirmed_date="2026-04-04", actor_role="business", action="commit"),
             _ev(source_doc_id="sig:req",
                 source_kind="email.received",
                 proposed_date="2026-04-08", confirmed_date=None,
-                prior_confirmed_date="2026-04-04", is_confirmation=False),
+                prior_confirmed_date="2026-04-04", actor_role="customer", action="request_change"),
             _ev(source_doc_id="sig:trans",
                 source_kind="call.transcript",
                 prior_confirmed_date="2026-04-04",
@@ -533,7 +544,7 @@ class TestU9DeterministicReplay:
             _ev(source_doc_id="sig:v1", confirmed_date="2026-04-04"),
             _ev(source_doc_id="sig:v2", source_kind="email.received",
                 proposed_date="2026-04-08", confirmed_date=None,
-                prior_confirmed_date="2026-04-04", is_confirmation=False),
+                prior_confirmed_date="2026-04-04", actor_role="customer", action="request_change"),
             _ev(source_doc_id="sig:v3", source_kind="call.transcript",
                 prior_confirmed_date="2026-04-04",
                 confirmed_date="2026-04-08"),
