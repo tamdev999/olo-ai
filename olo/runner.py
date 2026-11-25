@@ -17,10 +17,10 @@ import argparse
 import sqlite3
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from olo.adapters import (
     AdapterConfigError,
@@ -52,6 +52,10 @@ from olo.store import (
     utc_now,
 )
 
+if TYPE_CHECKING:
+    from olo.commitments import CommitmentStageConfig
+    from olo.projection import ProjectionConfig
+
 __all__ = [
     "RunResult",
     "run_source",
@@ -81,6 +85,9 @@ class RunResult:
     # S5: recovery at run start
     resolution_backfilled: int = 0   # tracking rows recreated after an interrupted ingest
     identity_resumed:      int = 0   # pending signals from earlier runs reprocessed
+    # S5 part 2: downstream stages (empty when not enabled)
+    commitment: dict = field(default_factory=dict)   # counts by commitment outcome
+    projection: dict = field(default_factory=dict)   # Hindsight outbox counts
 
 
 @dataclass(frozen=True)
@@ -395,6 +402,8 @@ def run_source(
     owner: Optional[str] = None,
     db_path: Optional[Path] = None,
     _fault: Optional[Callable[[str], None]] = None,
+    commitment: Optional[CommitmentStageConfig] = None,
+    projection: Optional[ProjectionConfig] = None,
 ) -> RunResult:
     """Ingest signals from *adapter* into the Olo store.
 
@@ -406,7 +415,15 @@ def run_source(
       2. Ensure resolution rows (ensure_signal_resolution) — idempotent tracking.
       3. Identity stage (_run_identity_stage) — fail-closed Rolodex lookup and
          contact creation for a single genuine counterparty.
-      4. Commitment stage — not wired yet (no automatic ledger writes).
+
+    After ingestion (S5 part 2), both opt-in and under the same lease:
+      5. Commitment stage (``commitment``) — prepare → extract → ledger, with
+         the outcome persisted in signal_resolution (olo.commitments).
+      6. Projection stage (``projection``) — verified signals and ledger
+         state to Hindsight through the hindsight_projection outbox
+         (olo.projection).
+    With neither config, behaviour is unchanged and nothing is written to
+    the ledger or Hindsight.
 
     Returns a RunResult; never raises (all exceptions are caught and recorded).
     """
@@ -457,6 +474,23 @@ def run_source(
     batches = fetched = inserted = duplicates = conflicts = 0
     id_resolved = id_unresolved = id_failed = 0
     backfilled = resumed = 0
+
+    def _downstream() -> tuple[dict, dict]:
+        from olo.store import renew_lease
+        commitment_counts: dict = {}
+        projection_counts: dict = {}
+        if commitment is not None:
+            from olo.commitments import run_commitment_stage
+            commitment_counts = run_commitment_stage(
+                conn, source, commitment, clock,
+                renew=lambda: renew_lease(source, run_id, conn, clock=clock, ttl=lease_ttl),
+                _fault=_fault,
+            )
+        if projection is not None:
+            from olo.projection import run_projection_stage
+            renew_lease(source, run_id, conn, clock=clock, ttl=lease_ttl)
+            projection_counts = run_projection_stage(conn, source, projection, clock, _fault=_fault)
+        return commitment_counts, projection_counts
 
     try:
         # 2b. Recovery (S5): recreate tracking rows lost to an interrupted
@@ -567,6 +601,7 @@ def run_source(
 
             # 3.6 Done?
             if not batch.has_more:
+                c_counts, p_counts = _downstream()
                 final_cursor = get_checkpoint(source, conn)
                 updated = finish_run(source, run_id, "succeeded", conn, clock=clock)
                 conn.close()
@@ -587,9 +622,12 @@ def run_source(
                     identity_failed=id_failed,
                     resolution_backfilled=backfilled,
                     identity_resumed=resumed,
+                    commitment=c_counts,
+                    projection=p_counts,
                 )
 
         # 4. Loop exhausted with has_more still True → partial
+        c_counts, p_counts = _downstream()
         final_cursor = get_checkpoint(source, conn)
         updated = finish_run(source, run_id, "partial", conn, clock=clock)
         conn.close()
@@ -610,6 +648,8 @@ def run_source(
             identity_failed=id_failed,
             resolution_backfilled=backfilled,
             identity_resumed=resumed,
+            commitment=c_counts,
+            projection=p_counts,
         )
 
     except Exception as exc:

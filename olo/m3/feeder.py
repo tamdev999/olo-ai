@@ -146,6 +146,183 @@ def _ym_tag(occurred_at_iso: str) -> str:
         raise FeedError(f"Cannot parse occurred_at {occurred_at_iso!r}: {exc}") from exc
 
 
+_PROSE_KINDS: frozenset[str] = frozenset({
+    "email.sent", "email.received", "email.content", "call.transcript",
+})
+
+
+def build_signal_item(
+    row,
+    payload: dict,
+    content: str,
+    sha256: str,
+    *,
+    source: str,
+    contact_id: str,
+    contact_info: dict,
+    entity_cache: dict,
+    include_entity_links: bool = True,
+    include_name_enrichment: bool = True,
+    production: bool = False,
+    extra_metadata: Optional[dict] = None,
+) -> dict:
+    """Build one Hindsight retain item for a stored signal.
+
+    The single item builder shared by the benchmark feed
+    (``build_hindsight_items``) and the production projector
+    (``olo.projection``).  *row* provides external_id, kind, occurred_at and
+    subject; *content* / *sha256* come from ``olo.signal_content.load_content``;
+    *contact_id* is the verified canonical identity ('' when none).
+
+    ``production=True`` changes only what production payloads lack: prose
+    kinds default to the prose strategy, and an unlinked item carries no
+    placeholder entity.  ``extra_metadata`` (e.g. commitment links) is added
+    to the item metadata.  With the defaults, output is unchanged for the
+    benchmark feed.
+    """
+
+    # Build the month tag for recall filtering
+    # A malformed timestamp is a data integrity error: FeedError propagates.
+    ym = _ym_tag(row["occurred_at"])
+
+    # Merge the month tag into the existing tag list
+    existing_tags: list[str] = payload.get("tags", [])
+    if ym not in existing_tags:
+        tags = existing_tags + [ym]
+    else:
+        tags = existing_tags
+
+    strategy = payload.get("strategy") or (
+        PROSE_STRATEGY if production and row["kind"] in _PROSE_KINDS
+        else STRUCTURED_STRATEGY
+    )
+    # Translate legacy Olo strategy names to the Hindsight named strategy
+    if strategy == "structured":
+        strategy = STRUCTURED_STRATEGY
+    is_llm_eligible = str(payload.get(
+        "is_llm_eligible",
+        "true" if production and row["kind"] in _PROSE_KINDS else "false",
+    )).lower() == "true"
+
+    item: dict = {
+        "content": content,
+        "timestamp": row["occurred_at"],
+        "document_id": f"sig:{row['external_id']}",
+        "entities": [{"text": payload.get("entity_id", ""), "type": "person"}],
+        "resolve_entities": False,
+        "tags": tags,
+        "metadata": {
+            "signal_id": row["external_id"],
+            "source": payload.get("source", source),
+            "kind": payload.get("kind", row["kind"]),
+            "content_sha256": sha256,
+            "render_version": "1",
+            "is_llm_eligible": str(is_llm_eligible),
+        },
+        "strategy": strategy,
+    }
+
+    # ── Canonical contact resolution (C1/C2) ─────────────────────────────
+    # Identity is resolved exclusively from verified source identifiers in the
+    # contact_identifiers table (populated from the CRM fixture).  No ent: tags,
+    # no customer_name payload claims, no entity_id fields are consulted — these
+    # are either benchmark artifacts or unverified assertions.
+    #
+    # Forged protection: a signal whose payload claims a name or ent: tag cannot
+    # hijack an existing contact because we never read those fields here.
+    # The only way to link a signal to a contact is through a verified identifier
+    # (email address, phone number, billing system ID) that maps to a CRM record.
+    #
+    # Fallback: when no verified mapping exists, the item is left unassigned
+    # (entities = []) and display_name / company are blank.  We never fabricate.
+    subject     = row["subject"] or ""
+    doc_kind    = payload.get("kind", row["kind"])
+    source_tag  = payload.get("source", "")
+    if contact_id:
+        display_name, company = contact_info.get(contact_id, ("", ""))
+    else:
+        # No contact found via CRM — fall back to entity_metadata for
+        # display_name in contexts (email_contact records from upsert_entities).
+        # This is enrichment-only; no entity link is created.
+        from olo.adapters.entity_extractor import resolve_primary_entity_id_from_payload
+        _fallback_id = resolve_primary_entity_id_from_payload(doc_kind, payload)
+        display_name, company = _get_entity_meta(_fallback_id, entity_cache)
+
+    # C3 ablation: suppress name enrichment when requested.
+    if not include_name_enrichment:
+        display_name = ""
+        company = ""
+
+    # Entity link: canonical contact_id from CRM lookup.
+    # Intentionally NOT using ent: tags or customer_name from payload.
+    # C3 ablation: suppress entity links when requested.
+    if contact_id and include_entity_links:
+        item["entities"] = [{"text": contact_id, "type": "person"}]
+        # Two-pass observation scope:
+        #   Pass 1 [[cid, ym:*]] — writes observations with {cid, ym:YYYY-MM};
+        #     month-filtered recall (all_strict with {cid, ym:YYYY-MM}) finds them.
+        #   Pass 2 [[cid]]      — searches with {cid} only; since all_strict is
+        #     superset matching ("result must have ALL queried tags, may have more"),
+        #     this pass finds observations from ANY month that carry this cid —
+        #     enabling cross-month supersession without breaking customer isolation.
+        # Trade-off: 2× consolidation LLM calls per batch (accepted for foundation).
+        cid_ent_tag = f"ent:{contact_id}"
+        item["tags"] = [t for t in item["tags"] if not t.startswith("ent:")] + [cid_ent_tag]
+        item["observation_scopes"] = [[cid_ent_tag, "ym:*"], [cid_ent_tag]]
+
+    # Map signal kinds to human-readable source descriptors
+    _KIND_DESCRIPTORS: dict[str, str] = {
+        "email.received":           "Email received",
+        "email.sent":               "Email sent",
+        "call.transcript":          "Phone call transcript",
+        "calendar.event.created":   "Calendar event",
+        "calendar.event.changed":   "Calendar event",
+        "calendar.event.cancelled": "Cancelled calendar event",
+        "invoice.created":          "Invoice record",
+    }
+    # For email.content, use the authoritative direction field from the payload
+    # rather than inferring it from authorship.
+    if doc_kind == "email.content":
+        direction = payload.get("direction", "received")
+        kind_descriptor = "Email sent" if direction == "sent" else "Email received"
+    # For invoice.created, prefer the specific payment system name
+    elif doc_kind == "invoice.created":
+        if "stripe" in source_tag.lower():
+            kind_descriptor = "Stripe invoice record"
+        elif "qbo" in source_tag.lower():
+            kind_descriptor = "QuickBooks invoice record"
+        else:
+            kind_descriptor = "Invoice record"
+    else:
+        kind_descriptor = _KIND_DESCRIPTORS.get(doc_kind, doc_kind)
+
+    # Build the context parts: [kind_descriptor, identity, subject]
+    ctx_parts: list[str] = []
+
+    # 1. Source kind descriptor (for all signals)
+    ctx_parts.append(kind_descriptor)
+
+    # 2. Contact and company identity
+    if display_name and company:
+        ctx_parts.append(f"{display_name} ({company})")
+    elif display_name:
+        ctx_parts.append(display_name)
+    elif company:
+        ctx_parts.append(company)
+
+    # 3. Document subject
+    if subject:
+        ctx_parts.append(subject)
+
+    if ctx_parts:
+        item["context"] = " · ".join(ctx_parts)
+    if production and not (contact_id and include_entity_links):
+        item["entities"] = []
+    if extra_metadata:
+        item["metadata"].update(extra_metadata)
+    return item
+
+
 def build_hindsight_items(
     db_path: Path,
     source: str = "hindsight_gate",
@@ -255,143 +432,21 @@ def build_hindsight_items(
             )
 
         content = loaded.rendered
-
-        # Build the month tag for recall filtering
+        from olo.adapters.contacts import resolve_contact_from_signal
         try:
-            ym = _ym_tag(row["occurred_at"])
-        except FeedError as exc:
-            # Propagate — a malformed timestamp is a data integrity error
+            item = build_signal_item(
+                row, payload, content, sha256,
+                source=source,
+                contact_id=resolve_contact_from_signal(
+                    payload.get("kind", row["kind"]), payload, _identifier_map),
+                contact_info=_contact_info,
+                entity_cache=entity_cache,
+                include_entity_links=include_entity_links,
+                include_name_enrichment=include_name_enrichment,
+            )
+        except FeedError:
             conn.close()
             raise
-
-        # Merge the month tag into the existing tag list
-        existing_tags: list[str] = payload.get("tags", [])
-        if ym not in existing_tags:
-            tags = existing_tags + [ym]
-        else:
-            tags = existing_tags
-
-        strategy = payload.get("strategy", STRUCTURED_STRATEGY)
-        # Translate legacy Olo strategy names to the Hindsight named strategy
-        if strategy == "structured":
-            strategy = STRUCTURED_STRATEGY
-        is_llm_eligible = str(payload.get("is_llm_eligible", "false")).lower() == "true"
-
-        item: dict = {
-            "content": content,
-            "timestamp": row["occurred_at"],
-            "document_id": f"sig:{signal_id}",
-            "entities": [{"text": payload.get("entity_id", ""), "type": "person"}],
-            "resolve_entities": False,
-            "tags": tags,
-            "metadata": {
-                "signal_id": signal_id,
-                "source": payload.get("source", source),
-                "kind": payload.get("kind", row["kind"]),
-                "content_sha256": sha256,
-                "render_version": "1",
-                "is_llm_eligible": str(is_llm_eligible),
-            },
-            "strategy": strategy,
-        }
-
-        # ── Canonical contact resolution (C1/C2) ─────────────────────────────
-        # Identity is resolved exclusively from verified source identifiers in the
-        # contact_identifiers table (populated from the CRM fixture).  No ent: tags,
-        # no customer_name payload claims, no entity_id fields are consulted — these
-        # are either benchmark artifacts or unverified assertions.
-        #
-        # Forged protection: a signal whose payload claims a name or ent: tag cannot
-        # hijack an existing contact because we never read those fields here.
-        # The only way to link a signal to a contact is through a verified identifier
-        # (email address, phone number, billing system ID) that maps to a CRM record.
-        #
-        # Fallback: when no verified mapping exists, the item is left unassigned
-        # (entities = []) and display_name / company are blank.  We never fabricate.
-        subject     = row["subject"] or ""
-        doc_kind    = payload.get("kind", row["kind"])
-        source_tag  = payload.get("source", "")
-        from olo.adapters.contacts import resolve_contact_from_signal
-        contact_id = resolve_contact_from_signal(doc_kind, payload, _identifier_map)
-        if contact_id:
-            display_name, company = _contact_info.get(contact_id, ("", ""))
-        else:
-            # No contact found via CRM — fall back to entity_metadata for
-            # display_name in contexts (email_contact records from upsert_entities).
-            # This is enrichment-only; no entity link is created.
-            from olo.adapters.entity_extractor import resolve_primary_entity_id_from_payload
-            _fallback_id = resolve_primary_entity_id_from_payload(doc_kind, payload)
-            display_name, company = _get_entity_meta(_fallback_id, entity_cache)
-
-        # C3 ablation: suppress name enrichment when requested.
-        if not include_name_enrichment:
-            display_name = ""
-            company = ""
-
-        # Entity link: canonical contact_id from CRM lookup.
-        # Intentionally NOT using ent: tags or customer_name from payload.
-        # C3 ablation: suppress entity links when requested.
-        if contact_id and include_entity_links:
-            item["entities"] = [{"text": contact_id, "type": "person"}]
-            # Two-pass observation scope:
-            #   Pass 1 [[cid, ym:*]] — writes observations with {cid, ym:YYYY-MM};
-            #     month-filtered recall (all_strict with {cid, ym:YYYY-MM}) finds them.
-            #   Pass 2 [[cid]]      — searches with {cid} only; since all_strict is
-            #     superset matching ("result must have ALL queried tags, may have more"),
-            #     this pass finds observations from ANY month that carry this cid —
-            #     enabling cross-month supersession without breaking customer isolation.
-            # Trade-off: 2× consolidation LLM calls per batch (accepted for foundation).
-            cid_ent_tag = f"ent:{contact_id}"
-            item["tags"] = [t for t in item["tags"] if not t.startswith("ent:")] + [cid_ent_tag]
-            item["observation_scopes"] = [[cid_ent_tag, "ym:*"], [cid_ent_tag]]
-
-        # Map signal kinds to human-readable source descriptors
-        _KIND_DESCRIPTORS: dict[str, str] = {
-            "email.received":           "Email received",
-            "email.sent":               "Email sent",
-            "call.transcript":          "Phone call transcript",
-            "calendar.event.created":   "Calendar event",
-            "calendar.event.changed":   "Calendar event",
-            "calendar.event.cancelled": "Cancelled calendar event",
-            "invoice.created":          "Invoice record",
-        }
-        # For email.content, use the authoritative direction field from the payload
-        # rather than inferring it from authorship.
-        if doc_kind == "email.content":
-            direction = payload.get("direction", "received")
-            kind_descriptor = "Email sent" if direction == "sent" else "Email received"
-        # For invoice.created, prefer the specific payment system name
-        elif doc_kind == "invoice.created":
-            if "stripe" in source_tag.lower():
-                kind_descriptor = "Stripe invoice record"
-            elif "qbo" in source_tag.lower():
-                kind_descriptor = "QuickBooks invoice record"
-            else:
-                kind_descriptor = "Invoice record"
-        else:
-            kind_descriptor = _KIND_DESCRIPTORS.get(doc_kind, doc_kind)
-
-        # Build the context parts: [kind_descriptor, identity, subject]
-        ctx_parts: list[str] = []
-
-        # 1. Source kind descriptor (for all signals)
-        ctx_parts.append(kind_descriptor)
-
-        # 2. Contact and company identity
-        if display_name and company:
-            ctx_parts.append(f"{display_name} ({company})")
-        elif display_name:
-            ctx_parts.append(display_name)
-        elif company:
-            ctx_parts.append(company)
-
-        # 3. Document subject
-        if subject:
-            ctx_parts.append(subject)
-
-        if ctx_parts:
-            item["context"] = " · ".join(ctx_parts)
-
         items.append(item)
 
     conn.close()

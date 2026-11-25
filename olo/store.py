@@ -276,6 +276,8 @@ _DDL_STATEMENTS = [
     commitment_id       TEXT,           -- ledger commitment_id when resolved
     commitment_version  INTEGER,        -- ledger version when resolved
     commitment_reason   TEXT,           -- explanation when not resolved
+    commitment_outcome  TEXT,           -- S5 detailed outcome (see olo.commitments)
+    commitment_attempts INTEGER NOT NULL DEFAULT 0,  -- S5 extraction attempts
     -- Timing
     processed_at        TEXT,           -- when last processing stage ran
     created_at          TEXT NOT NULL,
@@ -284,6 +286,23 @@ _DDL_STATEMENTS = [
 )""",
     "CREATE INDEX IF NOT EXISTS idx_signal_resolution_status ON signal_resolution (source, identity_status, commitment_status)",
 ]
+
+
+#: S5 additive columns on signal_resolution.  Nullable/defaulted, so they are
+#: added in place to v5 databases without a version bump or data migration.
+_S5_RESOLUTION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("commitment_outcome", "TEXT"),
+    ("commitment_attempts", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def _add_missing_columns(
+    conn: sqlite3.Connection, table: str, columns: tuple[tuple[str, str], ...],
+) -> None:
+    present = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, decl in columns:
+        if name not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def migrate(conn: Optional[sqlite3.Connection] = None,
@@ -303,6 +322,7 @@ def migrate(conn: Optional[sqlite3.Connection] = None,
         conn.execute("BEGIN IMMEDIATE")
         for stmt in _DDL_STATEMENTS:
             conn.execute(stmt)
+        _add_missing_columns(conn, "signal_resolution", _S5_RESOLUTION_COLUMNS)
         # Ensure exactly one schema_version row; upgrade v1 → v2 in-place
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
