@@ -17,6 +17,15 @@ from olo.adapters import AdapterConfigError, FetchBatch, MonitorAdapter, SourceE
 from olo.signals import NormalizedSignal
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    # `live` is registered in pyproject.toml (a Hermes core file); only the
+    # Olo-specific marker is registered here.
+    config.addinivalue_line(
+        "markers",
+        "not_integration: Olo unit test that needs no external service",
+    )
+
+
 # ── FakeClock ─────────────────────────────────────────────────────────────────
 
 class FakeClock:
