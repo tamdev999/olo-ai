@@ -1,5 +1,13 @@
 """tests/olo/test_s4_extraction.py — S4 commitment-update extractor reliability.
 
+S4 final-validation additions
+------------------------------
+TestSpeakerAttribution  — Agent:/Customer: marker regression tests
+TestLongTranscript      — keyword-window + full-text verification regression
+TestLiveAccuracy        — real DeepSeek model run on 30-label corpus
+                          (skipped when DEEPSEEK_API_KEY is not set)
+
+
 Task 2: 30 hand-labelled signals covering emails, calls, ambiguous requests,
 confirmations and cancellations.  Reports precision, recall, false positives,
 missed events, cost and cache behaviour.
@@ -25,6 +33,7 @@ Reliability targets (mock data, ideal model outputs):
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +45,7 @@ from olo.extractor import (
     Budget,
     ExtractionResult,
     extract_commitment_update,
+    make_deepseek_model_fn,
     migrate_extraction_cache,
 )
 
@@ -1187,3 +1197,4 @@ class TestExtractionPipeline:
         assert result is not None
         assert result.prior_confirmed_date == "2024-06-01"
         assert result.proposed_date == "2024-06-15"
+
