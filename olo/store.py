@@ -34,7 +34,7 @@ from olo.signals import (
 )
 
 # ── Schema version ────────────────────────────────────────────────────────────
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_LEASE_TTL = 900  # seconds
@@ -258,6 +258,31 @@ _DDL_STATEMENTS = [
     UNIQUE (source, entity_id)
 )""",
     "CREATE INDEX IF NOT EXISTS idx_entity_source ON entity_metadata(source)",
+    # S2: in-flight signal resolution tracking.
+    # One row per (signal_id, source). Records identity and commitment processing
+    # outcomes without duplicating evidence already in signals/contacts/ledger.
+    # Idempotent: INSERT OR IGNORE creates the row once; subsequent stages UPDATE it.
+    """CREATE TABLE IF NOT EXISTS signal_resolution (
+    signal_id           TEXT NOT NULL,
+    source              TEXT NOT NULL,
+    -- Identity resolution outcome
+    identity_status     TEXT NOT NULL DEFAULT 'pending'
+        CHECK (identity_status IN ('pending','resolved','unresolved','ambiguous','skipped','failed')),
+    contact_id          TEXT,           -- canonical cid_... when identity_status='resolved'
+    identity_reason     TEXT,           -- human-readable explanation when not resolved
+    -- Commitment processing outcome (populated by S4 extraction stage)
+    commitment_status   TEXT NOT NULL DEFAULT 'pending'
+        CHECK (commitment_status IN ('pending','resolved','unresolved','skipped','failed')),
+    commitment_id       TEXT,           -- ledger commitment_id when resolved
+    commitment_version  INTEGER,        -- ledger version when resolved
+    commitment_reason   TEXT,           -- explanation when not resolved
+    -- Timing
+    processed_at        TEXT,           -- when last processing stage ran
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    PRIMARY KEY (signal_id, source)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_signal_resolution_status ON signal_resolution (source, identity_status, commitment_status)",
 ]
 
 
@@ -268,6 +293,7 @@ def migrate(conn: Optional[sqlite3.Connection] = None,
     v1 → v2: adds content_blobs table (M2b §2.1).
     v2 → v3: adds hindsight_projection table (M3.0 §C2).
     v3 → v4: adds entity_metadata table (M3.0 P3 fourth remediation).
+    v4 → v5: adds signal_resolution table (S2 in-flight tracking).
     Runs in one transaction. Opens a new connection if *conn* is None.
     """
     close_after = conn is None
@@ -805,6 +831,142 @@ def get_lease(source: str, conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM source_leases WHERE source = ?", (source,)
     ).fetchone()
+
+
+# ── Signal resolution helpers (S2) ───────────────────────────────────────────
+
+#: Signal kinds that require commitment processing (prose/LLM-eligible).
+#: All others get commitment_status='skipped' immediately.
+_COMMITMENT_SIGNAL_KINDS: frozenset[str] = frozenset({
+    "email.received", "email.sent", "email.content", "call.transcript",
+})
+
+
+def ensure_signal_resolution(
+    conn: sqlite3.Connection,
+    signals: list,            # list[NormalizedSignal]; typed loosely to avoid circular
+    source: str,
+    now_str: str,
+) -> None:
+    """Create a signal_resolution row for every signal that lacks one.
+
+    Idempotent: INSERT OR IGNORE is a no-op for signals already tracked.
+    Commitment status is 'pending' for prose/LLM-eligible signal kinds and
+    'skipped' for structured kinds (invoices, calendar, etc.) that do not
+    require commitment event extraction.
+    """
+    for sig in signals:
+        commitment_status = (
+            "pending" if sig.kind in _COMMITMENT_SIGNAL_KINDS else "skipped"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO signal_resolution"
+            " (signal_id, source, identity_status, commitment_status,"
+            "  created_at, updated_at)"
+            " VALUES (?, ?, 'pending', ?, ?, ?)",
+            (sig.external_id, source, commitment_status, now_str, now_str),
+        )
+
+
+def record_identity_resolved(
+    conn: sqlite3.Connection,
+    signal_id: str,
+    source: str,
+    contact_id: str,
+    now_str: str,
+) -> None:
+    """Record a successful identity resolution."""
+    conn.execute(
+        "UPDATE signal_resolution"
+        " SET identity_status='resolved', contact_id=?, processed_at=?, updated_at=?"
+        " WHERE signal_id=? AND source=? AND identity_status='pending'",
+        (contact_id, now_str, now_str, signal_id, source),
+    )
+
+
+def record_identity_unresolved(
+    conn: sqlite3.Connection,
+    signal_id: str,
+    source: str,
+    reason: Optional[str],
+    now_str: str,
+) -> None:
+    """Record that no matching contact was found for this signal."""
+    conn.execute(
+        "UPDATE signal_resolution"
+        " SET identity_status='unresolved', identity_reason=?,"
+        "     processed_at=?, updated_at=?"
+        " WHERE signal_id=? AND source=? AND identity_status='pending'",
+        (reason, now_str, now_str, signal_id, source),
+    )
+
+
+def record_identity_failed(
+    conn: sqlite3.Connection,
+    signal_id: str,
+    source: str,
+    reason: str,
+    now_str: str,
+) -> None:
+    """Record a processing error during identity resolution."""
+    conn.execute(
+        "UPDATE signal_resolution"
+        " SET identity_status='failed', identity_reason=?,"
+        "     processed_at=?, updated_at=?"
+        " WHERE signal_id=? AND source=? AND identity_status='pending'",
+        (reason[:500], now_str, now_str, signal_id, source),
+    )
+
+
+def get_resolution_summary(
+    conn: sqlite3.Connection,
+    source: Optional[str] = None,
+) -> dict:
+    """Return a concise summary of signal_resolution counts.
+
+    Returns::
+
+        {
+          "total": N,
+          "identity": {"pending": n, "resolved": n, "unresolved": n, "failed": n, ...},
+          "commitment": {"pending": n, "skipped": n, "resolved": n, ...},
+        }
+    """
+    where = "WHERE source=?" if source else ""
+    params: tuple = (source,) if source else ()
+
+    id_rows = conn.execute(
+        f"SELECT identity_status, COUNT(*) AS n FROM signal_resolution"
+        f" {where} GROUP BY identity_status",
+        params,
+    ).fetchall()
+    cm_rows = conn.execute(
+        f"SELECT commitment_status, COUNT(*) AS n FROM signal_resolution"
+        f" {where} GROUP BY commitment_status",
+        params,
+    ).fetchall()
+
+    return {
+        "total": sum(r["n"] for r in id_rows),
+        "identity": {r["identity_status"]: r["n"] for r in id_rows},
+        "commitment": {r["commitment_status"]: r["n"] for r in cm_rows},
+    }
+
+
+def get_pending_identity_signals(
+    conn: sqlite3.Connection,
+    source: str,
+) -> list[sqlite3.Row]:
+    """Return signal_resolution rows with identity_status='pending' for *source*.
+
+    Used by the resume path to pick up signals that were ingested but not yet
+    resolved (e.g. after a worker crash between ingest and resolution).
+    """
+    return conn.execute(
+        "SELECT signal_id FROM signal_resolution"
+        " WHERE source=? AND identity_status='pending'",
+        (source,),
+    ).fetchall()
 
 
 # ── Content blob reads (§2.2) ─────────────────────────────────────────────────

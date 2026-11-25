@@ -62,9 +62,20 @@ CONFIRMED_ACTIONS: frozenset[str] = frozenset({
 #: A customer may only request a change or cancel.
 #: A business may commit, reaffirm, confirm a change, or cancel.
 #: These rules are enforced in _validate() so invalid combinations return INVALID.
+#:
+#: TODO (S3/S4 — customer-cancel rule correction):
+#: ``customer + cancel`` currently creates a confirmed cancellation (is_confirmed=1)
+#: because 'cancel' is in CONFIRMED_ACTIONS.  A customer cancellation REQUEST should
+#: remain a proposal (is_confirmed=0) pending explicit business confirmation.
+#: Fix options (deferred):
+#:   a) Remove 'cancel' from ACTOR_ACTION_ALLOWED['customer'] entirely.
+#:   b) Add 'request_cancel' as a customer-only action with is_confirmed=0.
+#:   c) Make 'cancel' produce is_confirmed=0 when actor_role='customer'.
+#: Until this is fixed, do not use ``actor_role='customer', action='cancel'``
+#: in production.  Extraction code (S4) must use the business-side cancel.
 ACTOR_ACTION_ALLOWED: dict[str, frozenset[str]] = {
     "business": frozenset({"commit", "reaffirm", "confirm_change", "cancel"}),
-    "customer": frozenset({"request_change", "cancel"}),
+    "customer": frozenset({"request_change", "cancel"}),  # NOTE: see TODO above
 }
 
 _CID_PREFIX = "cid_"

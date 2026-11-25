@@ -37,10 +37,16 @@ from olo.store import (
     SourceBusy,
     acquire_run,
     connect,
+    ensure_signal_resolution,
     finish_run,
     get_checkpoint,
+    get_pending_identity_signals,
+    get_resolution_summary,
     ingest_batch,
     migrate,
+    record_identity_failed,
+    record_identity_resolved,
+    record_identity_unresolved,
     utc_now,
 )
 
@@ -60,6 +66,10 @@ class RunResult:
     conflicts: int
     final_cursor: Optional[str]
     error: Optional[str]
+    # S2: identity resolution counts (0 when identity stage was not run)
+    identity_resolved:   int = 0
+    identity_unresolved: int = 0
+    identity_failed:     int = 0
 
 
 # ── Default owner ─────────────────────────────────────────────────────────────
@@ -67,6 +77,80 @@ class RunResult:
 def _default_owner() -> str:
     from olo.store import _make_owner
     return _make_owner()
+
+
+# ── Identity resolution stage (S2) ───────────────────────────────────────────
+
+def _run_identity_stage(
+    conn: sqlite3.Connection,
+    signals: list,
+    source: str,
+    identifier_map: dict,
+    clock: Callable[[], datetime],
+) -> tuple[int, int, int]:
+    """Attempt identity resolution for signals with identity_status='pending'.
+
+    For each signal in *signals*:
+    - Calls resolve_contact_from_signal (read-only Rolodex lookup; never creates contacts).
+    - Records the outcome in signal_resolution.
+    - Errors are caught per-signal, recorded, and never re-raised.
+
+    Returns (resolved_count, unresolved_count, failed_count).
+
+    NOTE (S2 customer-cancel flag):
+    ``actor_role='customer', action='cancel'`` currently creates a confirmed
+    cancellation (is_confirmed=1) in the ledger.  A customer cancellation request
+    should instead remain a proposal pending business confirmation.  This is a
+    known defect: the fix requires either removing 'cancel' from ACTOR_ACTION_ALLOWED
+    for customers or introducing a 'request_cancel' action.  Deferred to S3/S4.
+    """
+    from olo.adapters.contacts import resolve_contact_from_signal
+    from olo.signals import format_utc
+
+    resolved = unresolved = failed = 0
+    now_str = format_utc(clock())
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for sig in signals:
+            # Only process signals still at 'pending' identity status
+            row = conn.execute(
+                "SELECT identity_status FROM signal_resolution"
+                " WHERE signal_id=? AND source=?",
+                (sig.external_id, source),
+            ).fetchone()
+            if row is None or row["identity_status"] != "pending":
+                continue
+
+            try:
+                contact_id = resolve_contact_from_signal(
+                    sig.kind, sig.payload, identifier_map,
+                )
+            except Exception as exc:
+                record_identity_failed(conn, sig.external_id, source, str(exc), now_str)
+                failed += 1
+                continue
+
+            if contact_id:
+                record_identity_resolved(conn, sig.external_id, source, contact_id, now_str)
+                resolved += 1
+            else:
+                record_identity_unresolved(
+                    conn, sig.external_id, source,
+                    reason=f"no CRM match for {sig.kind}",
+                    now_str=now_str,
+                )
+                unresolved += 1
+
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+    return resolved, unresolved, failed
 
 
 # ── run_source ────────────────────────────────────────────────────────────────
@@ -84,6 +168,12 @@ def run_source(
 ) -> RunResult:
     """Ingest signals from *adapter* into the Olo store.
 
+    Runs in stages per batch:
+      1. Ingest (ingest_batch) — append-only evidence layer.
+      2. Ensure resolution rows (ensure_signal_resolution) — idempotent tracking.
+      3. Identity stage (_run_identity_stage) — CRM lookup, no contact creation.
+      4. Commitment stage — pending until S4 (extraction not yet implemented).
+
     Returns a RunResult; never raises (all exceptions are caught and recorded).
     """
     source = adapter.source
@@ -92,6 +182,14 @@ def run_source(
     # 1. Migrate (idempotent)
     conn = connect(db_path)
     migrate(conn)
+
+    # Load contact index once per run for the identity stage.
+    # Best-effort: if the contacts table doesn't exist yet, identifier_map is empty.
+    try:
+        from olo.adapters.contacts import load_contact_index
+        identifier_map, _contact_info = load_contact_index(conn)
+    except Exception:
+        identifier_map = {}
 
     # 2. Acquire lease
     try:
@@ -107,6 +205,7 @@ def run_source(
         )
 
     batches = fetched = inserted = duplicates = conflicts = 0
+    id_resolved = id_unresolved = id_failed = 0
 
     try:
         # 3. Main loop
@@ -143,7 +242,7 @@ def run_source(
                         f"signal source {sig.source!r} != adapter source {source!r}"
                     )
 
-            # 3.5 Atomic commit
+            # 3.5 Atomic ingest commit
             b_ins, b_dup, b_con = ingest_batch(
                 source, run_id, batch.signals, batch.next_cursor, cursor,
                 conn, clock, _fault=_fault,
@@ -155,8 +254,8 @@ def run_source(
             duplicates += b_dup
             conflicts += b_con
 
-            # 3.5b Extract entity contacts from ingested signals.
-            # Best-effort: entity extraction failure does not abort ingestion.
+            # 3.5b Extract entity contacts from ingested signals (legacy enrichment).
+            # Best-effort: failure does not abort ingestion.
             if batch.signals:
                 try:
                     from olo.adapters.entity_extractor import upsert_entities
@@ -164,13 +263,41 @@ def run_source(
                 except Exception:
                     pass  # entity extraction is enrichment, not critical path
 
+            # 3.5c S2: Signal resolution tracking — idempotent, never raises.
+            # Stage 1 (ensure rows) and Stage 2 (identity) run per batch.
+            # Stage 3 (commitment extraction) is deferred to S4.
+            if batch.signals:
+                try:
+                    from olo.signals import format_utc
+                    now_str = format_utc(clock())
+                    conn.execute("BEGIN IMMEDIATE")
+                    ensure_signal_resolution(conn, batch.signals, source, now_str)
+                    conn.execute("COMMIT")
+                except Exception:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    # row creation failure is non-fatal; identity stage skipped
+
+                try:
+                    r, u, f = _run_identity_stage(
+                        conn, batch.signals, source, identifier_map, clock,
+                    )
+                    id_resolved   += r
+                    id_unresolved += u
+                    id_failed     += f
+                except Exception:
+                    pass  # identity stage errors are recorded per-signal; batch continues
+
+                if _fault:
+                    _fault("after_resolution")
+
             # 3.6 Done?
             if not batch.has_more:
                 final_cursor = get_checkpoint(source, conn)
                 updated = finish_run(source, run_id, "succeeded", conn, clock=clock)
                 conn.close()
-                # If finish_run was a no-op the run was already abandoned by a
-                # successor (lease expired mid-run). Report the actual outcome.
                 actual_status = "succeeded" if updated else "failed"
                 actual_error = None if updated else "run was abandoned by a successor before finish_run"
                 return RunResult(
@@ -183,6 +310,9 @@ def run_source(
                     conflicts=conflicts,
                     final_cursor=final_cursor,
                     error=actual_error,
+                    identity_resolved=id_resolved,
+                    identity_unresolved=id_unresolved,
+                    identity_failed=id_failed,
                 )
 
         # 4. Loop exhausted with has_more still True → partial
@@ -201,6 +331,9 @@ def run_source(
             conflicts=conflicts,
             final_cursor=final_cursor,
             error=actual_error,
+            identity_resolved=id_resolved,
+            identity_unresolved=id_unresolved,
+            identity_failed=id_failed,
         )
 
     except Exception as exc:
@@ -209,7 +342,7 @@ def run_source(
         try:
             finish_run(source, run_id, "failed", conn, clock=clock, error=error_str)
         except Exception:
-            pass  # already abandoned by a successor; that's OK
+            pass
         try:
             conn.close()
         except Exception:
@@ -268,7 +401,10 @@ def main(argv: list[str] | None = None) -> int:
             f"olo: {result.status} run={result.run_id} "
             f"batches={result.batches} inserted={result.inserted} "
             f"duplicates={result.duplicates} conflicts={result.conflicts} "
-            f"cursor={result.final_cursor!r}",
+            f"cursor={result.final_cursor!r} "
+            f"id_resolved={result.identity_resolved} "
+            f"id_unresolved={result.identity_unresolved} "
+            f"id_failed={result.identity_failed}",
             file=sys.stderr,
         )
 

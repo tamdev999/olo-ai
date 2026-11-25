@@ -477,15 +477,15 @@ def test_entity_metadata_unique_per_source_entity(tmp_path: Path) -> None:
 
 
 def test_schema_version_is_4(tmp_path: Path) -> None:
-    """migrate() records schema_version 4 (entity_metadata addition)."""
+    """migrate() records schema_version 5 (signal_resolution addition, was v4)."""
     from olo.store import connect, migrate, _SCHEMA_VERSION
-    assert _SCHEMA_VERSION == 4, (
-        f"Expected _SCHEMA_VERSION=4 after P3 remediation, got {_SCHEMA_VERSION}"
+    assert _SCHEMA_VERSION == 5, (
+        f"Expected _SCHEMA_VERSION=5 after S2 signal_resolution addition, got {_SCHEMA_VERSION}"
     )
-    db = tmp_path / "sv4" / "olo.db"
+    db = tmp_path / "sv5" / "olo.db"
     db.parent.mkdir()
     conn = connect(db)
     migrate(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 4
+    assert row["version"] == 5
     conn.close()
