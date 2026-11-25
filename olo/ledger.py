@@ -37,6 +37,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+# OperatorToken is Olo's existing trusted authorization boundary (DenyAll until
+# IAM/RBAC integration is wired).  Imported here so resolve_unresolved_match
+# uses the same boundary as resolve_identifier_conflict in contacts.py.
+from olo.adapters.contacts import OperatorToken  # noqa: F401
 
 # ── Supported event types ─────────────────────────────────────────────────────
 
@@ -53,6 +57,15 @@ CREATE_ACTIONS: frozenset[str] = frozenset({"commit"})
 CONFIRMED_ACTIONS: frozenset[str] = frozenset({
     "commit", "reaffirm", "confirm_change", "cancel",
 })
+
+#: Cross-field actor/action rules.
+#: A customer may only request a change or cancel.
+#: A business may commit, reaffirm, confirm a change, or cancel.
+#: These rules are enforced in _validate() so invalid combinations return INVALID.
+ACTOR_ACTION_ALLOWED: dict[str, frozenset[str]] = {
+    "business": frozenset({"commit", "reaffirm", "confirm_change", "cancel"}),
+    "customer": frozenset({"request_change", "cancel"}),
+}
 
 _CID_PREFIX = "cid_"
 
@@ -221,6 +234,16 @@ def _validate(event: LedgerEvent) -> Optional[str]:
         return "source_kind must not be empty"
     if not event.occurred_at:
         return "occurred_at must not be empty"
+    # Cross-field: actor_role × action combination
+    allowed = ACTOR_ACTION_ALLOWED.get(event.actor_role, frozenset())
+    if event.action not in allowed:
+        return (
+            f"actor_role={event.actor_role!r} does not permit "
+            f"action={event.action!r}. "
+            f"Allowed for {event.actor_role!r}: {sorted(allowed)!r}. "
+            "A customer may only request_change or cancel; "
+            "a business may commit, reaffirm, confirm_change, or cancel."
+        )
     return None
 
 
@@ -560,40 +583,66 @@ def resolve_unresolved_match(
     source_doc_id: str,
     target_commitment_id: str,
     *,
-    authorized_by: Optional[str] = None,
+    operator: Optional[OperatorToken] = None,
     recorded_at: Optional[str] = None,
 ) -> ApplyResult:
     """Explicitly link an unresolved event to a specific commitment.
 
-    DenyAll by default: requires ``authorized_by`` from a trusted authorizer.
-    No authorization source is configured in S1; pass ``authorized_by`` once
-    CRM/IAM integration is in place.  This follows the same DenyAll pattern
-    as ``create_operator_token`` in the identity layer.
+    **DenyAll — currently always raises.**
 
-    The resolution is **append-only**: a new version is written to the target
-    commitment and the unresolved entry is marked resolved.  Nothing is deleted.
+    Manual commitment resolution is disabled until an authenticated IAM/RBAC
+    integration is configured.  ``operator`` must be an ``OperatorToken``
+    obtained via ``create_operator_token()``.  Since ``create_operator_token()``
+    currently always raises ``IdentityResolutionError`` (see contacts.py), no
+    caller can legitimately obtain a token.
+
+    Callers CANNOT authorize resolution by:
+    * ``operator=None``               → ``AuthorizationError`` (missing token)
+    * ``operator="any-string"``       → ``AuthorizationError`` (wrong type)
+    * ``operator=OperatorToken(actor="x")`` → ``AuthorizationError`` (DenyAll
+      enforcement inside this function; constructing the token directly bypasses
+      ``create_operator_token()`` but cannot bypass this check)
+
+    Unresolved matches are preserved in the ``unresolved_matches`` table for
+    future resolution once an IAM integration is configured.
 
     Args:
         conn:                 Open SQLite connection.
-        source_doc_id:        The ``source_doc_id`` of the unresolved entry.
+        source_doc_id:        ``source_doc_id`` of the unresolved entry.
         target_commitment_id: The commitment to apply the event to.
-        authorized_by:        Identifier of the authorizing entity.
-                              Raises AuthorizationError when None.
+        operator:             ``OperatorToken`` from ``create_operator_token()``.
         recorded_at:          Stamp time; defaults to current UTC.
 
-    Returns:
-        ApplyResult with outcome RESOLVED on success.
-
     Raises:
-        AuthorizationError: when authorized_by is None.
+        AuthorizationError: always (DenyAll until IAM/RBAC is wired).
     """
-    if authorized_by is None:
+    # Type guard: reject non-OperatorToken values before DenyAll enforcement
+    if operator is None:
         raise AuthorizationError(
-            "resolve_unresolved_match requires authorized_by from a trusted "
-            "authorizer.  No authorization source is configured in S1.  "
-            "Provide authorized_by=<verified-token> once CRM/IAM integration "
-            "is wired in."
+            "resolve_unresolved_match: requires an OperatorToken obtained via "
+            "create_operator_token().  No authorization source is configured. "
+            "Unresolved commitments are preserved for future resolution."
         )
+    if not isinstance(operator, OperatorToken):
+        raise AuthorizationError(
+            "resolve_unresolved_match: operator must be an OperatorToken instance "
+            "from create_operator_token(), not a plain string or other type. "
+            f"Got {type(operator).__name__!r}."
+        )
+    # DenyAll enforcement: even a directly-constructed OperatorToken cannot
+    # authorize resolution — the enforcement point is here, not in the token type.
+    # An OperatorToken can only be legitimately obtained via create_operator_token(),
+    # which currently always raises IdentityResolutionError.
+    raise AuthorizationError(
+        "resolve_unresolved_match: manual commitment resolution is currently "
+        "disabled.  An authenticated IAM/RBAC integration is required.  "
+        "Unresolved commitments are preserved for future resolution once "
+        "an integration is configured."
+    )
+
+    # ── Implementation (unreachable until IAM is wired) ───────────────────────
+    # The code below is complete and correct; remove the raise above and
+    # replace it with IAM verification once an integration is available.
 
     if recorded_at is None:
         from datetime import datetime, timezone
@@ -654,20 +703,18 @@ def resolve_unresolved_match(
             "source_doc_id already applied to this commitment",
         )
 
-    # Write the version
     version = _next_version(conn, target_commitment_id)
     _write_version(conn, target_commitment_id, version, event, recorded_at)
 
-    # Mark the unresolved entry as resolved (append-only: set resolved_at)
     conn.execute(
         "UPDATE unresolved_matches"
         " SET resolved_at=?, resolved_by=?, resolved_to=?"
         " WHERE id=?",
-        (recorded_at, authorized_by, target_commitment_id, unresolved_id),
+        (recorded_at, operator.actor, target_commitment_id, unresolved_id),
     )
     return ApplyResult(
         OutcomeKind.RESOLVED, target_commitment_id, version,
-        f"unresolved match linked to {target_commitment_id!r} by {authorized_by!r}",
+        f"unresolved match linked to {target_commitment_id!r} by {operator.actor!r}",
     )
 
 

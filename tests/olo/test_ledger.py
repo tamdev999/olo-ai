@@ -507,19 +507,74 @@ class TestActorRolesAndActions:
         assert r2.outcome == OutcomeKind.UPDATED
 
     def test_customer_cannot_commit(self, db: sqlite3.Connection) -> None:
-        """customer + commit is semantically odd but technically allowed
-        by the schema (validation only checks actor_role and action separately).
-        A customer 'commit' would still be valid per the data model; rejection
-        would require a cross-field rule added in a later sprint."""
-        # This test documents current behaviour: no cross-field validation.
+        """customer + commit is rejected: a customer cannot make a business commitment."""
         result = apply_event(
             db, _ev(source_doc_id="sig:cust_commit",
                     actor_role="customer", action="commit",
                     confirmed_date="2026-04-04"),
             recorded_at=TS,
         )
-        # Currently valid (no cross-field rule). Record the actual outcome.
-        assert result.outcome in (OutcomeKind.CREATED, OutcomeKind.INVALID)
+        assert result.outcome == OutcomeKind.INVALID
+        assert "actor_role" in result.message or "action" in result.message
+
+    def test_customer_cannot_reaffirm(self, db: sqlite3.Connection) -> None:
+        """customer + reaffirm is rejected: reaffirmation is a business action."""
+        result = apply_event(
+            db, _ev(source_doc_id="sig:cust_reaffirm",
+                    actor_role="customer", action="reaffirm",
+                    confirmed_date="2026-04-04"),
+            recorded_at=TS,
+        )
+        assert result.outcome == OutcomeKind.INVALID
+
+    def test_customer_cannot_confirm_change(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """customer + confirm_change is rejected: confirmation is a business action."""
+        result = apply_event(
+            db, _ev(source_doc_id="sig:cust_conf",
+                    actor_role="customer", action="confirm_change",
+                    confirmed_date="2026-04-08"),
+            recorded_at=TS,
+        )
+        assert result.outcome == OutcomeKind.INVALID
+
+    def test_business_cannot_request_change(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """business + request_change is rejected: requests come from customers."""
+        result = apply_event(
+            db, _ev(source_doc_id="sig:biz_req",
+                    actor_role="business", action="request_change",
+                    proposed_date="2026-04-08", confirmed_date=None),
+            recorded_at=TS,
+        )
+        assert result.outcome == OutcomeKind.INVALID
+
+    def test_invalid_combination_does_not_modify_state(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """An invalid actor/action combination leaves the DB unchanged."""
+        # Create a valid commitment first
+        r = apply_event(
+            db, _ev(source_doc_id="sig:orig", confirmed_date="2026-04-04"),
+            recorded_at=TS,
+        )
+        db.commit()
+
+        # Try invalid combination
+        apply_event(
+            db, _ev(source_doc_id="sig:invalid",
+                    actor_role="customer", action="commit",
+                    confirmed_date="2026-04-08"),
+            recorded_at=TS,
+        )
+        db.commit()
+
+        # State unchanged
+        state = get_current_state(db, r.commitment_id)
+        assert state["confirmed_date"] == "2026-04-04"
+        assert state["version"] == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -679,9 +734,9 @@ class TestOutOfOrderArrival:
     def test_confirm_change_out_of_order_requires_resolution(
         self, db: sqlite3.Connection
     ) -> None:
-        """When confirm_change arrives before the original commit, D2 fires
-        (UNRESOLVED); once the commit lands, explicit resolution links them."""
-        # Transcript arrives first (out of order) with no prior commitment
+        """When confirm_change arrives before the original commit, D2 fires.
+        Once the commit lands, resolution is DenyAll — state stays at Apr 04."""
+        # Transcript arrives first (out of order) with no prior commitment → D2
         r_trans = apply_event(
             db,
             _ev(source_doc_id="sig:trans",
@@ -706,17 +761,19 @@ class TestOutOfOrderArrival:
         db.commit()
         assert r_email.outcome == OutcomeKind.CREATED
 
-        # Explicit authorized resolution links the transcript to the email's commitment
-        from olo.ledger import resolve_unresolved_match
-        r_resolve = resolve_unresolved_match(
-            db, "sig:trans", r_email.commitment_id,
-            authorized_by="test-operator",
-            recorded_at=TS,
-        )
+        # Resolution attempt raises AuthorizationError (DenyAll)
+        from olo.adapters.contacts import OperatorToken as OT
+        with pytest.raises(AuthorizationError):
+            resolve_unresolved_match(
+                db, "sig:trans", r_email.commitment_id,
+                operator=OT(actor="test-operator"),
+            )
         db.commit()
-        assert r_resolve.outcome == OutcomeKind.RESOLVED
+
+        # Delivery commitment shows only the email's confirmed date
         state = get_current_state(db, r_email.commitment_id)
-        assert state["confirmed_date"] == "2026-04-08"
+        assert state["confirmed_date"] == "2026-04-04"  # transcript not applied
+        assert state["version"] == 1
 
     def test_missing_prior_date_unresolved_not_fork(
         self, db: sqlite3.Connection
@@ -868,14 +925,26 @@ class TestIdentityAndBusinessIsolation:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Authorised resolution of unresolved matches (DenyAll default)
+# Authorised resolution of unresolved matches (DenyAll — always raises)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestAuthorisedResolution:
-    """Unresolved matches require explicit authorization; DenyAll by default."""
+    """Resolution is DenyAll until a trusted IAM/RBAC integration is wired.
 
-    def _create_unresolved(self, db: sqlite3.Connection) -> str:
-        """Create a commitment and an unresolved event; return source_doc_id."""
+    No caller can currently authorize a commitment resolution by:
+    - supplying operator=None (raises AuthorizationError)
+    - supplying a plain string (wrong type → raises)
+    - constructing OperatorToken(actor=...) directly (DenyAll enforcement
+      inside resolve_unresolved_match, not in the token type)
+
+    create_operator_token() — the only legitimate path to an OperatorToken —
+    always raises IdentityResolutionError until IAM is wired.
+
+    Unresolved records must remain unchanged after every failed attempt.
+    """
+
+    def _make_unresolved(self, db: sqlite3.Connection):
+        """Return (source_doc_id, commitment_id) for an unresolved entry."""
         apply_event(
             db, _ev(source_doc_id="sig:orig", confirmed_date="2026-04-04"),
             recorded_at=TS,
@@ -886,87 +955,101 @@ class TestAuthorisedResolution:
                 source_kind="call.transcript",
                 action="confirm_change",
                 confirmed_date="2026-04-08",
-                prior_confirmed_date=None),  # no prior → D2 → UNRESOLVED
+                prior_confirmed_date=None),
             recorded_at=TS,
         )
         db.commit()
-        return "sig:unresolved"
+        cmt_id = db.execute("SELECT id FROM commitments").fetchone()[0]
+        return "sig:unresolved", cmt_id
 
-    def test_deny_all_by_default(self, db: sqlite3.Connection) -> None:
-        """resolve_unresolved_match raises AuthorizationError when authorized_by is None."""
-        source_doc_id = self._create_unresolved(db)
-        cmt_id = db.execute(
-            "SELECT id FROM commitments"
-        ).fetchone()[0]
+    def test_none_operator_raises(self, db: sqlite3.Connection) -> None:
+        """operator=None raises AuthorizationError."""
+        source_doc_id, cmt_id = self._make_unresolved(db)
+        with pytest.raises(AuthorizationError):
+            resolve_unresolved_match(db, source_doc_id, cmt_id, operator=None)
 
-        with pytest.raises(AuthorizationError, match="authorized_by"):
+    def test_string_operator_raises(self, db: sqlite3.Connection) -> None:
+        """A plain string cannot authorize resolution — wrong type."""
+        source_doc_id, cmt_id = self._make_unresolved(db)
+        with pytest.raises((AuthorizationError, TypeError)):
             resolve_unresolved_match(
                 db, source_doc_id, cmt_id,
-                authorized_by=None,
+                operator="test-operator",  # type: ignore[arg-type]
             )
 
-    def test_explicit_authorization_resolves(
+    def test_integer_operator_raises(self, db: sqlite3.Connection) -> None:
+        """Any non-OperatorToken type is rejected."""
+        source_doc_id, cmt_id = self._make_unresolved(db)
+        with pytest.raises((AuthorizationError, TypeError)):
+            resolve_unresolved_match(
+                db, source_doc_id, cmt_id,
+                operator=42,  # type: ignore[arg-type]
+            )
+
+    def test_direct_token_construction_cannot_authorize(
         self, db: sqlite3.Connection
     ) -> None:
-        """An explicit authorized_by token resolves the unresolved match."""
-        source_doc_id = self._create_unresolved(db)
-        cmt_id = db.execute("SELECT id FROM commitments").fetchone()[0]
+        """OperatorToken(actor='...') constructed directly cannot authorize.
 
-        result = resolve_unresolved_match(
-            db, source_doc_id, cmt_id,
-            authorized_by="test-operator",
-            recorded_at=TS,
-        )
-        db.commit()
+        The DenyAll enforcement is in resolve_unresolved_match, not in the
+        token type.  Direct construction bypasses create_operator_token() but
+        cannot bypass the function-level DenyAll check.
+        """
+        from olo.adapters.contacts import OperatorToken as OT
+        source_doc_id, cmt_id = self._make_unresolved(db)
+        fake_token = OT(actor="operator")
+        with pytest.raises(AuthorizationError):
+            resolve_unresolved_match(
+                db, source_doc_id, cmt_id, operator=fake_token
+            )
 
-        assert result.outcome == OutcomeKind.RESOLVED
-        assert result.commitment_id == cmt_id
-        state = get_current_state(db, cmt_id)
-        assert state["confirmed_date"] == "2026-04-08"
+    def test_create_operator_token_always_raises(self) -> None:
+        """create_operator_token() always raises (DenyAll integration point)."""
+        from olo.adapters.contacts import create_operator_token, IdentityResolutionError
+        with pytest.raises(IdentityResolutionError):
+            create_operator_token("anyone")
 
-    def test_resolution_is_idempotent(self, db: sqlite3.Connection) -> None:
-        """Resolving the same match twice returns UNCHANGED on the second call."""
-        source_doc_id = self._create_unresolved(db)
-        cmt_id = db.execute("SELECT id FROM commitments").fetchone()[0]
-
-        r1 = resolve_unresolved_match(
-            db, source_doc_id, cmt_id,
-            authorized_by="operator-1",
-            recorded_at=TS,
-        )
-        db.commit()
-        r2 = resolve_unresolved_match(
-            db, source_doc_id, cmt_id,
-            authorized_by="operator-1",
-            recorded_at=TS,
-        )
-        db.commit()
-
-        assert r1.outcome == OutcomeKind.RESOLVED
-        assert r2.outcome == OutcomeKind.UNCHANGED
-
-    def test_resolution_recorded_in_unresolved_matches(
+    def test_unresolved_record_unchanged_after_every_forged_attempt(
         self, db: sqlite3.Connection
     ) -> None:
-        """The unresolved_matches row gains resolved_at and resolved_by."""
-        source_doc_id = self._create_unresolved(db)
-        cmt_id = db.execute("SELECT id FROM commitments").fetchone()[0]
+        """Every forged attempt leaves the unresolved_matches row open."""
+        from olo.adapters.contacts import OperatorToken as OT
+        source_doc_id, cmt_id = self._make_unresolved(db)
 
-        resolve_unresolved_match(
-            db, source_doc_id, cmt_id,
-            authorized_by="auditor-99",
-            recorded_at=TS,
-        )
+        for bad_op in [None, "fake", 42, OT(actor="forged")]:
+            try:
+                resolve_unresolved_match(
+                    db, source_doc_id, cmt_id,
+                    operator=bad_op,  # type: ignore[arg-type]
+                )
+            except (AuthorizationError, TypeError):
+                pass
         db.commit()
 
         row = db.execute(
-            "SELECT resolved_at, resolved_by, resolved_to"
-            " FROM unresolved_matches WHERE source_doc_id=?",
+            "SELECT resolved_at FROM unresolved_matches WHERE source_doc_id=?",
             (source_doc_id,),
         ).fetchone()
-        assert row[0] is not None   # resolved_at set
-        assert row[1] == "auditor-99"
-        assert row[2] == cmt_id
+        assert row is not None
+        assert row[0] is None  # resolved_at must still be NULL
+
+    def test_commitment_state_unchanged_after_forged_resolution(
+        self, db: sqlite3.Connection
+    ) -> None:
+        """Commitment keeps its confirmed date after every failed resolution."""
+        from olo.adapters.contacts import OperatorToken as OT
+        source_doc_id, cmt_id = self._make_unresolved(db)
+
+        try:
+            resolve_unresolved_match(
+                db, source_doc_id, cmt_id, operator=OT(actor="forged")
+            )
+        except AuthorizationError:
+            pass
+        db.commit()
+
+        state = get_current_state(db, cmt_id)
+        assert state["confirmed_date"] == "2026-04-04"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
