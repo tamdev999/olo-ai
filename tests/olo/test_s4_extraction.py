@@ -5,7 +5,10 @@ S4 final-validation additions
 TestSpeakerAttribution  — Agent:/Customer: marker regression tests
 TestLongTranscript      — keyword-window + full-text verification regression
 TestLiveAccuracy        — real DeepSeek model run on 30-label corpus
-                          (skipped when DEEPSEEK_API_KEY is not set)
+                          (tests/olo/test_s4_addition.py; opt-in, see there)
+
+Labels are versioned: see LABEL_VERSION / corpus_label_hash() below and
+docs/olo/m3/S4_LABEL_CHANGELOG.md.
 
 
 Task 2: 30 hand-labelled signals covering emails, calls, ambiguous requests,
@@ -18,7 +21,7 @@ each signal's text, ensuring deterministic, isolated test execution.
 
 Customer-cancel integration note
 ---------------------------------
-Cases s06, s09, s18, s20 are customer-initiated cancellations.  The extractor
+Cases s06, s09, s19, s20 are customer-initiated cancellations.  The extractor
 correctly derives actor_role="customer" from the signal kind (email.received)
 rather than from the model.  When these ExtractionResult objects are passed to
 apply_event (a future stage), _write_version will produce is_confirmed=0
@@ -32,14 +35,17 @@ Reliability targets (mock data, ideal model outputs):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Optional
 
 import pytest
+
+from olo.ledger import CANCEL_ACTION, CANCEL_NULL_FIELDS
 
 from olo.extractor import (
     Budget,
@@ -237,10 +243,11 @@ _CORPUS: list[dict] = [
         "marker": "REF-S06",
         "mock_response": _r(
             event_type="delivery", action="cancel",
+            prior_confirmed_date="2024-03-15",
             supporting_passage="cancel my delivery REF-S06 scheduled for 2024-03-15",
             confidence=0.97,
         ),
-        "label": Label("delivery", "cancel", "customer"),
+        "label": Label("delivery", "cancel", "customer", prior_confirmed_date="2024-03-15"),
     },
 
     # ── S07: email.sent — business cancels meeting ────────────────────────────
@@ -257,11 +264,11 @@ _CORPUS: list[dict] = [
         "marker": "BOOK-S07",
         "mock_response": _r(
             event_type="meeting", action="cancel",
-            confirmed_date="2024-04-10",
+            prior_confirmed_date="2024-04-10",
             supporting_passage="cancel your meeting BOOK-S07 on 2024-04-10",
             confidence=0.92,
         ),
-        "label": Label("meeting", "cancel", "business", confirmed_date="2024-04-10"),
+        "label": Label("meeting", "cancel", "business", prior_confirmed_date="2024-04-10"),
     },
 
     # ── S08: email.sent — business reaffirms delivery date ───────────────────
@@ -299,10 +306,11 @@ _CORPUS: list[dict] = [
         "marker": "BOOK-S09",
         "mock_response": _r(
             event_type="meeting", action="cancel",
+            prior_confirmed_date="2024-04-10",
             supporting_passage="cancel my appointment BOOK-S09 scheduled for 2024-04-10",
             confidence=0.95,
         ),
-        "label": Label("meeting", "cancel", "customer"),
+        "label": Label("meeting", "cancel", "customer", prior_confirmed_date="2024-04-10"),
     },
 
     # ── S10: email.sent — delivery commit with order ID ───────────────────────
@@ -391,13 +399,13 @@ _CORPUS: list[dict] = [
         "marker": "REF-S13",
         "mock_response": _r(
             event_type="delivery", action="cancel",
-            confirmed_date="2024-03-20",
+            prior_confirmed_date="2024-03-20",
             supporting_passage=(
                 "cancellation of your delivery REF-S13 previously scheduled for 2024-03-20"
             ),
             confidence=0.93,
         ),
-        "label": Label("delivery", "cancel", "business", confirmed_date="2024-03-20"),
+        "label": Label("delivery", "cancel", "business", prior_confirmed_date="2024-03-20"),
     },
 
     # ── S14: email.received — change request with prior date ──────────────────
@@ -530,10 +538,14 @@ _CORPUS: list[dict] = [
         "mock_response": _r(
             event_type="delivery", action="cancel",
             business_key="ORD-2024-S19",
+            prior_confirmed_date="2024-03-18",
             supporting_passage="cancel order ORD-2024-S19",
             confidence=0.96,
         ),
-        "label": Label("delivery", "cancel", "customer", business_key="ORD-2024-S19"),
+        "label": Label(
+            "delivery", "cancel", "customer",
+            prior_confirmed_date="2024-03-18", business_key="ORD-2024-S19",
+        ),
     },
 
     # ── S20: email.received — intentional FN: mock returns low confidence ─────
@@ -553,10 +565,11 @@ _CORPUS: list[dict] = [
         "marker": "REF-S20",
         "mock_response": _r(
             event_type="delivery", action="cancel",
+            prior_confirmed_date="2024-04-01",
             supporting_passage="cancelling my delivery REF-S20 for the 2024-04-01 slot",
             confidence=0.50,  # below threshold — extractor must reject
         ),
-        "label": Label("delivery", "cancel", "customer"),
+        "label": Label("delivery", "cancel", "customer", prior_confirmed_date="2024-04-01"),
     },
 
     # ── S21–S30: NEGATIVE cases (expect None) ─────────────────────────────────
@@ -726,12 +739,20 @@ def _build_mock_fn(corpus: list[dict]):
 # ── Match helper ──────────────────────────────────────────────────────────────
 
 def _matches(result: ExtractionResult, lbl: Label) -> bool:
-    """True when result agrees with the label on the core fields."""
+    """True when result agrees with the label on the core fields.
+
+    Cancellations must also carry null confirmed_date and proposed_date
+    (cancellation contract, olo.ledger.cancellation_field_error).
+    """
     if result.event_type != lbl.event_type:
         return False
     if result.action != lbl.action:
         return False
     if result.actor_role != lbl.actor_role:
+        return False
+    if lbl.action == CANCEL_ACTION and any(
+        getattr(result, f) is not None for f in CANCEL_NULL_FIELDS
+    ):
         return False
     # At least one date must match when the label specifies one
     if lbl.confirmed_date and result.confirmed_date != lbl.confirmed_date:
@@ -743,6 +764,79 @@ def _matches(result: ExtractionResult, lbl: Label) -> bool:
     if lbl.business_key and result.business_key != lbl.business_key:
         return False
     return True
+
+
+# ── Label versioning ──────────────────────────────────────────────────────────
+#
+# The label hash covers (id, kind, label) for every case — not payloads or
+# mock responses.  Any label edit changes it; record a new version below and
+# in docs/olo/m3/S4_LABEL_CHANGELOG.md.  Results are only comparable across
+# runs that report the same label hash.
+
+def corpus_label_hash(corpus: list[dict] = _CORPUS) -> str:
+    """sha256 of the canonical JSON of every case's id, kind and label."""
+    rows = [
+        {"id": c["id"], "kind": c["kind"],
+         "label": asdict(c["label"]) if c["label"] is not None else None}
+        for c in corpus
+    ]
+    canonical = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+LABEL_VERSION: int = 2
+
+#: v1 — labels as first committed (3e648ac62d), scored by the first live run
+#: (commit 2882157253, report s4_live_accuracy_2882157253.json).
+LABEL_HASH_V1: str = "ee3821e92f838bfe7aa065e0f84e79f3c064a5858ea11dd72432a622c8e7099d"
+#: v2 — cancellation contract (S4 C1–C4).
+LABEL_HASH_V2: str = "3fa1265d25007e6692f325d864a84ff557624e5497e7275ba0c8967f9670cc49"
+
+LABEL_CHANGELOG: tuple[tuple[int, str], ...] = (
+    (1, "Initial 30-label corpus (3e648ac62d)."),
+    (2, "Cancellation contract: cancelled date in prior_confirmed_date, "
+        "null confirmed_date/proposed_date. s07, s13: confirmed_date -> "
+        "prior_confirmed_date. s06, s09, s19, s20: require the prior date "
+        "stated in the signal text. Mock responses updated to match."),
+)
+
+
+class TestLabelVersion:
+    def test_label_hash_matches_recorded_version(self) -> None:
+        assert LABEL_CHANGELOG[-1][0] == LABEL_VERSION
+        assert corpus_label_hash() == LABEL_HASH_V2, (
+            "corpus labels changed: bump LABEL_VERSION, record the new hash "
+            "and update docs/olo/m3/S4_LABEL_CHANGELOG.md"
+        )
+
+    def test_cancel_labels_follow_contract(self) -> None:
+        cancels = [c for c in _CORPUS if c["label"] and c["label"].action == CANCEL_ACTION]
+        assert {c["id"] for c in cancels} == {"s06", "s07", "s09", "s13", "s19", "s20"}
+        for c in cancels:
+            lbl = c["label"]
+            assert lbl.confirmed_date is None and lbl.proposed_date is None, c["id"]
+            assert lbl.prior_confirmed_date, c["id"]
+            # The prior date is documented in the signal text itself.
+            assert lbl.prior_confirmed_date in json.dumps(c["payload"]), c["id"]
+
+    def test_cancel_mocks_follow_contract(self) -> None:
+        for c in _CORPUS:
+            data = json.loads(c["mock_response"])
+            if data.get("action") == CANCEL_ACTION:
+                assert data["confirmed_date"] is None, c["id"]
+                assert data["proposed_date"] is None, c["id"]
+
+    def test_matches_rejects_cancel_with_confirmed_date(self) -> None:
+        lbl = _CORPUS[[c["id"] for c in _CORPUS].index("s07")]["label"]
+        good = ExtractionResult(
+            event_type="meeting", action="cancel", actor_role="business",
+            business_key=None, confirmed_date=None, proposed_date=None,
+            prior_confirmed_date="2024-04-10", thread_id=None,
+            supporting_passage="x", confidence=0.9,
+        )
+        assert _matches(good, lbl)
+        assert not _matches(replace(good, confirmed_date="2024-04-10"), lbl)
+        assert not _matches(replace(good, proposed_date="2024-04-10"), lbl)
 
 
 # ── Corpus reliability test ───────────────────────────────────────────────────

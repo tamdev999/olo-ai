@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,15 +28,17 @@ from olo.extractor import (
     make_deepseek_model_fn,
     migrate_extraction_cache,
 )
-from olo.ledger import ACTIONS
+from olo.ledger import ACTIONS, CANCEL_ACTION, CANCEL_NULL_FIELDS
 # Reuse corpus helpers from the original test file
 from tests.olo.test_s4_extraction import (
     _CORPUS,
+    LABEL_VERSION,
     Label,
     _build_mock_fn,
     _matches,
     _null,
     _r,
+    corpus_label_hash,
 )
 
 pytestmark = pytest.mark.not_integration
@@ -408,6 +412,9 @@ def _mismatched_fields(res: ExtractionResult, lbl: Label) -> tuple[str, ...]:
            if getattr(res, f) != getattr(lbl, f)]
     bad += [f for f in _LABEL_FIELDS
             if getattr(lbl, f) and getattr(res, f) != getattr(lbl, f)]
+    if lbl.action == CANCEL_ACTION:
+        bad += [f for f in CANCEL_NULL_FIELDS
+                if getattr(res, f) is not None and f not in bad]
     return tuple(bad)
 
 
@@ -491,6 +498,8 @@ class LiveReport:
     def to_dict(self) -> dict:
         return {
             "model": LIVE_MODEL,
+            "label_version": LABEL_VERSION,
+            "label_hash": corpus_label_hash(),
             "corpus_size": self.corpus_size,
             "cases_evaluated": len(self.outcomes),
             "model_calls": self.model_calls,
@@ -636,6 +645,7 @@ def _format_report(report: LiveReport) -> str:
         "=" * 64,
         f"S4 live accuracy — {LIVE_MODEL} (temperature 0)",
         "=" * 64,
+        f"Labels     : v{d['label_version']} ({d['label_hash'][:12]})",
         f"Cases      : {d['cases_evaluated']}/{d['corpus_size']} "
         f"({report.n_positive} positive, {d['corpus_size'] - report.n_positive} negative)",
         f"Model calls: {d['model_calls']}   skipped: {d['skipped']}   "
@@ -666,6 +676,117 @@ def _format_report(report: LiveReport) -> str:
     lines += ["", "Acceptance: " + ("PASS" if not failures else "FAIL")]
     lines += [f"  - {f}" for f in failures]
     return "\n".join(lines)
+
+
+# ── Live credential loading ──────────────────────────────────────────────────
+#
+# tests/conftest.py::_hermetic_environment deletes every *_API_KEY variable
+# before each test, so the live test never reads its key from os.environ.
+# OLO_S4_LIVE_KEY_FILE names an owner-only env-format file (for example the
+# existing /root/olo_m3_secrets/deepseek.env).  The key is read inside the
+# test and passed straight to the client: it is never put in os.environ,
+# printed, or written to the report, and error messages never quote the file.
+
+LIVE_KEY_FILE_ENV: str = "OLO_S4_LIVE_KEY_FILE"
+#: Variable names accepted in the key file, in order of preference.
+LIVE_KEY_NAMES: tuple[str, ...] = ("DEEPSEEK_API_KEY", "HINDSIGHT_API_LLM_API_KEY")
+
+
+class LiveKeyError(Exception):
+    """The live key file is missing or unusable (message never holds the key)."""
+
+
+def _load_live_key(path_str: Optional[str]) -> str:
+    """Read the DeepSeek key from an owner-only env-format file."""
+    if not path_str:
+        raise LiveKeyError(f"{LIVE_KEY_FILE_ENV} is not set")
+    path = Path(path_str)
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        raise LiveKeyError(f"key file not found: {path}") from None
+    if stat.S_ISLNK(st.st_mode):
+        raise LiveKeyError(f"key file must not be a symlink: {path}")
+    if not stat.S_ISREG(st.st_mode):
+        raise LiveKeyError(f"key file is not a regular file: {path}")
+    if sys.platform != "win32" and st.st_mode & 0o077:
+        raise LiveKeyError(
+            f"key file must be owner-only (mode {stat.S_IMODE(st.st_mode):o}, "
+            f"expected 600): {path}"
+        )
+    values: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        name, sep, value = line.partition("=")
+        if not sep:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[name.strip()] = value
+    for name in LIVE_KEY_NAMES:
+        if values.get(name):
+            return values[name]
+    raise LiveKeyError(f"key file defines none of {', '.join(LIVE_KEY_NAMES)}: {path}")
+
+
+class TestLiveKeyFile:
+    """OLO_S4_LIVE_KEY_FILE loading, exercised offline with fake keys."""
+
+    _FAKE = "sk-fake-0123456789abcdef"
+
+    def _write(self, tmp_path: Path, text: str, mode: int = 0o600) -> Path:
+        p = tmp_path / "deepseek.env"
+        p.write_text(text, encoding="utf-8")
+        os.chmod(p, mode)
+        return p
+
+    def test_unset_is_an_error(self) -> None:
+        with pytest.raises(LiveKeyError, match="OLO_S4_LIVE_KEY_FILE is not set"):
+            _load_live_key(None)
+
+    def test_missing_file_is_an_error(self, tmp_path: Path) -> None:
+        with pytest.raises(LiveKeyError, match="not found"):
+            _load_live_key(str(tmp_path / "absent.env"))
+
+    def test_reads_existing_hindsight_variable(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, f"# comment\nHINDSIGHT_API_LLM_API_KEY={self._FAKE}\n")
+        assert _load_live_key(str(p)) == self._FAKE
+
+    def test_prefers_deepseek_variable_and_strips_quotes(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, f"HINDSIGHT_API_LLM_API_KEY=other\n"
+                                  f"export DEEPSEEK_API_KEY=\"{self._FAKE}\"\n")
+        assert _load_live_key(str(p)) == self._FAKE
+
+    def test_no_known_variable_is_an_error_without_contents(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, f"OTHER_SETTING={self._FAKE}\n")
+        with pytest.raises(LiveKeyError) as exc:
+            _load_live_key(str(p))
+        assert self._FAKE not in str(exc.value)
+
+    def test_key_never_enters_environment(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, f"HINDSIGHT_API_LLM_API_KEY={self._FAKE}\n")
+        _load_live_key(str(p))
+        assert self._FAKE not in os.environ.values()
+
+    @pytest.mark.platforms("posix")
+    def test_group_readable_file_is_rejected(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, f"DEEPSEEK_API_KEY={self._FAKE}\n", mode=0o640)
+        with pytest.raises(LiveKeyError, match="owner-only") as exc:
+            _load_live_key(str(p))
+        assert self._FAKE not in str(exc.value)
+
+    @pytest.mark.platforms("posix")
+    def test_symlink_is_rejected(self, tmp_path: Path) -> None:
+        target = self._write(tmp_path, f"DEEPSEEK_API_KEY={self._FAKE}\n")
+        link = tmp_path / "link.env"
+        link.symlink_to(target)
+        with pytest.raises(LiveKeyError, match="symlink"):
+            _load_live_key(str(link))
 
 
 # ── Offline proof that the live acceptance cannot pass falsely ───────────────
@@ -809,7 +930,7 @@ class TestLiveAcceptanceEvaluator:
 
         two = _run_offline(_marker_patch_fn({
             "s03": _with("s03", proposed_date="2024-03-23"),
-            "s04": _with("s04", action="cancel"),
+            "s04": _with("s04", event_type="delivery"),
         }))
         assert two.count("WRONG") == 2
         assert two.precision == pytest.approx(16 / 18)
@@ -876,6 +997,32 @@ class TestLiveAcceptanceEvaluator:
             if passage:
                 assert passage not in text and passage not in dumped
 
+    def test_report_records_label_version(self) -> None:
+        d = _run_offline(_build_mock_fn(_CORPUS)).to_dict()
+        assert d["label_version"] == LABEL_VERSION
+        assert d["label_hash"] == corpus_label_hash()
+
+    def test_v1_style_cancellation_is_rejected_not_scored(self) -> None:
+        """First-run shape (cancelled date in confirmed_date) → no extraction."""
+        v1_style = _with("s07", confirmed_date="2024-04-10", prior_confirmed_date=None)
+        rep = _run_offline(_marker_patch_fn({"s07": v1_style}))
+        s07 = next(o for o in rep.outcomes if o.case_id == "s07")
+        assert s07.outcome == "FN" and s07.actor_role is None
+
+    def test_cancel_with_confirmed_date_counts_as_wrong(self) -> None:
+        """Scoring alone (bypassing the extractor) also flags the null fields."""
+        lbl = _case("s13")["label"]
+        res = ExtractionResult(
+            event_type="delivery", action="cancel", actor_role="business",
+            business_key=None, confirmed_date="2024-03-20", proposed_date=None,
+            prior_confirmed_date="2024-03-20", thread_id=None,
+            supporting_passage="x", confidence=0.9,
+        )
+        out = _score_case(_case("s13"), res, model_calls=1, errors=[],
+                          unparseable=0, skipped=None)
+        assert lbl.prior_confirmed_date == "2024-03-20"
+        assert out.outcome == "WRONG" and out.mismatched == ("confirmed_date",)
+
 
 # ── Live accuracy test (spends API credits) ──────────────────────────────────
 
@@ -885,8 +1032,12 @@ class TestLiveAccuracy:
 
     Deselected by default (pyproject addopts: not live) and additionally
     gated on OLO_S4_LIVE=1, so an unrequested run skips rather than spends.
-    Once requested, a missing key or unusable client FAILS — it never skips
-    or passes.  Optional: OLO_S4_LIVE_REPORT=<path> writes the JSON report.
+    The key comes only from OLO_S4_LIVE_KEY_FILE (see _load_live_key); the
+    Hermes credential scrub stays in force.  Once requested, a missing or
+    unusable key FAILS — it never skips or passes.
+
+    OLO_S4_LIVE_REPORT=<path> writes the JSON report; an existing file is
+    never overwritten (earlier runs are preserved as evidence).
 
     Budget: 60 calls / 200k tokens; cost cap $1.00 on the upper-bound price.
     Do NOT tune the extractor to improve these scores.
@@ -897,9 +1048,15 @@ class TestLiveAccuracy:
             pytest.skip("live DeepSeek run not requested; set OLO_S4_LIVE=1 "
                         "(spends API credits)")
 
-        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-        if not api_key:
-            pytest.fail("OLO_S4_LIVE=1 but DEEPSEEK_API_KEY is not set", pytrace=False)
+        out_path = os.environ.get("OLO_S4_LIVE_REPORT")
+        if out_path and Path(out_path).exists():
+            pytest.fail(f"refusing to overwrite existing report: {out_path}",
+                        pytrace=False)
+
+        try:
+            api_key = _load_live_key(os.environ.get(LIVE_KEY_FILE_ENV))
+        except LiveKeyError as exc:
+            pytest.fail(f"OLO_S4_LIVE=1 but no usable key: {exc}", pytrace=False)
         try:
             model_fn = make_deepseek_model_fn(model=LIVE_MODEL, api_key=api_key,
                                               temperature=0)
@@ -916,10 +1073,9 @@ class TestLiveAccuracy:
         )
 
         print("\n" + _format_report(report))
-        out_path = os.environ.get("OLO_S4_LIVE_REPORT")
         if out_path:
-            Path(out_path).write_text(json.dumps(report.to_dict(), indent=2) + "\n",
-                                      encoding="utf-8")
+            with open(out_path, "x", encoding="utf-8") as fh:
+                fh.write(json.dumps(report.to_dict(), indent=2) + "\n")
 
         failures = _acceptance_failures(report)
         assert not failures, "S4 live acceptance failed:\n  - " + "\n  - ".join(failures)

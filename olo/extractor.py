@@ -39,7 +39,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from olo.ledger import ACTIONS, SUPPORTED_EVENT_TYPES
+from olo.ledger import (
+    ACTIONS,
+    CANCEL_ACTION,
+    SUPPORTED_EVENT_TYPES,
+    cancellation_field_error,
+)
 
 __all__ = [
     "ExtractionResult",
@@ -455,6 +460,8 @@ def _parse_and_verify(
     - action not in ACTIONS
     - confidence < _CONFIDENCE_THRESHOLD
     - supporting_passage absent or not a verbatim substring of full_text
+    - action='cancel' violating the cancellation contract
+      (olo.ledger.cancellation_field_error)
     """
     try:
         data = json.loads(raw)
@@ -469,6 +476,15 @@ def _parse_and_verify(
 
     action = data.get("action")
     if action not in ACTIONS:
+        return None
+
+    # Cancellation contract (shared with the ledger): checked on the RAW
+    # values so a misplaced or malformed date is rejected, never remapped.
+    if action == CANCEL_ACTION and cancellation_field_error(
+        confirmed_date=data.get("confirmed_date"),
+        proposed_date=data.get("proposed_date"),
+        prior_confirmed_date=data.get("prior_confirmed_date"),
+    ):
         return None
 
     try:

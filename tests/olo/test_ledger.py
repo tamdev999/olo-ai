@@ -451,7 +451,11 @@ class TestD2NoForkOnMissingEvidence:
                 _ev(source_doc_id=f"sig:{action}",
                     actor_role="customer" if action == "request_change" else "business",
                     action=action,
-                    confirmed_date="2026-04-04" if action != "request_change" else None,
+                    confirmed_date=(
+                        "2026-04-04" if action not in ("request_change", "cancel") else None
+                    ),
+                    # Cancellation contract: the cancelled date is the prior date.
+                    prior_confirmed_date="2026-04-04" if action == "cancel" else None,
                     proposed_date="2026-04-08" if action == "request_change" else None),
                 recorded_at=TS,
             )

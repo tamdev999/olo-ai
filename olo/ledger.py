@@ -25,12 +25,22 @@ Actor roles and actions:
               'confirm_change'  — business confirms a customer's request (must match)
               'cancel'          — commitment cancelled (must match)
 
+Cancellation contract: a cancel carries the cancelled date in
+prior_confirmed_date and null confirmed_date/proposed_date (see
+cancellation_field_error).  A business cancel is confirmed: the commitment's
+status becomes 'cancelled' with no current scheduled date, while its history
+is preserved.  A customer cancel is a pending request (is_confirmed=0); the
+status stays 'scheduled' until the business confirms.  A later confirmed
+business version that matches the commitment (e.g. a recommit with the same
+business_key) restores status 'scheduled'.
+
 Only 'commit' may create a new commitment record.  All other actions require
 a verifiable match against existing history (prior date, thread or business key).
 """
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -73,7 +83,52 @@ ACTOR_ACTION_ALLOWED: dict[str, frozenset[str]] = {
     "customer": frozenset({"request_change", "cancel"}),  # cancel→is_confirmed=0 (S3 fix)
 }
 
+#: Cancellation date contract (S4 C1–C4), shared by the ledger (_validate)
+#: and the extractor (_parse_and_verify):
+#:   * the cancelled date goes in ``prior_confirmed_date`` (YYYY-MM-DD);
+#:   * ``confirmed_date`` and ``proposed_date`` must be null — a cancellation
+#:     neither confirms nor proposes a date.
+#: Violations are rejected, never remapped to another field.
+CANCEL_ACTION: str = "cancel"
+CANCEL_NULL_FIELDS: tuple[str, ...] = ("confirmed_date", "proposed_date")
+
+#: Commitment status values reported by get_current_state().
+STATUS_SCHEDULED: str = "scheduled"
+STATUS_CANCELLED: str = "cancelled"
+
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
 _CID_PREFIX = "cid_"
+
+
+def cancellation_field_error(
+    *,
+    confirmed_date: object,
+    proposed_date: object,
+    prior_confirmed_date: object,
+) -> Optional[str]:
+    """Check a cancellation's date fields against the cancellation contract.
+
+    Takes the raw field values (any type) so callers can apply it before any
+    cleaning or coercion.  Returns None when the fields are valid, otherwise a
+    human-readable reason.  Never suggests or performs a remap.
+    """
+    values = {"confirmed_date": confirmed_date, "proposed_date": proposed_date}
+    for name in CANCEL_NULL_FIELDS:
+        if values[name] is not None:
+            return (
+                f"action='cancel' requires {name}=None (got {values[name]!r}); "
+                "the cancelled date belongs in prior_confirmed_date"
+            )
+    if prior_confirmed_date is not None and not (
+        isinstance(prior_confirmed_date, str)
+        and _ISO_DATE_RE.fullmatch(prior_confirmed_date)
+    ):
+        return (
+            "action='cancel' requires prior_confirmed_date to be None or a "
+            f"YYYY-MM-DD date (got {prior_confirmed_date!r})"
+        )
+    return None
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -164,9 +219,11 @@ class LedgerEvent:
         proposed_date:        ISO 8601 date the customer is requesting.
                               None when the event carries no proposal.
         confirmed_date:       ISO 8601 date confirmed by the business.
-                              None for customer requests and cancellations.
+                              None for customer requests; must be None for
+                              cancellations (rejected otherwise).
         prior_confirmed_date: The previously-confirmed date this event supersedes.
-                              Evidence for cross-channel linking.
+                              Evidence for cross-channel linking.  For a
+                              cancellation, the date being cancelled.
         thread_id:            Email thread or call-session identifier.
                               Linking anchor when business_key is unavailable.
         notes:                Optional annotation.
@@ -250,6 +307,15 @@ def _validate(event: LedgerEvent) -> Optional[str]:
             "A customer may only request_change or cancel; "
             "a business may commit, reaffirm, confirm_change, or cancel."
         )
+    # Cross-field: cancellation date contract
+    if event.action == CANCEL_ACTION:
+        cancel_err = cancellation_field_error(
+            confirmed_date=event.confirmed_date,
+            proposed_date=event.proposed_date,
+            prior_confirmed_date=event.prior_confirmed_date,
+        )
+        if cancel_err:
+            return cancel_err
     return None
 
 
@@ -746,6 +812,12 @@ def get_current_state(
     A pending customer proposal never overrides the confirmed date.
     Call get_pending_proposal() to retrieve any open proposal.
 
+    ``status`` is 'cancelled' when the latest confirmed version is a cancel
+    (``scheduled_date`` is then None and ``prior_confirmed_date`` holds the
+    cancelled date); otherwise 'scheduled' with ``scheduled_date`` set to the
+    confirmed date.  A pending customer cancel shows as pending_action='cancel'
+    and does not change the status.
+
     Returns None if the commitment does not exist.
     """
     row = conn.execute(
@@ -783,12 +855,26 @@ def get_current_state(
     if pending and confirmed_at and pending[3] <= confirmed_at:
         pending = None
 
+    # Status from the latest confirmed version: a confirmed (business) cancel
+    # leaves no current scheduled date; any other confirmed action schedules.
+    if confirmed is None:
+        status: Optional[str] = None
+        scheduled_date: Optional[str] = None
+    elif confirmed[2] == CANCEL_ACTION:
+        status, scheduled_date = STATUS_CANCELLED, None
+    else:
+        status, scheduled_date = STATUS_SCHEDULED, confirmed[3]
+
     return {
         "id":             row[0],
         "contact_id":     row[1],
         "event_type":     row[2],
         "business_key":   row[3],
         "created_at":     row[4],
+        # 'scheduled' | 'cancelled' (None when no confirmed version exists)
+        "status":         status,
+        # Current scheduled date; None when cancelled
+        "scheduled_date": scheduled_date,
         # Latest confirmed version fields
         "version":              confirmed[0]  if confirmed else None,
         "actor_role":           confirmed[1]  if confirmed else None,
