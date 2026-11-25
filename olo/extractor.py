@@ -46,6 +46,7 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass, replace
+from datetime import date as _date
 from datetime import datetime, timezone
 from enum import Enum
 from itertools import pairwise
@@ -59,20 +60,30 @@ from olo.ledger import (
     cancellation_field_error,
     is_valid_iso_date,
 )
+from olo.signal_content import (
+    PREP_CONTENT_ERROR,
+    PREP_MISSING_CONTENT,
+    PREP_NO_DIRECTION,
+    PREP_NO_TEXT,
+    PREP_UNSUPPORTED_KIND,
+    PreparedSignal,
+    prepare_signal,
+)
 
 __all__ = [
+    "EXTRACTION_VERSION",
     "ExtractionResult",
     "ExtractionOutcome",
     "ExtractionStatus",
     "Budget",
     "extract_commitment_outcome",
+    "extract_prepared",
     "extract_commitment_update",
     "make_deepseek_model_fn",
     "migrate_extraction_cache",
 ]
 
 _CONFIDENCE_THRESHOLD: float = 0.7
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # DeepSeek V3 pricing (from olo/m3/hindsight/budget.py)
 _DEEPSEEK_INPUT_PER_M:  float = 0.14   # USD per 1M input  tokens
@@ -148,6 +159,9 @@ class Budget:
         self.tokens_used:   int   = 0   # input + output combined
         self.cache_hits:    int   = 0
         self.cost_usd:      float = 0.0
+        #: Calls whose reported usage exceeded max_tokens_per_call despite the
+        #: pre-call estimate (visible in report(); the estimate is conservative).
+        self.per_call_overruns: int = 0
 
     def within_budget(self) -> bool:
         """True if another model call is within budget."""
@@ -155,6 +169,21 @@ class Budget:
             self.calls_used < self.max_calls
             and self.tokens_used < self.max_total_tokens
         )
+
+    def call_refusal(self, estimated_tokens: int) -> Optional[str]:
+        """Why a call estimated at *estimated_tokens* must not be made, or None.
+
+        Enforces the per-call limit before any money is spent, as well as the
+        call and total-token limits.
+        """
+        if self.calls_used >= self.max_calls:
+            return f"call budget exhausted ({self.max_calls} calls)"
+        if estimated_tokens > self.max_tokens_per_call:
+            return (f"estimated {estimated_tokens} tokens exceeds the per-call limit "
+                    f"of {self.max_tokens_per_call}")
+        if self.tokens_used + estimated_tokens > self.max_total_tokens:
+            return f"token budget exhausted ({self.max_total_tokens} tokens)"
+        return None
 
     def charge(self, tokens: int, *, output_tokens: int = 0) -> None:
         """Record usage for one successful (non-cached) model call.
@@ -185,7 +214,24 @@ class Budget:
             "tokens_used": self.tokens_used,
             "cache_hits":  self.cache_hits,
             "cost_usd":    round(self.cost_usd, 6),
+            "per_call_overruns": self.per_call_overruns,
         }
+
+    def charge_reply(self, usage: tuple[int, ...]) -> None:
+        """Charge one model reply's usage.
+
+        ``(input_tokens, output_tokens)`` is priced exactly.  A single combined
+        count cannot be split, so it is priced entirely at the (higher) output
+        rate — an upper bound, never an under-count.
+        """
+        if len(usage) >= 2:
+            self.charge(int(usage[0]), output_tokens=int(usage[1]))
+            total = int(usage[0]) + int(usage[1])
+        else:
+            total = int(usage[0]) if usage else 0
+            self.charge(0, output_tokens=total)
+        if total > self.max_tokens_per_call:
+            self.per_call_overruns += 1
 
 
 # ── Cache schema ─────────────────────────────────────────────────────────────
@@ -206,29 +252,15 @@ def migrate_extraction_cache(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-# ── Signal text extraction ────────────────────────────────────────────────────
+# ── Signal text (shared preparation) ──────────────────────────────────────────
 
 def _signal_text(kind: str, payload: dict) -> str:
-    """Extract the full meaningful text from a signal payload.
+    """Full verification text of an inline signal payload.
 
-    Returns the COMPLETE text, never truncated — callers that need a windowed
-    version for a prompt should use _extract_relevant_window separately.
+    Thin view over olo.signal_content.prepare_signal — the one preparation
+    path shared with the Hindsight item builder and the signal worker.
     """
-    if kind in ("email.sent", "email.received", "email.content"):
-        subject = str(payload.get("subject", "")).strip()
-        body    = str(payload.get("body",    "")).strip()
-        parts: list[str] = []
-        if subject:
-            parts.append(f"Subject: {subject}")
-        if body:
-            parts.append(body)
-        return "\n\n".join(parts)
-    if kind == "call.transcript":
-        return str(payload.get("transcript", "")).strip()
-    # Best effort for other kinds
-    return "\n".join(
-        f"{k}: {v}" for k, v in payload.items() if isinstance(v, str) and v
-    )
+    return prepare_signal(kind, payload).full_text
 
 
 def _extract_relevant_window(text: str, max_chars: int = _MAX_SIGNAL_CHARS) -> str:
@@ -309,34 +341,6 @@ def _find_speaker_for_passage(transcript: str, passage: str) -> Optional[str]:
     return "business" if last_speaker == "agent" else "customer"
 
 
-# ── Actor role from metadata ──────────────────────────────────────────────────
-
-def _actor_role(kind: str, payload: dict) -> str:
-    """Initial actor_role from signal metadata.
-
-    For emails this is definitive (we authored sent mail, customers authored
-    received mail).  For call.transcript this is a direction-based fallback;
-    when the transcript uses Agent:/Customer: markers, _refine_call_actor_role
-    will confirm or override this value after the model identifies the
-    supporting_passage.
-
-    Trusted-metadata rules:
-      email.sent      → "business"
-      email.received  → "customer"
-      call.transcript → "customer" if direction='inbound', else "business"
-      other           → "business" (conservative default)
-    """
-    if kind == "email.sent":
-        return "business"
-    if kind == "email.received":
-        return "customer"
-    if kind == "call.transcript":
-        if str(payload.get("direction", "")).lower() == "inbound":
-            return "customer"
-        return "business"
-    return "business"
-
-
 # ── Prompt template ───────────────────────────────────────────────────────────
 
 _PROMPT_TEMPLATE = """\
@@ -380,18 +384,33 @@ If event_type is null, all other fields must also be null and confidence must be
 
 # ── DeepSeek model backend ────────────────────────────────────────────────────
 
+#: Version of the extraction contract (prompt construction + verification).
+#: Part of every cache key: bump it whenever either changes so no cached
+#: answer is reinterpreted under different rules.
+#:   1 — S4 extractor;  2 — S1–S4 hardening + S5 part 1 (prepared signals).
+EXTRACTION_VERSION: str = "2"
+
+#: Output tokens assumed for a model function that does not declare its cap.
+DEFAULT_MAX_OUTPUT_TOKENS: int = 400
+
+
+def _deepseek_model_id(model: str, base_url: str, temperature: float, max_tokens: int) -> str:
+    return f"deepseek:{model}@{base_url}:temperature={temperature}:max_tokens={max_tokens}"
+
+
 def make_deepseek_model_fn(
     model: str = "deepseek-chat",
     api_key: Optional[str] = None,
     base_url: str = "https://api.deepseek.com/v1",
-    max_tokens: int = 400,
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: float = 0,
-) -> Callable[[str], tuple[str, int]]:
+) -> Callable[[str], tuple]:
     """Return a model function that calls DeepSeek via the OpenAI-compatible API.
 
-    Uses Olo's established DeepSeek configuration (DEEPSEEK_API_KEY env var,
-    deepseek-chat model, api.deepseek.com endpoint).  The returned function has
-    the standard ``(prompt: str) -> (response: str, tokens: int)`` signature.
+    The returned function maps ``prompt -> (text, input_tokens, output_tokens)``
+    when the API reports usage, else ``(text, estimated_total_tokens)``.  It
+    carries ``model_id`` (part of the cache key) and ``max_output_tokens``
+    (used by the per-call budget check).
 
     Args:
         model:       DeepSeek model name (default: deepseek-chat / DeepSeek V3).
@@ -418,7 +437,7 @@ def make_deepseek_model_fn(
         "Return only valid JSON matching the requested schema."
     )
 
-    def fn(prompt: str) -> tuple[str, int]:
+    def fn(prompt: str) -> tuple:
         resp = client.chat.completions.create(
             model=model,
             messages=[
@@ -430,25 +449,27 @@ def make_deepseek_model_fn(
             response_format={"type": "json_object"},
         )
         text = resp.choices[0].message.content or ""
-        # Use separate input/output counts when available for accurate pricing
         if resp.usage:
-            in_t  = resp.usage.prompt_tokens or 0
-            out_t = resp.usage.completion_tokens or 0
-            total = in_t + out_t
-        else:
-            total = max(len(text) // 4, 1)
-        return text, total
+            return text, int(resp.usage.prompt_tokens or 0), int(resp.usage.completion_tokens or 0)
+        return text, max(len(text) // 4, 1)
 
+    fn.model_id = _deepseek_model_id(model, base_url, temperature, max_tokens)  # type: ignore[attr-defined]
+    fn.max_output_tokens = max_tokens  # type: ignore[attr-defined]
     return fn
 
 
-def _default_model_fn(prompt: str) -> tuple[str, int]:
+def _default_model_fn(prompt: str) -> tuple:
     """Default production backend: DeepSeek via DEEPSEEK_API_KEY.
 
     Raises ValueError if DEEPSEEK_API_KEY is not set.
     For testing always inject _model_fn explicitly.
     """
     return make_deepseek_model_fn()(prompt)
+
+
+_default_model_fn.model_id = _deepseek_model_id(  # type: ignore[attr-defined]
+    "deepseek-chat", "https://api.deepseek.com/v1", 0, DEFAULT_MAX_OUTPUT_TOKENS)
+_default_model_fn.max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS  # type: ignore[attr-defined]
 
 
 # ── Outcome types ────────────────────────────────────────────────────────────
@@ -463,7 +484,8 @@ class ExtractionStatus(str, Enum):
     NO_COMMITMENT    = "no_commitment"     # model found nothing relevant
     REJECTED         = "rejected"          # model claimed one; verification failed
     MODEL_ERROR      = "model_error"       # transport/model exception or unusable output
-    BUDGET_EXHAUSTED = "budget_exhausted"  # call not made: budget spent
+    BUDGET_EXHAUSTED = "budget_exhausted"  # call not made: budget or per-call limit
+    CONTENT_ERROR    = "content_error"     # stored content missing/corrupt (integrity)
     NO_INPUT         = "no_input"          # signal carries no text
 
 
@@ -485,41 +507,7 @@ class ExtractionOutcome:
         return self.status in RETRYABLE_STATUSES
 
 
-# ── Source evidence: authored text, date mentions, grounding ─────────────────
-
-#: Lines that start a quoted/forwarded block in an email body.  Everything
-#: from the first such line onward is treated as not authored by the sender.
-_REPLY_HEADER_RE = re.compile(
-    r"^\s*(?:"
-    r"On\s.+\bwrote:\s*$"                         # On Mon, Bob <b@x> wrote:
-    r"|-{2,}\s*(?:Original|Forwarded)\s+Message\s*-{2,}"
-    r"|-{2,}\s*Forwarded message\s*-{2,}"
-    r"|_{5,}\s*$"                                  # Outlook separator
-    r"|From:\s.+"                                  # From: header of a quoted mail
-    r")",
-    re.IGNORECASE,
-)
-
-_EMAIL_KINDS: frozenset[str] = frozenset({"email.sent", "email.received", "email.content"})
-
-
-def _authored_text(kind: str, full_text: str) -> str:
-    """The part of the signal written by its author (quoted replies removed).
-
-    For email kinds: drops ``>``-quoted lines and everything from the first
-    reply/forward header line onward.  Other kinds are returned unchanged.
-    """
-    if kind not in _EMAIL_KINDS:
-        return full_text
-    kept: list[str] = []
-    for line in full_text.splitlines():
-        if _REPLY_HEADER_RE.match(line):
-            break
-        if line.lstrip().startswith(">"):
-            continue
-        kept.append(line)
-    return "\n".join(kept)
-
+# ── Source evidence: date mentions and grounding ────────────────────────────
 
 _MONTHS: dict[str, int] = {
     "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
@@ -601,9 +589,34 @@ def _date_mentions(text: str) -> list[_DateMention]:
     return found
 
 
-def _grounds(mention: _DateMention, iso: str) -> bool:
-    """True when the mention unambiguously denotes exactly *iso*."""
-    return mention.dates == frozenset({iso})
+#: A year-less date ("April 10") is resolved against the signal's trusted
+#: timestamp only when exactly one candidate year lies within this many days
+#: of it; otherwise it stays unresolved.
+_YEARLESS_WINDOW_DAYS: int = 183
+
+
+def _resolve_yearless(month: int, day: int, reference: _date) -> Optional[str]:
+    """The single plausible full date for a year-less mention, else None."""
+    candidates = []
+    for year in (reference.year - 1, reference.year, reference.year + 1):
+        iso = _iso(year, month, day)
+        if iso and abs((_date.fromisoformat(iso) - reference).days) <= _YEARLESS_WINDOW_DAYS:
+            candidates.append(iso)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _grounds(mention: _DateMention, iso: str, reference: Optional[_date] = None) -> bool:
+    """True when the mention unambiguously denotes exactly *iso*.
+
+    A year-less mention grounds a date only through a trusted reference
+    timestamp and only when that resolution is unique.
+    """
+    if mention.dates == frozenset({iso}):
+        return True
+    if not mention.dates and reference is not None and len(mention.month_days) == 1:
+        (month, day), = mention.month_days
+        return _resolve_yearless(month, day, reference) == iso
+    return False
 
 
 def _explained_by(mention: _DateMention, extracted: set[str]) -> bool:
@@ -640,11 +653,13 @@ def _date_evidence_error(
     dates: dict[str, Optional[str]],
     passage: str,
     context: str,
+    reference: Optional[_date] = None,
 ) -> Optional[str]:
     """Why the extracted dates are not supported by the source, or None.
 
-    * every non-null extracted date is stated explicitly and unambiguously
-      in the supporting passage (year included);
+    * every non-null extracted date is stated in the supporting passage —
+      with its year, or year-less but uniquely resolvable from the signal's
+      trusted timestamp (*reference*);
     * the passage's sentence offers no alternatives ("X or Y", "between X
       and Y") — an alternative is never resolved by picking one;
     * no unexplained date competes with the extraction: none for commit /
@@ -653,8 +668,8 @@ def _date_evidence_error(
     extracted = {v for v in dates.values() if v is not None}
     passage_mentions = _date_mentions(passage)
     for field, value in dates.items():
-        if value is not None and not any(_grounds(m, value) for m in passage_mentions):
-            return f"{field}={value} is not stated explicitly in the supporting passage"
+        if value is not None and not any(_grounds(m, value, reference) for m in passage_mentions):
+            return f"{field}={value} is not stated explicitly and unambiguously in the supporting passage"
 
     ctx_mentions = _date_mentions(context)
     for a, b in pairwise(ctx_mentions):
@@ -677,15 +692,21 @@ def _date_evidence_error(
 _DATE_KEYS: tuple[str, ...] = ("confirmed_date", "proposed_date", "prior_confirmed_date")
 
 
+def _reference_date(prepared: PreparedSignal) -> Optional[_date]:
+    if not prepared.occurred_at:
+        return None
+    try:
+        return _date.fromisoformat(prepared.occurred_at[:10])
+    except ValueError:
+        return None
+
+
 def _parse_and_verify_outcome(
     raw: str,
-    kind: str,
-    actor_role: str,
-    full_text: str,
-    thread_id: Optional[str],
+    prepared: PreparedSignal,
     cache_hit: bool,
 ) -> ExtractionOutcome:
-    """Parse a raw model response and verify it against the source signal.
+    """Parse a raw model response and verify it against the prepared signal.
 
     Verification is always against the complete original text; the evidence
     must sit in the author's own (unquoted) text.  Nothing is coerced: any
@@ -741,18 +762,19 @@ def _parse_and_verify_outcome(
         return ExtractionOutcome(S.REJECTED, reason="no supporting passage")
     passage = passage.strip()
     # Hard verification against the FULL original text (not the prompt window).
-    if passage not in full_text:
+    if passage not in prepared.full_text:
         return ExtractionOutcome(S.REJECTED, reason="supporting passage not in source text")
 
     # The evidence must be the author's own words, not quoted correspondence.
-    authored = _authored_text(kind, full_text)
+    authored = prepared.authored_text
     pos = authored.find(passage)
     if pos < 0:
         return ExtractionOutcome(
             S.REJECTED, reason="supporting passage is only in quoted/forwarded text")
 
     date_err = _date_evidence_error(
-        action, dates, passage, _context(authored, pos, pos + len(passage)))
+        action, dates, passage, _context(authored, pos, pos + len(passage)),
+        _reference_date(prepared))
     if date_err:
         return ExtractionOutcome(S.REJECTED, reason=date_err)
 
@@ -767,96 +789,116 @@ def _parse_and_verify_outcome(
     return ExtractionOutcome(S.EXTRACTED, ExtractionResult(
         event_type=event_type,
         action=action,
-        actor_role=actor_role,
+        actor_role=prepared.actor_role or "",
         business_key=bkey,
         confirmed_date=dates["confirmed_date"],
         proposed_date=dates["proposed_date"],
         prior_confirmed_date=dates["prior_confirmed_date"],
-        thread_id=thread_id,
+        thread_id=prepared.thread_id,
         supporting_passage=passage,
         confidence=confidence,
         cache_hit=cache_hit,
     ))
 
 
+# ── Cache key, call estimate, reply shape ────────────────────────────────────
+
+def _cache_key(prompt: str, model_id: str) -> str:
+    """Cache key: extraction contract version + model identity + exact prompt."""
+    material = json.dumps(
+        {"extraction_version": EXTRACTION_VERSION, "model": model_id, "prompt": prompt},
+        sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _estimate_call_tokens(prompt: str, max_output_tokens: int) -> int:
+    """Conservative token estimate for one call: ~3 chars/token + output cap."""
+    return -(-len(prompt) // 3) + max_output_tokens
+
+
+def _split_reply(reply: object) -> tuple[str, tuple[int, ...]]:
+    """``(text, usage)`` from ``(text, total)`` or ``(text, input, output)``."""
+    if not isinstance(reply, tuple) or len(reply) not in (2, 3):
+        raise ValueError("model reply must be (text, total) or (text, input, output)")
+    text = reply[0] if isinstance(reply[0], str) else ""
+    return text, tuple(int(x or 0) for x in reply[1:])
+
+
 # ── Main entry points ────────────────────────────────────────────────────────
 
-def extract_commitment_outcome(
-    kind: str,
-    payload: dict,
+_PREP_TO_STATUS: dict[str, ExtractionStatus] = {
+    PREP_NO_TEXT:          ExtractionStatus.NO_INPUT,
+    PREP_UNSUPPORTED_KIND: ExtractionStatus.NO_INPUT,
+    PREP_NO_DIRECTION:     ExtractionStatus.REJECTED,
+    PREP_MISSING_CONTENT:  ExtractionStatus.CONTENT_ERROR,
+    PREP_CONTENT_ERROR:    ExtractionStatus.CONTENT_ERROR,
+}
+
+
+def extract_prepared(
+    prepared: PreparedSignal,
     source: str,
     *,
     budget: Optional[Budget] = None,
     cache_conn: Optional[sqlite3.Connection] = None,
-    _model_fn: Optional[Callable[[str], tuple[str, int]]] = None,
+    model_fn: Optional[Callable[[str], tuple]] = None,
+    model_id: Optional[str] = None,
 ) -> ExtractionOutcome:
-    """Extract a commitment update and say exactly why when there is none.
-
-    Actor role for call.transcript:
-      1. Initial role comes from direction (inbound → customer, else business).
-      2. After verification, Agent:/Customer: markers confirm or override it;
-         a passage that cannot be attributed is REJECTED.
+    """Extract a commitment update from a prepared signal.
 
     Only a fully verified extraction is EXTRACTED.  Model/transport errors
-    and an exhausted budget are distinct, retryable statuses; they are never
-    reported as NO_COMMITMENT.  Unusable model output is not cached.
+    and an exhausted budget are distinct, retryable statuses; unreadable
+    content is CONTENT_ERROR; none is ever reported as NO_COMMITMENT.
+    Unusable model output is not cached.  A call whose conservative token
+    estimate exceeds the per-call limit is never made.
     """
     S = ExtractionStatus
-    full_text = _signal_text(kind, payload)
-    if not full_text.strip():
-        return ExtractionOutcome(S.NO_INPUT, reason="signal has no text")
+    if not prepared.ready:
+        return ExtractionOutcome(_PREP_TO_STATUS.get(prepared.status, S.NO_INPUT),
+                                 reason=prepared.reason)
 
-    role = _actor_role(kind, payload)
-    thread_id: Optional[str] = None
-    for key in ("thread_id", "message_id"):
-        raw_tid = payload.get(key)
-        if isinstance(raw_tid, str) and raw_tid.strip():
-            thread_id = raw_tid.strip()
-            break
-
-    # Window the text for the prompt; verification still uses full_text.
-    prompt_text = _extract_relevant_window(full_text)
     prompt = _PROMPT_TEMPLATE.format(
-        kind=kind,
+        kind=prepared.kind,
         source=source,
-        actor_role=role,
-        text=prompt_text,
+        actor_role=prepared.actor_role,
+        text=_extract_relevant_window(prepared.full_text),
     )
-    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    fn = model_fn or _default_model_fn
+    resolved_model = model_id or getattr(fn, "model_id", None) or "unidentified-model"
+    key = _cache_key(prompt, resolved_model)
 
-    # ── Cache lookup ─────────────────────────────────────────────────────────
     raw_response: Optional[str] = None
-    tokens_used: int = 0
-
+    tokens_used = 0
     if cache_conn is not None:
         row = cache_conn.execute(
             "SELECT response, tokens_used FROM extraction_cache WHERE prompt_hash=?",
-            (prompt_hash,),
+            (key,),
         ).fetchone()
         if row:
             raw_response = row[0]
-            tokens_used  = int(row[1])
             if budget is not None:
                 budget.record_cache_hit()
 
-    # ── Model call ───────────────────────────────────────────────────────────
-    if raw_response is None:
-        if budget is not None and not budget.within_budget():
-            return ExtractionOutcome(S.BUDGET_EXHAUSTED, reason="extraction budget exhausted")
-
-        fn = _model_fn or _default_model_fn
+    if raw_response is not None:
+        outcome = _parse_and_verify_outcome(raw_response, prepared, True)
+    else:
+        if budget is not None:
+            refusal = budget.call_refusal(_estimate_call_tokens(
+                prompt, int(getattr(fn, "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS))))
+            if refusal:
+                return ExtractionOutcome(S.BUDGET_EXHAUSTED, reason=refusal)
         try:
-            raw_response, tokens_used = fn(prompt)
+            raw_response, usage = _split_reply(fn(prompt))
         except Exception as exc:
             return ExtractionOutcome(S.MODEL_ERROR, reason=f"model call failed: {type(exc).__name__}")
-
+        tokens_used = sum(usage)
         if budget is not None:
-            budget.charge(tokens_used)
-
+            budget.charge_reply(usage)
         if not raw_response:
             return ExtractionOutcome(S.MODEL_ERROR, reason="model returned an empty response")
 
-        outcome = _parse_and_verify_outcome(raw_response, kind, role, full_text, thread_id, False)
+        outcome = _parse_and_verify_outcome(raw_response, prepared, False)
         # Cache only usable model output, so a malformed reply is retried.
         if cache_conn is not None and outcome.status != S.MODEL_ERROR:
             now = datetime.now(timezone.utc).isoformat()
@@ -865,32 +907,51 @@ def extract_commitment_outcome(
                     "INSERT OR IGNORE INTO extraction_cache"
                     " (prompt_hash, response, tokens_used, cached_at)"
                     " VALUES (?,?,?,?)",
-                    (prompt_hash, raw_response, tokens_used, now),
+                    (key, raw_response, tokens_used, now),
                 )
                 cache_conn.commit()
-            except Exception:
-                pass
-    else:
-        outcome = _parse_and_verify_outcome(raw_response, kind, role, full_text, thread_id, True)
+            except sqlite3.Error:
+                pass  # the cache is an optimisation; a write failure costs a retry
 
     if outcome.status != S.EXTRACTED or outcome.result is None:
         return outcome
     result = outcome.result
 
     # For call transcripts: use speaker markers to confirm or override actor_role.
-    if kind == "call.transcript":
-        transcript = str(payload.get("transcript", ""))
-        if _has_speaker_markers(transcript):
-            attributed = _find_speaker_for_passage(transcript, result.supporting_passage)
-            if attributed is None:
-                # Markers present but passage not attributable → unresolved.
-                return ExtractionOutcome(
-                    S.REJECTED, reason="passage cannot be attributed to a speaker")
-            if attributed != result.actor_role:
-                # Transcript attribution overrides direction-based initial role.
-                result = replace(result, actor_role=attributed)
+    if prepared.kind == "call.transcript" and _has_speaker_markers(prepared.full_text):
+        attributed = _find_speaker_for_passage(prepared.full_text, result.supporting_passage)
+        if attributed is None:
+            # Markers present but passage not attributable → unresolved.
+            return ExtractionOutcome(
+                S.REJECTED, reason="passage cannot be attributed to a speaker")
+        if attributed != result.actor_role:
+            # Transcript attribution overrides direction-based initial role.
+            result = replace(result, actor_role=attributed)
 
     return ExtractionOutcome(S.EXTRACTED, result)
+
+
+def extract_commitment_outcome(
+    kind: str,
+    payload: dict,
+    source: str,
+    *,
+    budget: Optional[Budget] = None,
+    cache_conn: Optional[sqlite3.Connection] = None,
+    _model_fn: Optional[Callable[[str], tuple]] = None,
+    model_id: Optional[str] = None,
+    occurred_at: object = None,
+) -> ExtractionOutcome:
+    """Prepare an inline signal payload and extract from it.
+
+    ``occurred_at`` (the signal's trusted timestamp) enables unambiguous
+    year-less dates; without it, year-less dates stay unresolved.
+    """
+    prepared = prepare_signal(kind, payload, occurred_at=occurred_at)
+    return extract_prepared(
+        prepared, source, budget=budget, cache_conn=cache_conn,
+        model_fn=_model_fn, model_id=model_id,
+    )
 
 
 def extract_commitment_update(
@@ -900,13 +961,13 @@ def extract_commitment_update(
     *,
     budget: Optional[Budget] = None,
     cache_conn: Optional[sqlite3.Connection] = None,
-    _model_fn: Optional[Callable[[str], tuple[str, int]]] = None,
+    _model_fn: Optional[Callable[[str], tuple]] = None,
 ) -> Optional[ExtractionResult]:
     """Return the verified ExtractionResult, or None for every other outcome.
 
     Compatibility wrapper around extract_commitment_outcome().  Callers that
     must tell a failure from "no commitment" (the signal worker) use
-    extract_commitment_outcome() instead.
+    extract_prepared() / extract_commitment_outcome() instead.
 
     Args:
         kind:       Signal kind (e.g. 'email.received', 'call.transcript').
@@ -916,7 +977,7 @@ def extract_commitment_update(
         cache_conn: SQLite connection with an extraction_cache table (call
                     migrate_extraction_cache first); None = no caching.
         _model_fn:  Injected model backend for testing.
-                    Signature: (prompt: str) -> (response: str, tokens: int).
+                    Signature: prompt -> (text, total) or (text, input, output).
                     Defaults to _default_model_fn (DeepSeek via DEEPSEEK_API_KEY).
     """
     return extract_commitment_outcome(

@@ -953,6 +953,35 @@ def get_resolution_summary(
     }
 
 
+def backfill_signal_resolution(
+    conn: sqlite3.Connection,
+    source: str,
+    now_str: str,
+) -> int:
+    """Create missing signal_resolution rows for already-ingested signals.
+
+    Recovers signals whose ingest committed but whose tracking rows did not
+    (a crash between ingest_batch and ensure_signal_resolution): without a
+    row they would never be processed, because the checkpoint has already
+    moved past them.  Idempotent (INSERT OR IGNORE); scoped to *source*.
+    Returns the number of rows created.
+    """
+    kinds = sorted(_COMMITMENT_SIGNAL_KINDS)
+    marks = ",".join("?" * len(kinds))
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO signal_resolution"
+        " (signal_id, source, identity_status, commitment_status, created_at, updated_at)"
+        f" SELECT s.external_id, s.source, 'pending',"
+        f"        CASE WHEN s.kind IN ({marks}) THEN 'pending' ELSE 'skipped' END, ?, ?"
+        " FROM signals s"
+        " LEFT JOIN signal_resolution sr"
+        "   ON sr.signal_id = s.external_id AND sr.source = s.source"
+        " WHERE s.source = ? AND sr.signal_id IS NULL",
+        (*kinds, now_str, now_str, source),
+    )
+    return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+
 def get_pending_identity_signals(
     conn: sqlite3.Connection,
     source: str,

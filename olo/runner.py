@@ -14,6 +14,7 @@ No side effects at import time.
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from olo.store import (
     LeaseLost,
     SourceBusy,
     acquire_run,
+    backfill_signal_resolution,
     connect,
     ensure_signal_resolution,
     finish_run,
@@ -76,6 +78,72 @@ class RunResult:
     identity_resolved:   int = 0
     identity_unresolved: int = 0
     identity_failed:     int = 0
+    # S5: recovery at run start
+    resolution_backfilled: int = 0   # tracking rows recreated after an interrupted ingest
+    identity_resumed:      int = 0   # pending signals from earlier runs reprocessed
+
+
+@dataclass(frozen=True)
+class _StoredSignal:
+    """A stored signal, shaped for _run_identity_stage (duck-typed)."""
+    external_id: str
+    kind: str
+    payload: dict
+
+
+def _load_stored_signals(
+    conn: sqlite3.Connection, source: str, signal_ids: list[str],
+) -> list[_StoredSignal]:
+    """Load *signal_ids* of *source* from the signals table, in id order."""
+    import json
+    out: list[_StoredSignal] = []
+    for sid in sorted(signal_ids):
+        row = conn.execute(
+            "SELECT kind, payload FROM signals WHERE source=? AND external_id=?",
+            (source, sid),
+        ).fetchone()
+        if row is None:
+            continue
+        raw = row["payload"]
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        out.append(_StoredSignal(sid, row["kind"], payload))
+    return out
+
+
+def _recover_pending(
+    conn: sqlite3.Connection,
+    source: str,
+    identifier_map: dict,
+    clock: Callable[[], datetime],
+    own_identifiers: frozenset,
+    _fault: Optional[Callable[[str], None]],
+) -> tuple[int, tuple[int, int, int]]:
+    """Backfill missing tracking rows, then resume every pending signal.
+
+    Runs under the source lease before new fetching, so work interrupted by a
+    crash (between ingest and tracking, or mid identity stage) is picked up by
+    the next run instead of being silently skipped.  Idempotent.
+    Returns (rows_backfilled, (resolved, unresolved, failed)).
+    """
+    from olo.signals import format_utc
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        backfilled = backfill_signal_resolution(conn, source, format_utc(clock()))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    if _fault:
+        _fault("after_backfill")
+
+    pending_ids = [r["signal_id"] for r in get_pending_identity_signals(conn, source)]
+    if not pending_ids:
+        return backfilled, (0, 0, 0)
+    signals = _load_stored_signals(conn, source, pending_ids)
+    return backfilled, _run_identity_stage(
+        conn, signals, source, identifier_map, clock, own_identifiers,
+    )
 
 
 # ── Default owner ─────────────────────────────────────────────────────────────
@@ -220,7 +288,9 @@ def _run_identity_stage(
                 conn.execute("ROLLBACK")
             except Exception:
                 pass
-            # Recording failure is best-effort; continue to next signal
+            # Not recorded: the row stays 'pending' (never marked complete) and
+            # the next run's recovery resumes it.  Counted as a failure here.
+            failed += 1
 
     return resolved, unresolved, failed
 
@@ -299,20 +369,13 @@ def retry_identity_resolution(
         )
     conn.execute("COMMIT")
 
-    # Proxy objects satisfying the duck-typed interface of _run_identity_stage
-    class _Proxy:
-        __slots__ = ("external_id", "kind", "payload")
-
-        def __init__(self, signal_id: str, kind: str, payload_raw) -> None:
-            self.external_id = signal_id
-            self.kind = kind
-            self.payload = (
-                json.loads(payload_raw)
-                if isinstance(payload_raw, str)
-                else (payload_raw or {})
-            )
-
-    proxies = [_Proxy(r["signal_id"], r["kind"], r["payload"]) for r in rows]
+    proxies = [
+        _StoredSignal(
+            r["signal_id"], r["kind"],
+            json.loads(r["payload"]) if isinstance(r["payload"], str) else (r["payload"] or {}),
+        )
+        for r in rows
+    ]
 
     r, u, f = _run_identity_stage(
         conn, proxies, source, identifier_map, clock, own_identifiers,
@@ -335,11 +398,15 @@ def run_source(
 ) -> RunResult:
     """Ingest signals from *adapter* into the Olo store.
 
-    Runs in stages per batch:
+    Before fetching, recovery (S5) backfills tracking rows lost to an
+    interrupted ingest and resumes every signal still pending identity.
+
+    Then runs in stages per batch:
       1. Ingest (ingest_batch) — append-only evidence layer.
       2. Ensure resolution rows (ensure_signal_resolution) — idempotent tracking.
-      3. Identity stage (_run_identity_stage) — CRM lookup, no contact creation.
-      4. Commitment stage — pending until S4 (extraction not yet implemented).
+      3. Identity stage (_run_identity_stage) — fail-closed Rolodex lookup and
+         contact creation for a single genuine counterparty.
+      4. Commitment stage — not wired yet (no automatic ledger writes).
 
     Returns a RunResult; never raises (all exceptions are caught and recorded).
     """
@@ -389,8 +456,17 @@ def run_source(
 
     batches = fetched = inserted = duplicates = conflicts = 0
     id_resolved = id_unresolved = id_failed = 0
+    backfilled = resumed = 0
 
     try:
+        # 2b. Recovery (S5): recreate tracking rows lost to an interrupted
+        # ingest and resume every signal still pending from earlier runs.
+        backfilled, (r, u, f) = _recover_pending(
+            conn, source, identifier_map, clock, own_identifiers, _fault,
+        )
+        resumed = r + u + f
+        id_resolved, id_unresolved, id_failed = r, u, f
+
         # 3. Main loop
         for _ in range(max_batches):
             # 3.1 Renew lease before each fetch
@@ -436,6 +512,8 @@ def run_source(
             inserted += b_ins
             duplicates += b_dup
             conflicts += b_con
+            if _fault:
+                _fault("after_ingest")   # ingest committed; tracking rows not yet
 
             # 3.5b Extract entity contacts from ingested signals (legacy enrichment).
             # Best-effort: failure does not abort ingestion.
@@ -461,7 +539,10 @@ def run_source(
                         conn.execute("ROLLBACK")
                     except Exception:
                         pass
-                    # row creation failure is non-fatal; identity stage skipped
+                    # Non-fatal here: the next run's recovery backfills the rows.
+
+                if _fault:
+                    _fault("before_identity")
 
                 if own_identifiers_of is not None:
                     for s in batch.signals:
@@ -504,6 +585,8 @@ def run_source(
                     identity_resolved=id_resolved,
                     identity_unresolved=id_unresolved,
                     identity_failed=id_failed,
+                    resolution_backfilled=backfilled,
+                    identity_resumed=resumed,
                 )
 
         # 4. Loop exhausted with has_more still True → partial
@@ -525,6 +608,8 @@ def run_source(
             identity_resolved=id_resolved,
             identity_unresolved=id_unresolved,
             identity_failed=id_failed,
+            resolution_backfilled=backfilled,
+            identity_resumed=resumed,
         )
 
     except Exception as exc:

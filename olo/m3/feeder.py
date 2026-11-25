@@ -213,28 +213,22 @@ def build_hindsight_items(
 
     for row in rows:
         payload = json.loads(row["payload"])
-        sha256 = payload.get("content_sha256", "")
-        if not sha256:
-            # Real adapter signals (gmail_full, gcal) store the content hash in
-            # content_refs, not at the top level.  The synthetic generator sets
-            # both; production adapters set only content_refs.
-            refs = payload.get("content_refs") or []
-            if refs and isinstance(refs[0], dict):
-                sha256 = refs[0].get("sha256", "")
         signal_id = row["external_id"]
 
-        if not sha256:
+        # One preparation path (olo.signal_content): resolves the content ref
+        # (top-level content_sha256 or content_refs), reads the blob through
+        # the store (no cross-source reads), verifies its sha256 and renders
+        # it — plain-text blobs verbatim, Gmail documents as subject + body.
+        from olo.signal_content import load_content
+        from olo.store import get_blob_raw
+        loaded = load_content(payload, lambda sha: get_blob_raw(source, sha, conn))
+        sha256 = loaded.sha256
+
+        if loaded.status == "no_ref":
             missing_sha.append(signal_id)
             continue
 
-        # Read the content blob using the official API (handles decompression)
-        try:
-            from olo.store import get_blob_raw  # type: ignore[import]
-            raw = get_blob_raw(source, sha256, conn)
-        except ImportError:
-            raw = None
-
-        if raw is None:
+        if loaded.status == "missing":
             if raise_on_missing_blob:
                 missing_blob.append(signal_id)
                 continue
@@ -244,8 +238,8 @@ def build_hindsight_items(
                     f"(sha256={sha256[:12]}…). Evidence is incomplete."
                 )
 
-        actual_sha = hashlib.sha256(raw).hexdigest()
-        if actual_sha != sha256:
+        if loaded.status == "corrupt":
+            actual_sha = hashlib.sha256(loaded.raw or b"").hexdigest()
             if raise_on_missing_blob:
                 corrupted.append(signal_id)
                 continue
@@ -255,7 +249,12 @@ def build_hindsight_items(
                     f"stored sha256={sha256[:12]}… but computed={actual_sha[:12]}…"
                 )
 
-        content = raw.decode("utf-8")
+        if loaded.status != "ok":
+            raise FeedError(
+                f"Blob for signal {signal_id!r} (sha256={sha256[:12]}…) is unreadable."
+            )
+
+        content = loaded.rendered
 
         # Build the month tag for recall filtering
         try:

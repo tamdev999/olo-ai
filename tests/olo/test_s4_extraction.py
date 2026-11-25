@@ -851,7 +851,7 @@ class TestReliabilityCorpus:
     def test_corpus_metrics(self, tmp_path: Path) -> None:
         """30-label precision/recall test with mock model responses."""
         mock_fn = _build_mock_fn(_CORPUS)
-        budget  = Budget(max_calls=30, max_tokens_per_call=400, max_total_tokens=12_000)
+        budget  = Budget(max_calls=30, max_tokens_per_call=2_000, max_total_tokens=12_000)
 
         # Set up an in-memory SQLite cache for this run
         cache_conn = sqlite3.connect(str(tmp_path / "ext_cache.db"))

@@ -356,28 +356,34 @@ class _RecordingModelFn:
     production path.  Nothing from the prompt or response is retained.
     """
 
-    def __init__(self, inner: Callable[[str], tuple[str, int]]) -> None:
+    def __init__(self, inner: Callable[[str], tuple]) -> None:
         self._inner = inner
+        # Keep the inner model's identity and output cap visible to the
+        # extractor (cache key and per-call budget check).
+        self.model_id = getattr(inner, "model_id", None)
+        self.max_output_tokens = getattr(inner, "max_output_tokens", 400)
         self.calls = 0
         self.tokens = 0
         self.errors: list[str] = []
         self.unparseable = 0
 
-    def __call__(self, prompt: str) -> tuple[str, int]:
+    def __call__(self, prompt: str) -> tuple:
+        """Pass the reply through unchanged: (text, total) or (text, in, out)."""
         self.calls += 1
         try:
-            text, tokens = self._inner(prompt)
+            reply = self._inner(prompt)
         except Exception as exc:
             self.errors.append(_error_label(exc))
             raise
-        self.tokens += int(tokens or 0)
+        text = reply[0]
+        self.tokens += sum(int(t or 0) for t in reply[1:])
         try:
             ok = isinstance(json.loads(text), dict)
         except (TypeError, ValueError):
             ok = False
         if not ok:
             self.unparseable += 1
-        return text, tokens
+        return reply
 
 
 @dataclass
@@ -839,7 +845,7 @@ def _run_offline(model_fn, *, budget: Optional[Budget] = None,
     migrate_extraction_cache(conn)
     return _evaluate_corpus(
         model_fn,
-        budget=budget or Budget(max_calls=60, max_tokens_per_call=600,
+        budget=budget or Budget(max_calls=60, max_tokens_per_call=2_000,
                                 max_total_tokens=200_000),
         cache_conn=conn,
         cost_cap_usd=cost_cap_usd,
@@ -1086,7 +1092,7 @@ class TestLiveAccuracy:
         migrate_extraction_cache(cache_conn)
         report = _evaluate_corpus(
             model_fn,
-            budget=Budget(max_calls=60, max_tokens_per_call=600, max_total_tokens=200_000),
+            budget=Budget(max_calls=60, max_tokens_per_call=2_000, max_total_tokens=200_000),
             cache_conn=cache_conn,
         )
 

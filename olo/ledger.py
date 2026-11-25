@@ -124,6 +124,31 @@ def is_valid_iso_date(value: object) -> bool:
     return True
 
 
+def utc_instant(value: object) -> Optional[_dt.datetime]:
+    """The UTC instant of an ISO 8601 timestamp carrying an offset, else None.
+
+    Chronological comparisons use this instant, never the raw text: strings
+    with different offsets ("…-05:00" vs "…Z") do not sort chronologically.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = _dt.datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        return None
+    return parsed.astimezone(_dt.UTC)
+
+
+_EPOCH_UTC = _dt.datetime.min.replace(tzinfo=_dt.UTC)
+
+
+def _order_key(occurred_at: object) -> _dt.datetime:
+    """Sort key: UTC instant (unparseable legacy values sort first)."""
+    return utc_instant(occurred_at) or _EPOCH_UTC
+
+
 def cancellation_field_error(
     *,
     confirmed_date: object,
@@ -317,6 +342,11 @@ def _validate(event: LedgerEvent) -> Optional[str]:
         return "source_kind must not be empty"
     if not event.occurred_at:
         return "occurred_at must not be empty"
+    if utc_instant(event.occurred_at) is None:
+        return (
+            "occurred_at must be an ISO 8601 timestamp with a UTC offset "
+            f"(got {event.occurred_at!r})"
+        )
     # Cross-field: actor_role × action combination
     allowed = ACTOR_ACTION_ALLOWED.get(event.actor_role, frozenset())
     if event.action not in allowed:
@@ -541,15 +571,35 @@ def _applied_anywhere(
 
 def _current_scheduled_date(conn: sqlite3.Connection, commitment_id: str) -> Optional[str]:
     """Scheduled date of the latest confirmed version (None if cancelled/none)."""
-    row = conn.execute(
-        "SELECT action, confirmed_date FROM commitment_versions"
-        " WHERE commitment_id=? AND is_confirmed=1"
-        " ORDER BY occurred_at DESC, version DESC LIMIT 1",
-        (commitment_id,),
-    ).fetchone()
-    if row is None or row[0] == CANCEL_ACTION:
+    row = _latest_version(conn, commitment_id, confirmed=True)
+    if row is None or row[2] == CANCEL_ACTION:
         return None
-    return row[1]
+    return row[3]
+
+
+_VERSION_COLUMNS = (
+    "version, actor_role, action, confirmed_date,"
+    " prior_confirmed_date, proposed_date, is_confirmed,"
+    " thread_id, source_doc_id, source_kind,"
+    " occurred_at, recorded_at, notes"
+)
+
+
+def _latest_version(
+    conn: sqlite3.Connection, commitment_id: str, *, confirmed: bool,
+) -> Optional[tuple]:
+    """Latest confirmed (or pending) version by UTC instant, then version.
+
+    Columns follow _VERSION_COLUMNS (occurred_at at index 10).
+    """
+    rows = conn.execute(
+        f"SELECT {_VERSION_COLUMNS} FROM commitment_versions"
+        " WHERE commitment_id=? AND is_confirmed=?",
+        (commitment_id, 1 if confirmed else 0),
+    ).fetchall()
+    if not rows:
+        return None
+    return tuple(max(rows, key=lambda r: (_order_key(r[10]), r[0])))
 
 
 # ── Idempotency ───────────────────────────────────────────────────────────────
@@ -955,31 +1005,20 @@ def get_current_state(
     if not row:
         return None
 
-    # D1 fix: latest CONFIRMED version (is_confirmed=1) ordered by occurred_at
-    confirmed = conn.execute(
-        "SELECT version, actor_role, action, confirmed_date,"
-        "       prior_confirmed_date, proposed_date, is_confirmed,"
-        "       thread_id, source_doc_id, source_kind,"
-        "       occurred_at, recorded_at, notes"
-        " FROM commitment_versions"
-        " WHERE commitment_id=? AND is_confirmed=1"
-        " ORDER BY occurred_at DESC, version DESC LIMIT 1",
-        (commitment_id,),
-    ).fetchone()
+    # D1 fix: latest CONFIRMED version (is_confirmed=1), chronologically by
+    # UTC instant (never by raw timestamp text).
+    confirmed = _latest_version(conn, commitment_id, confirmed=True)
 
     # Also check for a pending proposal to include in the state.
     # D1: only surface a pending proposal that postdates the latest confirmed
     # version — otherwise the confirmed change already superseded the proposal.
-    confirmed_at = confirmed[10] if confirmed else None  # occurred_at of confirmed
-    pending = conn.execute(
-        "SELECT proposed_date, action, source_doc_id, occurred_at"
-        " FROM commitment_versions"
-        " WHERE commitment_id=? AND is_confirmed=0"
-        " ORDER BY occurred_at DESC, version DESC LIMIT 1",
-        (commitment_id,),
-    ).fetchone()
+    latest_pending = _latest_version(conn, commitment_id, confirmed=False)
+    pending = (
+        (latest_pending[5], latest_pending[2], latest_pending[8], latest_pending[10])
+        if latest_pending else None
+    )
     # Suppress the proposal when it predates or equals the confirmed version
-    if pending and confirmed_at and pending[3] <= confirmed_at:
+    if pending and confirmed and _order_key(pending[3]) <= _order_key(confirmed[10]):
         pending = None
 
     # Status from the latest confirmed version: a confirmed (business) cancel
@@ -1029,16 +1068,7 @@ def get_pending_proposal(
     commitment_id: str,
 ) -> Optional[dict]:
     """Return the latest pending (is_confirmed=0) version, or None."""
-    row = conn.execute(
-        "SELECT version, actor_role, action, confirmed_date,"
-        "       prior_confirmed_date, proposed_date, is_confirmed,"
-        "       thread_id, source_doc_id, source_kind,"
-        "       occurred_at, recorded_at, notes"
-        " FROM commitment_versions"
-        " WHERE commitment_id=? AND is_confirmed=0"
-        " ORDER BY occurred_at DESC, version DESC LIMIT 1",
-        (commitment_id,),
-    ).fetchone()
+    row = _latest_version(conn, commitment_id, confirmed=False)
     if not row:
         return None
     return {
