@@ -19,7 +19,7 @@ from olo.adapters.gmail import GmailAdapter
 from olo.adapters.gmail_full import build_email_content_signal
 from olo.commitments import CommitmentStageConfig
 from olo.ledger import STATUS_CANCELLED, STATUS_SCHEDULED, get_all_versions, get_current_state
-from olo.projection import ProjectionConfig
+from olo.projection import ProjectionConfig, ProjectionLimits
 from olo.runner import run_source
 from olo.store import connect
 
@@ -125,22 +125,55 @@ class Hindsight:
         self.retained: dict[str, list[dict]] = {}
         self.ops: dict[str, str] = {}
         self.raise_on_retain = raise_on_retain
+        self.next_status = "completed"      # status new operations report
+        self.cancelled: list[str] = []
+        self.submits: list[tuple[str, int]] = []
 
     def retain(self, items, *, operation_id, async_, bank_id):
         if self.raise_on_retain:
             raise ConnectionError("hindsight down")
         self.retained.setdefault(bank_id, []).extend(items)
-        self.ops[operation_id] = "completed"
+        self.ops[operation_id] = self.next_status
+        self.submits.append((bank_id, len(items)))
         return {"operation_id": operation_id}
 
     def get_operation_status(self, operation_id, bank_id=None):
         return {"status": self.ops.get(operation_id, "not_found")}
+
+    def cancel_operation(self, operation_id, bank_id=None):
+        self.ops[operation_id] = "cancelled"
+        self.cancelled.append(operation_id)
+        return {"status": "cancelled"}
 
     def docs(self, bank: str) -> dict[str, dict]:
         latest: dict[str, dict] = {}
         for item in self.retained.get(bank, []):
             latest[item["document_id"]] = item
         return latest
+
+
+class Guard:
+    """UsageGuard stand-in: server-reported spend is driven by the test."""
+
+    def __init__(self) -> None:
+        self.exceeded = False
+        self.unavailable = False
+        self.snapshots = 0
+
+    def snapshot(self):
+        from olo.m3.hindsight.budget import StatsUnavailableError, TokenSnapshot
+        if self.unavailable:
+            raise StatsUnavailableError("stats endpoint down")
+        self.snapshots += 1
+        return TokenSnapshot(1000, 100)
+
+    def check(self, baseline):
+        from olo.m3.hindsight.budget import BudgetExceededError, StatsUnavailableError
+        if self.unavailable:
+            raise StatsUnavailableError("stats endpoint down")
+        if self.exceeded:
+            raise BudgetExceededError(9.0, 8.0, 1, 1)
+        return baseline
 
 
 # ── Harness ───────────────────────────────────────────────────────────────────
@@ -167,6 +200,8 @@ class Pipeline:
         self.adapter = Adapter()
         self.model = Model(dict(routes or ROUTES))
         self.hindsight = Hindsight()
+        self.guard = Guard()
+        self.limits = ProjectionLimits()
         self.bank = f"olo-{name}"
 
     def run(self, *signals, commitment=True, projection=True, **kw):
@@ -175,6 +210,7 @@ class Pipeline:
             self.adapter, db_path=self.db,
             commitment=CommitmentStageConfig(model_fn=self.model) if commitment else None,
             projection=(ProjectionConfig(client=self.hindsight, bank_id=self.bank,
+                                         usage_guard=self.guard, limits=self.limits,
                                          await_commitment=commitment)
                         if projection else None),
             **kw,

@@ -285,6 +285,38 @@ _DDL_STATEMENTS = [
     PRIMARY KEY (signal_id, source)
 )""",
     "CREATE INDEX IF NOT EXISTS idx_signal_resolution_status ON signal_resolution (source, identity_status, commitment_status)",
+    # S5 part 3: Hindsight operation tracking, persisted budget window and
+    # business/bank binding (additive; see olo.projection and olo.activation).
+    """CREATE TABLE IF NOT EXISTS hindsight_operations (
+    operation_id  TEXT NOT NULL PRIMARY KEY,
+    bank_id       TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    submitted_at  TEXT NOT NULL,
+    doc_count     INTEGER NOT NULL,
+    prose_count   INTEGER NOT NULL,
+    status        TEXT NOT NULL
+        CHECK (status IN ('submitted','completed','failed','cancelled','lost')),
+    settled_at    TEXT,
+    detail        TEXT
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_hs_ops_bank_status ON hindsight_operations (bank_id, status)",
+    """CREATE TABLE IF NOT EXISTS hindsight_operation_docs (
+    operation_id  TEXT NOT NULL,
+    document_id   TEXT NOT NULL,
+    PRIMARY KEY (operation_id, document_id)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_hs_op_docs_doc ON hindsight_operation_docs (document_id)",
+    """CREATE TABLE IF NOT EXISTS hindsight_budget_window (
+    bank_id                 TEXT NOT NULL PRIMARY KEY,
+    window_start            TEXT NOT NULL,
+    baseline_input_tokens   INTEGER NOT NULL,
+    baseline_output_tokens  INTEGER NOT NULL
+)""",
+    """CREATE TABLE IF NOT EXISTS olo_bindings (
+    name      TEXT NOT NULL PRIMARY KEY CHECK (name IN ('business_id','hindsight_bank_id')),
+    value     TEXT NOT NULL,
+    bound_at  TEXT NOT NULL
+)""",
 ]
 
 

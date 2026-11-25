@@ -404,6 +404,7 @@ def run_source(
     _fault: Optional[Callable[[str], None]] = None,
     commitment: Optional[CommitmentStageConfig] = None,
     projection: Optional[ProjectionConfig] = None,
+    own_identifiers: frozenset = frozenset(),
 ) -> RunResult:
     """Ingest signals from *adapter* into the Olo store.
 
@@ -453,9 +454,8 @@ def run_source(
     # counterparties; extended per batch from newly ingested sent mail.
     try:
         from olo.adapters.contacts import load_own_identifiers, own_identifiers_of
-        own_identifiers = load_own_identifiers(conn)
+        own_identifiers = own_identifiers | load_own_identifiers(conn)
     except Exception:
-        own_identifiers = frozenset()
         own_identifiers_of = None  # type: ignore[assignment]
 
     # 2. Acquire lease
@@ -684,6 +684,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--max-batches", type=int, default=50)
     parser.add_argument("--verbose", action="store_true")
+    # S5 stages: disabled unless explicitly enabled for one named business
+    # (see olo.activation for every refusal condition).
+    s5 = parser.add_argument_group("S5 stages (off by default)")
+    s5.add_argument("--enable-commitments", action="store_true")
+    s5.add_argument("--enable-projection", action="store_true")
+    s5.add_argument("--business-id")
+    s5.add_argument("--bank-id")
+    s5.add_argument("--deepseek-key-file")
+    s5.add_argument("--extract-max-calls", type=int)
+    s5.add_argument("--extract-max-tokens", type=int)
+    s5.add_argument("--projection-max-docs", type=int)
+    s5.add_argument("--projection-max-prose-docs", type=int)
+    s5.add_argument("--projection-budget-usd", type=float)
+    s5.add_argument("--own-email", action="append", default=[])
+    s5.add_argument("--hindsight-registry")
     args = parser.parse_args(argv)
 
     # Parse options
@@ -701,8 +716,41 @@ def main(argv: list[str] | None = None) -> int:
         print(f"olo: adapter config error: {exc}", file=sys.stderr)
         return 1
 
+    from olo.activation import ActivationError, ActivationRequest, activate
+    request = ActivationRequest(
+        business_id=args.business_id,
+        enable_commitments=args.enable_commitments,
+        enable_projection=args.enable_projection,
+        bank_id=args.bank_id,
+        deepseek_key_file=args.deepseek_key_file,
+        extract_max_calls=args.extract_max_calls,
+        extract_max_tokens=args.extract_max_tokens,
+        projection_max_docs=args.projection_max_docs,
+        projection_max_prose_docs=args.projection_max_prose_docs,
+        projection_budget_usd=args.projection_budget_usd,
+        own_emails=tuple(args.own_email),
+        hindsight_registry=args.hindsight_registry,
+    )
+    stages = None
+    if request.enabled:
+        from olo.signals import format_utc
+        conn = connect(None)
+        try:
+            migrate(conn)
+            stages = activate(request, conn, format_utc(utc_now()))
+        except ActivationError as exc:
+            print(f"olo: S5 activation refused: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            conn.close()
+
     try:
-        result = run_source(adapter, limit=args.limit, max_batches=args.max_batches)
+        result = run_source(
+            adapter, limit=args.limit, max_batches=args.max_batches,
+            commitment=stages.commitment if stages else None,
+            projection=stages.projection if stages else None,
+            own_identifiers=stages.own_identifiers if stages else frozenset(),
+        )
     except Exception as exc:
         # run_source re-raises after recording; print and exit 1
         run_id_str = "unknown"
