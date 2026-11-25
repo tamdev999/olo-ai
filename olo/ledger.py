@@ -63,19 +63,14 @@ CONFIRMED_ACTIONS: frozenset[str] = frozenset({
 #: A business may commit, reaffirm, confirm a change, or cancel.
 #: These rules are enforced in _validate() so invalid combinations return INVALID.
 #:
-#: TODO (S3/S4 — customer-cancel rule correction):
-#: ``customer + cancel`` currently creates a confirmed cancellation (is_confirmed=1)
-#: because 'cancel' is in CONFIRMED_ACTIONS.  A customer cancellation REQUEST should
-#: remain a proposal (is_confirmed=0) pending explicit business confirmation.
-#: Fix options (deferred):
-#:   a) Remove 'cancel' from ACTOR_ACTION_ALLOWED['customer'] entirely.
-#:   b) Add 'request_cancel' as a customer-only action with is_confirmed=0.
-#:   c) Make 'cancel' produce is_confirmed=0 when actor_role='customer'.
-#: Until this is fixed, do not use ``actor_role='customer', action='cancel'``
-#: in production.  Extraction code (S4) must use the business-side cancel.
+#: S3 customer-cancel fix (applied in _write_version):
+#: ``customer + cancel`` produces is_confirmed=0 (a proposal awaiting business
+#: confirmation), NOT is_confirmed=1.  Only ``business + cancel`` produces a
+#: confirmed cancellation.  This isolates the fix to the version-write path
+#: without touching the validation rules or the action schema.
 ACTOR_ACTION_ALLOWED: dict[str, frozenset[str]] = {
     "business": frozenset({"commit", "reaffirm", "confirm_change", "cancel"}),
-    "customer": frozenset({"request_change", "cancel"}),  # NOTE: see TODO above
+    "customer": frozenset({"request_change", "cancel"}),  # cancel→is_confirmed=0 (S3 fix)
 }
 
 _CID_PREFIX = "cid_"
@@ -431,7 +426,17 @@ def _write_version(
     event: LedgerEvent,
     recorded_at: str,
 ) -> None:
-    is_confirmed = 1 if event.action in CONFIRMED_ACTIONS else 0
+    # S3 fix for customer-cancel: a customer's cancellation request is a
+    # proposal, not a confirmed state.  Only a business can confirm cancellation.
+    # Previously 'cancel' was unconditionally in CONFIRMED_ACTIONS; this caused
+    # customer-initiated cancels to set is_confirmed=1, bypassing the proposal
+    # pipeline.  The check below gates confirmation on actor_role.
+    if event.action in CONFIRMED_ACTIONS and not (
+        event.actor_role == "customer" and event.action == "cancel"
+    ):
+        is_confirmed = 1
+    else:
+        is_confirmed = 0
     conn.execute(
         "INSERT INTO commitment_versions"
         " (commitment_id, version, actor_role, action,"

@@ -50,6 +50,12 @@ from olo.store import (
     utc_now,
 )
 
+__all__ = [
+    "RunResult",
+    "run_source",
+    "retry_identity_resolution",
+]
+
 
 # ── RunResult ──────────────────────────────────────────────────────────────────
 
@@ -97,60 +103,196 @@ def _run_identity_stage(
 
     Returns (resolved_count, unresolved_count, failed_count).
 
-    NOTE (S2 customer-cancel flag):
-    ``actor_role='customer', action='cancel'`` currently creates a confirmed
-    cancellation (is_confirmed=1) in the ledger.  A customer cancellation request
-    should instead remain a proposal pending business confirmation.  This is a
-    known defect: the fix requires either removing 'cancel' from ACTOR_ACTION_ALLOWED
-    for customers or introducing a 'request_cancel' action.  Deferred to S3/S4.
-    """
-    from olo.adapters.contacts import resolve_contact_from_signal
-    from olo.signals import format_utc
+    S3: Creates contacts for genuine counterparties when no existing match is found.
+    Automated senders (noreply@, bounce@, etc.) are skipped — no contact created.
+    Identity conflicts raise IdentityResolutionError and are recorded as 'ambiguous'.
+    Manual conflict resolution remains DenyAll (unchanged from S1/S2).
 
+    NOTE: customer-cancel bug (now fixed in S3 — see ledger.py).
+    """
+    from olo.adapters.contacts import (
+        IdentityResolutionError,
+        create_verified_contact,
+        extract_counterparty,
+        resolve_contact_from_signal,
+    )
+    from olo.signals import format_utc
     resolved = unresolved = failed = 0
     now_str = format_utc(clock())
 
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        for sig in signals:
-            # Only process signals still at 'pending' identity status
-            row = conn.execute(
-                "SELECT identity_status FROM signal_resolution"
-                " WHERE signal_id=? AND source=?",
-                (sig.external_id, source),
-            ).fetchone()
-            if row is None or row["identity_status"] != "pending":
-                continue
+    # Process per-signal (no outer transaction) so create_verified_contact can
+    # open its own BEGIN IMMEDIATE without nesting conflicts.
+    for sig in signals:
+        # Read status outside any transaction
+        row = conn.execute(
+            "SELECT identity_status FROM signal_resolution"
+            " WHERE signal_id=? AND source=?",
+            (sig.external_id, source),
+        ).fetchone()
+        if row is None or row["identity_status"] != "pending":
+            continue
 
-            try:
-                contact_id = resolve_contact_from_signal(
-                    sig.kind, sig.payload, identifier_map,
-                )
-            except Exception as exc:
-                record_identity_failed(conn, sig.external_id, source, str(exc), now_str)
+        contact_id = ""
+        ambiguous = False
+        error_reason: Optional[str] = None
+
+        # Step 1: read-only Rolodex lookup
+        try:
+            contact_id = resolve_contact_from_signal(
+                sig.kind, sig.payload, identifier_map,
+            )
+        except Exception as exc:
+            error_reason = str(exc)
+
+        # Step 2 (S3): create contact for genuine counterparties with no existing match
+        if not contact_id and error_reason is None:
+            counterparty = extract_counterparty(sig.kind, sig.payload)
+            if counterparty is not None:
+                id_type, id_value, display_name = counterparty
+                try:
+                    # create_verified_contact opens its own transaction
+                    contact_id = create_verified_contact(
+                        display_name,
+                        "",                       # org_name: populated by CRM sync later
+                        [(id_type, id_value)],
+                        conn,
+                        source,
+                        clock,
+                    )
+                    if contact_id:
+                        # Keep identifier_map current for subsequent signals
+                        identifier_map[(id_type, id_value)] = contact_id
+                except IdentityResolutionError as exc:
+                    # Two identifiers map to different contacts — record as ambiguous.
+                    # Manual resolution remains DenyAll; do not auto-merge.
+                    ambiguous = True
+                    error_reason = str(exc)
+                except Exception as exc:
+                    error_reason = str(exc)
+
+        # Step 3: record outcome in its own transaction
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if error_reason and not ambiguous:
+                record_identity_failed(conn, sig.external_id, source, error_reason, now_str)
                 failed += 1
-                continue
-
-            if contact_id:
+            elif ambiguous:
+                conn.execute(
+                    "UPDATE signal_resolution"
+                    " SET identity_status='ambiguous', identity_reason=?,"
+                    "     processed_at=?, updated_at=?"
+                    " WHERE signal_id=? AND source=? AND identity_status='pending'",
+                    (
+                        (error_reason or "")[:500], now_str, now_str,
+                        sig.external_id, source,
+                    ),
+                )
+                failed += 1
+            elif contact_id:
                 record_identity_resolved(conn, sig.external_id, source, contact_id, now_str)
                 resolved += 1
             else:
                 record_identity_unresolved(
                     conn, sig.external_id, source,
-                    reason=f"no CRM match for {sig.kind}",
+                    reason=f"no CRM match or counterparty for {sig.kind}",
                     now_str=now_str,
                 )
                 unresolved += 1
-
-        conn.execute("COMMIT")
-    except Exception:
-        try:
-            conn.execute("ROLLBACK")
+            conn.execute("COMMIT")
         except Exception:
-            pass
-        raise
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            # Recording failure is best-effort; continue to next signal
 
     return resolved, unresolved, failed
+
+
+# ── Recoverable identity (S3) ─────────────────────────────────────────────────
+
+def retry_identity_resolution(
+    conn: sqlite3.Connection,
+    source: str,
+    *,
+    statuses: tuple[str, ...] = ("pending", "unresolved", "failed"),
+    identifier_map: Optional[dict] = None,
+    clock: Callable[[], datetime] = utc_now,
+) -> dict:
+    """Reprocess signals in retryable identity states for *source*.
+
+    Safe to call after new contacts have been added to the Rolodex (e.g. after
+    a CRM sync) so previously-unresolved signals can be re-linked.
+
+    Idempotent: calling twice with no Rolodex changes gives the same outcome.
+    Never bypasses identity conflicts or authorization checks.
+    Already-resolved signals (identity_status='resolved') are never reset.
+
+    Args:
+        conn:            Open SQLite connection with ledger tables present.
+        source:          Signal source name (matches signals.source).
+        statuses:        Identity statuses eligible for retry.
+        identifier_map:  Pre-loaded contact index; reloaded from DB when None.
+        clock:           Clock callable for timestamps.
+
+    Returns:
+        ``{"retried": N, "resolved": N, "unresolved": N, "failed": N}``
+    """
+    import json
+    from olo.signals import format_utc
+
+    # Load fresh contact index (picks up any contacts added since last run)
+    if identifier_map is None:
+        try:
+            from olo.adapters.contacts import load_contact_index
+            identifier_map, _ = load_contact_index(conn)
+        except Exception:
+            identifier_map = {}
+
+    # Find signals in retryable states
+    placeholders = ",".join("?" * len(statuses))
+    rows = conn.execute(
+        f"SELECT sr.signal_id, s.kind, s.payload"
+        f" FROM signal_resolution sr"
+        f" JOIN signals s"
+        f"   ON s.external_id = sr.signal_id AND s.source = sr.source"
+        f" WHERE sr.source = ? AND sr.identity_status IN ({placeholders})"
+        f" ORDER BY sr.signal_id",
+        (source, *statuses),
+    ).fetchall()
+
+    if not rows:
+        return {"retried": 0, "resolved": 0, "unresolved": 0, "failed": 0}
+
+    # Reset eligible rows to 'pending' so the identity stage processes them
+    now_str = format_utc(clock())
+    conn.execute("BEGIN IMMEDIATE")
+    for row in rows:
+        conn.execute(
+            "UPDATE signal_resolution"
+            " SET identity_status='pending', identity_reason=NULL, updated_at=?"
+            " WHERE signal_id=? AND source=? AND identity_status != 'resolved'",
+            (now_str, row["signal_id"], source),
+        )
+    conn.execute("COMMIT")
+
+    # Proxy objects satisfying the duck-typed interface of _run_identity_stage
+    class _Proxy:
+        __slots__ = ("external_id", "kind", "payload")
+
+        def __init__(self, signal_id: str, kind: str, payload_raw) -> None:
+            self.external_id = signal_id
+            self.kind = kind
+            self.payload = (
+                json.loads(payload_raw)
+                if isinstance(payload_raw, str)
+                else (payload_raw or {})
+            )
+
+    proxies = [_Proxy(r["signal_id"], r["kind"], r["payload"]) for r in rows]
+
+    r, u, f = _run_identity_stage(conn, proxies, source, identifier_map, clock)
+    return {"retried": len(rows), "resolved": r, "unresolved": u, "failed": f}
 
 
 # ── run_source ────────────────────────────────────────────────────────────────
@@ -182,6 +324,14 @@ def run_source(
     # 1. Migrate (idempotent)
     conn = connect(db_path)
     migrate(conn)
+    # S3: also create the contact identity tables (idempotent, same session).
+    # run_source is the entry point for real signal processing; contacts tables
+    # must exist before the identity stage creates counterparty contacts.
+    try:
+        from olo.adapters.contacts import migrate_contacts as _mc
+        _mc(conn)
+    except Exception:
+        pass  # contacts module unavailable; identity stage handles gracefully
 
     # Load contact index once per run for the identity stage.
     # Best-effort: if the contacts table doesn't exist yet, identifier_map is empty.
@@ -263,8 +413,8 @@ def run_source(
                 except Exception:
                     pass  # entity extraction is enrichment, not critical path
 
-            # 3.5c S2: Signal resolution tracking — idempotent, never raises.
-            # Stage 1 (ensure rows) and Stage 2 (identity) run per batch.
+            # 3.5c S2/S3: Signal resolution tracking — idempotent, never raises.
+            # Stage 1 (ensure rows) and Stage 2 (identity+contact creation) run per batch.
             # Stage 3 (commitment extraction) is deferred to S4.
             if batch.signals:
                 try:

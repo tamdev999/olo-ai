@@ -368,14 +368,18 @@ def create_verified_contact(
         # Discover any existing active contacts for these identifiers
         existing_cids: set[str] = set()
         for id_type, id_value in normalized:
-            row = conn.execute(
+            # Use fetchall so that multiple contacts claiming the same identifier
+            # are ALL collected.  fetchone would silently ignore the second
+            # claimant and let the len(existing_cids) > 1 guard below pass,
+            # allowing a resolved contact to be returned even under conflict.
+            claimant_rows = conn.execute(
                 "SELECT contact_id FROM contact_identifiers"
                 " WHERE identifier_type = ? AND identifier_value = ?"
                 "   AND revoked_at IS NULL",
                 (id_type, id_value),
-            ).fetchone()
-            if row:
-                existing_cids.add(row[0])
+            ).fetchall()
+            for r in claimant_rows:
+                existing_cids.add(r[0])
 
         if len(existing_cids) > 1:
             conn.execute("ROLLBACK")
@@ -1505,15 +1509,28 @@ def load_contact_index(
     contact_info: dict[str, tuple[str, str]] = {}
     try:
         # Load all ACTIVE (non-revoked) identifiers.
+        # Group by (type, value): if multiple distinct contacts claim the same
+        # identifier it is a structural conflict and must be excluded
+        # (fail-closed on disputes) even when identifier_conflicts has no row.
+        _structural_conflicts: set[tuple[str, str]] = set()
         rows = conn.execute(
             "SELECT identifier_type, identifier_value, contact_id"
             " FROM contact_identifiers"
             " WHERE revoked_at IS NULL"
         ).fetchall()
         for row in rows:
-            identifier_map[(row[0], row[1])] = row[2]
+            key = (row[0], row[1])
+            if key in _structural_conflicts:
+                continue
+            if key in identifier_map:
+                if identifier_map[key] != row[2]:
+                    # Same identifier claimed by a different contact.
+                    _structural_conflicts.add(key)
+                    del identifier_map[key]
+            else:
+                identifier_map[key] = row[2]
 
-        # P1 fix: exclude identifiers with any UNRESOLVED conflict from the
+        # P1 fix: also exclude identifiers with any UNRESOLVED entry in the
         # index.  When a dispute is active, neither claimant may use the
         # identifier for automatic attribution.  Undisputed identifiers are
         # unaffected.  After an authorised resolution, the identifier is
@@ -1677,3 +1694,142 @@ def resolve_contact_from_signal(
             return contact_id
 
     return ""
+
+
+# ---------------------------------------------------------------------------
+# S3: Counterparty extraction and automated-sender detection
+# ---------------------------------------------------------------------------
+
+#: Local-part patterns that identify automated/newsletter senders.
+#: Intentionally conservative — only clearly non-human addresses are excluded.
+#: "support", "info", "service" are deliberately omitted: they can be real
+#: human contacts in small businesses.
+_AUTOMATED_LOCAL_PATTERNS: tuple[str, ...] = (
+    "noreply",
+    "no-reply",
+    "donotreply",
+    "do-not-reply",
+    "mailer-daemon",
+    "mailer_daemon",
+    "bounce",
+    "postmaster",
+    "newsletter",
+    "unsubscribe",
+)
+
+
+def is_automated_sender(email: str) -> bool:
+    """Return True when *email* looks like an automated or newsletter sender.
+
+    Uses a conservative set of patterns so genuine counterparty addresses
+    are not incorrectly excluded.  "noreply@", "no-reply@", "bounce@",
+    "postmaster@", "newsletter@" and similar clearly-automated prefixes
+    are matched; borderline addresses like "support@" and "info@" are NOT
+    filtered — they can represent real human contacts in small businesses.
+
+    The check is on the local part (before the ``@``) after stripping any
+    plus-addressing (``local+tag@``).
+    """
+    if "@" not in email:
+        return False
+    local = email.split("@")[0].lower()
+    local_base = local.split("+")[0]  # strip plus-addressing
+    for pattern in _AUTOMATED_LOCAL_PATTERNS:
+        if pattern in local_base:
+            return True
+    return False
+
+
+def extract_counterparty(
+    kind: str,
+    payload: dict,
+    *,
+    default_region: Optional[str] = None,
+) -> Optional[tuple[str, str, str]]:
+    """Return ``(identifier_type, identifier_value, display_name)`` for the
+    signal's counterparty, or ``None`` when the counterparty cannot be
+    reliably identified.
+
+    Returns None when:
+    - The signal kind has no extractable counterparty (invoice, structured).
+    - All candidate email addresses appear automated / newsletter.
+    - Identifier extraction fails.
+
+    Email addresses from clearly-automated senders (noreply, bounce, etc.)
+    are skipped so they are never stored as contacts.  Phone numbers must be
+    E.164 (``+…``) or require an explicit *default_region*.
+
+    Args:
+        kind:           Signal kind string (e.g. ``'email.sent'``).
+        payload:        Signal payload dict.
+        default_region: ISO 3166-1 alpha-2 code for national phone numbers.
+
+    Returns:
+        ``(id_type, id_value, display_name)`` or ``None``.
+    """
+    if kind in ("email.received", "email.sent", "email.content"):
+        hdr = payload.get("headers") or {}
+        if kind == "email.sent":
+            addrs = payload.get("to") or hdr.get("to") or []
+        elif kind == "email.received":
+            addrs = payload.get("from") or hdr.get("from") or []
+        else:
+            direction = payload.get("direction", "received")
+            addrs = (
+                payload.get("to") if direction == "sent" else payload.get("from")
+            ) or []
+
+        for email in _pick_emails_from_gmail(payload, kind):
+            if is_automated_sender(email):
+                continue
+            # Extract display name for the same address
+            display_name = ""
+            for addr in addrs:
+                if isinstance(addr, dict):
+                    addr_email = (addr.get("email") or "").strip().lower()
+                    if addr_email == email:
+                        display_name = (addr.get("name") or "").strip()
+                        break
+            return ("email", email, display_name)
+        return None
+
+    elif kind in (
+        "calendar.event.created",
+        "calendar.event.changed",
+        "calendar.event.cancelled",
+        "calendar.event.updated",
+    ):
+        for email in _pick_calendar_emails(payload):
+            if is_automated_sender(email):
+                continue
+            display_name = ""
+            # Try organizer first, then attendees
+            if payload.get("organizer_email", "").strip().lower() == email:
+                display_name = (payload.get("organizer_display_name") or "").strip()
+            else:
+                for att in (payload.get("attendees") or []):
+                    if isinstance(att, dict):
+                        att_email = (att.get("email") or "").strip().lower()
+                        if att_email == email:
+                            display_name = (
+                                att.get("displayName") or att.get("display_name") or ""
+                            ).strip()
+                            break
+            return ("email", email, display_name)
+        return None
+
+    elif kind == "call.transcript":
+        phone = (payload.get("phone") or "").strip()
+        if not phone:
+            return None
+        if default_region:
+            try:
+                phone = normalize_phone(phone, default_region)
+            except PhoneNormalizationError:
+                return None
+        elif not phone.startswith("+"):
+            return None  # national numbers require a region; skip safely
+        return ("phone", phone, "")
+
+    # invoice.created, structured kinds — no counterparty extraction in S3
+    return None
