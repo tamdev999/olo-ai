@@ -39,6 +39,7 @@ a verifiable match against existing history (prior date, thread or business key)
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import re
 import sqlite3
@@ -96,9 +97,31 @@ CANCEL_NULL_FIELDS: tuple[str, ...] = ("confirmed_date", "proposed_date")
 STATUS_SCHEDULED: str = "scheduled"
 STATUS_CANCELLED: str = "cancelled"
 
+#: Actions that assert a binding date and therefore require a valid
+#: confirmed_date (S1–S4 hardening, L6).
+DATED_ACTIONS: frozenset[str] = frozenset({"commit", "reaffirm", "confirm_change"})
+
+#: Date fields carried by a LedgerEvent; each must be None or a valid date.
+DATE_FIELDS: tuple[str, ...] = ("confirmed_date", "proposed_date", "prior_confirmed_date")
+
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 _CID_PREFIX = "cid_"
+
+
+def is_valid_iso_date(value: object) -> bool:
+    """True when *value* is a ``YYYY-MM-DD`` string naming a real calendar date.
+
+    Shared by the ledger and the extractor.  Rejects impossible dates such as
+    2024-02-30 and any other format (no coercion is attempted).
+    """
+    if not isinstance(value, str) or not _ISO_DATE_RE.fullmatch(value):
+        return False
+    try:
+        _dt.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def cancellation_field_error(
@@ -120,10 +143,7 @@ def cancellation_field_error(
                 f"action='cancel' requires {name}=None (got {values[name]!r}); "
                 "the cancelled date belongs in prior_confirmed_date"
             )
-    if prior_confirmed_date is not None and not (
-        isinstance(prior_confirmed_date, str)
-        and _ISO_DATE_RE.fullmatch(prior_confirmed_date)
-    ):
+    if prior_confirmed_date is not None and not is_valid_iso_date(prior_confirmed_date):
         return (
             "action='cancel' requires prior_confirmed_date to be None or a "
             f"YYYY-MM-DD date (got {prior_confirmed_date!r})"
@@ -307,6 +327,17 @@ def _validate(event: LedgerEvent) -> Optional[str]:
             "A customer may only request_change or cancel; "
             "a business may commit, reaffirm, confirm_change, or cancel."
         )
+    # Every date field must be None or a real calendar date (no coercion).
+    for name in DATE_FIELDS:
+        value = getattr(event, name)
+        if value is not None and not is_valid_iso_date(value):
+            return f"{name} must be None or a valid YYYY-MM-DD date (got {value!r})"
+    # Binding actions must carry the date they bind (L6).
+    if event.action in DATED_ACTIONS and event.confirmed_date is None:
+        return (
+            f"action={event.action!r} requires a valid confirmed_date; "
+            "a binding update without a date is never applied"
+        )
     # Cross-field: cancellation date contract
     if event.action == CANCEL_ACTION:
         cancel_err = cancellation_field_error(
@@ -373,78 +404,152 @@ def _all_cids_for_type(
 
 # ── Matching ──────────────────────────────────────────────────────────────────
 
-def _find_matches(conn: sqlite3.Connection, event: LedgerEvent) -> list[str]:
-    """Return commitment IDs matching this event's key fields.
+def _commitment_has_date_in_columns(
+    conn: sqlite3.Connection,
+    commitment_id: str,
+    date: str,
+    columns: tuple[str, ...],
+) -> bool:
+    """Return True if *date* appears in any of *columns* in any version."""
+    where = " OR ".join(f"{c}=?" for c in columns)
+    row = conn.execute(
+        f"SELECT 1 FROM commitment_versions WHERE commitment_id=? AND ({where}) LIMIT 1",
+        (commitment_id, *([date] * len(columns))),
+    ).fetchone()
+    return row is not None
 
-    Matching priority (descending certainty):
-      1. Exact named key (business_key != '').
-      2. Thread anchor (thread_id present).
-      3. Date evidence across full version history.
-      4. Single unnamed candidate with no date filter.
 
-    For non-commit actions (D2):  0 matches → UNRESOLVED (not CREATED).
-    For commit actions:           0 matches → CREATED.
-    For all actions:              2+ matches → UNRESOLVED.
+def _find_matches(
+    conn: sqlite3.Connection, event: LedgerEvent,
+) -> tuple[list[str], Optional[str]]:
+    """Return ``(candidate_ids, unresolved_reason)`` for this event.
+
+    Fail-safe matching (S1–S4 hardening).  A candidate needs independent
+    evidence; absence of evidence never selects a commitment:
+
+      1. Exact named key (business_key != '') — unique per customer and type.
+      2. Thread anchor among the eligible pool.
+      3. Historical date evidence among the eligible pool:
+           * prior_confirmed_date present → commitments with that date in
+             any version (the event supersedes a known date);
+           * otherwise confirmed_date — for non-commit actions, any version;
+             for 'commit', only a superseded (prior) date links it; a commit
+             whose date merely equals an existing commitment's date is
+             ambiguous (same commitment restated vs. a second commitment).
+
+    The eligible pool for a keyed event whose key is unknown is the
+    *unnamed* commitments only; a different named commitment never matches.
+
+    ``unresolved_reason`` is set when the event must stay UNRESOLVED even
+    though no candidate was returned (so 'commit' must not create either).
     """
     all_cids = _all_cids_for_type(conn, event.contact_id, event.event_type)
 
     if event.business_key:
-        # 1. Exact named match
         exact = conn.execute(
             "SELECT id FROM commitments"
             " WHERE contact_id=? AND event_type=? AND business_key=?",
             (event.contact_id, event.event_type, event.business_key),
         ).fetchall()
         if exact:
-            return [r[0] for r in exact]
-
-        # 2. Thread anchor (among unnamed commitments)
-        unnamed = [
+            return [r[0] for r in exact], None
+        pool = [
             cid for cid in all_cids
             if conn.execute(
                 "SELECT business_key FROM commitments WHERE id=?", (cid,)
             ).fetchone()[0] == ""
         ]
-        if event.thread_id and unnamed:
-            thread_match = [c for c in unnamed if _commitment_has_thread(conn, c, event.thread_id)]
-            if thread_match:
-                return thread_match
-
-        # 3. Date evidence among unnamed
-        candidates = unnamed
-        if candidates and event.prior_confirmed_date:
-            candidates = [
-                c for c in candidates
-                if _commitment_has_date_in_history(conn, c, event.prior_confirmed_date)
-            ]
-        return candidates
-
     else:
-        # 1. Thread anchor (highest certainty without a key)
-        if event.thread_id and all_cids:
-            thread_match = [c for c in all_cids if _commitment_has_thread(conn, c, event.thread_id)]
-            if thread_match:
-                # Optionally refine by date within thread matches
-                match_date = event.prior_confirmed_date or event.confirmed_date
-                if match_date and len(thread_match) > 1:
-                    date_refined = [
-                        c for c in thread_match
-                        if _commitment_has_date_in_history(conn, c, match_date)
-                    ]
-                    if date_refined:
-                        return date_refined
-                return thread_match
+        pool = all_cids
 
-        # 2. Date evidence across all commitments of this type
-        match_date = event.prior_confirmed_date or event.confirmed_date
-        if match_date and all_cids:
-            return [
-                c for c in all_cids
-                if _commitment_has_date_in_history(conn, c, match_date)
+    # 2. Thread anchor
+    if event.thread_id and pool:
+        thread_match = [c for c in pool if _commitment_has_thread(conn, c, event.thread_id)]
+        if thread_match:
+            match_date = event.prior_confirmed_date or event.confirmed_date
+            if match_date and len(thread_match) > 1:
+                refined = [
+                    c for c in thread_match
+                    if _commitment_has_date_in_history(conn, c, match_date)
+                ]
+                if refined:
+                    return refined, None
+            return thread_match, None
+
+    # 3. Historical date evidence
+    if event.prior_confirmed_date:
+        return [
+            c for c in pool
+            if _commitment_has_date_in_history(conn, c, event.prior_confirmed_date)
+        ], None
+
+    if event.confirmed_date:
+        if event.action == "commit":
+            superseded = [
+                c for c in pool
+                if _commitment_has_date_in_columns(
+                    conn, c, event.confirmed_date, ("prior_confirmed_date",))
             ]
+            if superseded:
+                return superseded, None
+            same_date = [
+                c for c in pool
+                if _commitment_has_date_in_columns(
+                    conn, c, event.confirmed_date, ("confirmed_date", "proposed_date"))
+            ]
+            if same_date:
+                return [], (
+                    f"commit date {event.confirmed_date} matches {len(same_date)} "
+                    "existing commitment(s) with no business_key or thread to tell a "
+                    "restatement from a second commitment"
+                )
+            return [], None
+        return [
+            c for c in pool
+            if _commitment_has_date_in_history(conn, c, event.confirmed_date)
+        ], None
 
-        # 3. No date/thread evidence: single candidate is unambiguous
-        return all_cids
+    # 4. No key, thread or date evidence: never select by default.
+    if event.action == "commit":
+        return [], None
+    return [], (
+        f"action={event.action!r} has no business_key, thread or historical date "
+        "evidence identifying a commitment"
+    )
+
+
+def _applied_anywhere(
+    conn: sqlite3.Connection, event: LedgerEvent,
+) -> Optional[tuple[str, int]]:
+    """Return (commitment_id, version) if this source already applied here.
+
+    Scoped to the event's customer and type (and key, when keyed) so replay
+    is idempotent even when the matcher would now treat it differently.
+    """
+    sql = (
+        "SELECT cv.commitment_id, cv.version FROM commitment_versions cv"
+        " JOIN commitments c ON c.id = cv.commitment_id"
+        " WHERE cv.source_doc_id=? AND c.contact_id=? AND c.event_type=?"
+    )
+    params: list = [event.source_doc_id, event.contact_id, event.event_type]
+    if event.business_key:
+        sql += " AND c.business_key=?"
+        params.append(event.business_key)
+    row = conn.execute(sql + " ORDER BY cv.commitment_id LIMIT 1", params).fetchone()
+    return (row[0], row[1]) if row else None
+
+
+def _current_scheduled_date(conn: sqlite3.Connection, commitment_id: str) -> Optional[str]:
+    """Scheduled date of the latest confirmed version (None if cancelled/none)."""
+    row = conn.execute(
+        "SELECT action, confirmed_date FROM commitment_versions"
+        " WHERE commitment_id=? AND is_confirmed=1"
+        " ORDER BY occurred_at DESC, version DESC LIMIT 1",
+        (commitment_id,),
+    ).fetchone()
+    if row is None or row[0] == CANCEL_ACTION:
+        return None
+    return row[1]
 
 
 # ── Idempotency ───────────────────────────────────────────────────────────────
@@ -599,7 +704,19 @@ def apply_event(
     if err:
         return ApplyResult(OutcomeKind.INVALID, None, None, err)
 
-    matches = _find_matches(conn, event)
+    # Idempotency first: a replayed source never re-enters matching.
+    applied = _applied_anywhere(conn, event)
+    if applied is not None:
+        return ApplyResult(
+            OutcomeKind.UNCHANGED, applied[0], applied[1],
+            "source_doc_id already applied to this commitment",
+        )
+
+    matches, unresolved_reason = _find_matches(conn, event)
+
+    if unresolved_reason is not None:
+        _record_unresolved(conn, event, matches, recorded_at)
+        return ApplyResult(OutcomeKind.UNRESOLVED, None, None, unresolved_reason)
 
     if len(matches) > 1:
         _record_unresolved(conn, event, matches, recorded_at)
@@ -640,6 +757,16 @@ def apply_event(
             existing,
             "source_doc_id already applied to this commitment",
         )
+    # A reaffirm restates the current confirmed date; it can never change it (L4).
+    if event.action == "reaffirm":
+        current = _current_scheduled_date(conn, commitment_id)
+        if current != event.confirmed_date:
+            _record_unresolved(conn, event, [commitment_id], recorded_at)
+            return ApplyResult(
+                OutcomeKind.UNRESOLVED, None, None,
+                f"reaffirm date {event.confirmed_date} does not equal the current "
+                f"confirmed date {current!r}; a reaffirm cannot change the date",
+            )
     # Cross-channel claim: assign business_key when claiming an unnamed commitment
     matched_key_row = conn.execute(
         "SELECT business_key FROM commitments WHERE id=?", (commitment_id,)

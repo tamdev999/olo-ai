@@ -709,6 +709,9 @@ class TestCustomerCancelFix:
                 actor_role="customer",
                 action="cancel",
                 confirmed_date=None,
+                # Hardening: an update needs matching evidence; the cancelled
+                # date is that evidence (cancellation contract).
+                prior_confirmed_date="2026-04-04",
             ),
             recorded_at="2026-01-01T00:00:00+00:00",
         )
@@ -763,6 +766,9 @@ class TestCustomerCancelFix:
                 actor_role="business",
                 action="cancel",
                 confirmed_date=None,
+                # Hardening: an update needs matching evidence; the cancelled
+                # date is that evidence (cancellation contract).
+                prior_confirmed_date="2026-04-04",
             ),
             recorded_at="2026-01-01T00:00:00+00:00",
         )
@@ -812,6 +818,9 @@ class TestCustomerCancelFix:
                 actor_role="customer",
                 action="cancel",
                 confirmed_date=None,
+                # Hardening: an update needs matching evidence; the cancelled
+                # date is that evidence (cancellation contract).
+                prior_confirmed_date="2026-04-04",
             ),
             recorded_at="2026-01-01T00:00:00+00:00",
         )

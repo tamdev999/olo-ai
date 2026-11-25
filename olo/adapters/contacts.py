@@ -87,9 +87,11 @@ P3 (fix 3) — restricted resolution pathway:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sqlite3
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -1635,7 +1637,17 @@ def resolve_contact_from_signal(
 
     Returns the contact_id string (``cid_...``) or ``""`` when no verified
     mapping exists for this signal.
+
+    S1–S4 hardening: email and calendar signals resolve through
+    resolve_signal_identity and return ``""`` when more than one distinct
+    plausible customer is present (never the first match).
     """
+    if kind in _EMAIL_SIGNAL_KINDS or kind in _CALENDAR_SIGNAL_KINDS:
+        ident = resolve_signal_identity(
+            kind, payload, identifier_map, default_region=default_region,
+        )
+        return ident.contact_id if ident.status == IDENTITY_RESOLVED else ""
+
     candidates: list[tuple[str, str]] = []
 
     if kind in ("email.received", "email.sent", "email.content"):
@@ -1766,7 +1778,15 @@ def extract_counterparty(
 
     Returns:
         ``(id_type, id_value, display_name)`` or ``None``.
+
+    S1–S4 hardening: for email and calendar signals, returns None when more
+    than one distinct plausible counterparty is present (never the first),
+    and never returns the sender of the business's own sent mail.
     """
+    if kind in _EMAIL_SIGNAL_KINDS or kind in _CALENDAR_SIGNAL_KINDS:
+        ident = resolve_signal_identity(kind, payload, {}, default_region=default_region)
+        return ident.counterparty if ident.status == IDENTITY_NEW else None
+
     if kind in ("email.received", "email.sent", "email.content"):
         hdr = payload.get("headers") or {}
         if kind == "email.sent":
@@ -1833,3 +1853,171 @@ def extract_counterparty(
 
     # invoice.created, structured kinds — no counterparty extraction in S3
     return None
+
+
+# ---------------------------------------------------------------------------
+# S1–S4 hardening: fail-closed signal identity (R1/R2)
+# ---------------------------------------------------------------------------
+
+IDENTITY_RESOLVED:  str = "resolved"   # exactly one known customer
+IDENTITY_NEW:       str = "new"        # exactly one genuine, not-yet-known counterparty
+IDENTITY_AMBIGUOUS: str = "ambiguous"  # more than one distinct plausible customer
+IDENTITY_NONE:      str = "none"       # no plausible counterparty
+
+_EMAIL_SIGNAL_KINDS: frozenset[str] = frozenset({"email.received", "email.sent", "email.content"})
+_CALENDAR_SIGNAL_KINDS: frozenset[str] = frozenset({
+    "calendar.event.created", "calendar.event.changed",
+    "calendar.event.cancelled", "calendar.event.updated",
+})
+
+
+@dataclass(frozen=True)
+class SignalIdentity:
+    """Fail-closed identity of a signal's counterparty.
+
+    ``contact_id`` is set only for IDENTITY_RESOLVED; ``counterparty``
+    ``(id_type, id_value, display_name)`` only for IDENTITY_NEW.
+    """
+    status: str
+    contact_id: str = ""
+    counterparty: Optional[tuple[str, str, str]] = None
+    reason: str = ""
+
+
+def _addr_list(value: object) -> list[tuple[str, str]]:
+    """``[(email, display_name)]`` from a parsed address list."""
+    out: list[tuple[str, str]] = []
+    for addr in value if isinstance(value, list) else []:
+        if isinstance(addr, dict):
+            e = (addr.get("email") or "").strip().lower()
+            if e and "@" in e:
+                out.append((e, (addr.get("name") or addr.get("display_name") or "").strip()))
+    return out
+
+
+def _signal_own_emails(kind: str, payload: dict) -> set[str]:
+    """Addresses the signal itself proves belong to the business (sent mail's From)."""
+    hdr = payload.get("headers") or {}
+    if kind == "email.sent" or (kind == "email.content" and payload.get("direction") == "sent"):
+        return {e for e, _ in _addr_list(payload.get("from") or hdr.get("from"))}
+    return set()
+
+
+def _email_counterparties(kind: str, payload: dict) -> list[tuple[str, str]]:
+    hdr = payload.get("headers") or {}
+    if kind == "email.received":
+        return _addr_list(payload.get("from") or hdr.get("from"))
+    if kind == "email.sent":
+        return _addr_list(payload.get("to") or hdr.get("to"))
+    direction = payload.get("direction", "received")
+    return _addr_list(payload.get("to") if direction == "sent" else payload.get("from"))
+
+
+def _calendar_counterparties(payload: dict) -> list[tuple[str, str]]:
+    org = (payload.get("organizer_email") or "").strip().lower()
+    if org and "@" in org and not payload.get("organizer_self", False):
+        return [(org, (payload.get("organizer_display_name") or "").strip())]
+    out: list[tuple[str, str]] = []
+    for att in payload.get("attendees") or []:
+        if isinstance(att, dict) and not att.get("self"):
+            e = (att.get("email") or "").strip().lower()
+            if e and "@" in e:
+                out.append((e, (att.get("displayName") or att.get("display_name") or "").strip()))
+    return out
+
+
+def resolve_signal_identity(
+    kind: str,
+    payload: dict,
+    identifier_map: dict[tuple[str, str], str],
+    *,
+    own_identifiers: Iterable[tuple[str, str]] = (),
+    default_region: Optional[str] = None,
+) -> SignalIdentity:
+    """Identify a signal's counterparty without ever guessing between people.
+
+    * The business's own identifiers — ``own_identifiers`` from trusted
+      configuration or stored sent mail, plus the From address of sent mail —
+      are never counterparties.
+    * Automated senders are not plausible customers.
+    * Every remaining email address (To for sent mail, From for received,
+      the non-self organiser/attendees for calendar events) is a plausible
+      customer.  Known addresses count once per distinct contact; each
+      unknown address counts as its own party.  More than one party is
+      IDENTITY_AMBIGUOUS — the first is never selected.
+
+    Phone (call.transcript) and invoice signals keep their single-customer
+    lookup via resolve_contact_from_signal.
+    """
+    own = {(t, v.strip().lower()) for t, v in own_identifiers}
+    own |= {("email", e) for e in _signal_own_emails(kind, payload)}
+
+    if kind in _EMAIL_SIGNAL_KINDS:
+        raw = _email_counterparties(kind, payload)
+    elif kind in _CALENDAR_SIGNAL_KINDS:
+        raw = _calendar_counterparties(payload)
+    else:
+        cid = resolve_contact_from_signal(kind, payload, identifier_map, default_region)
+        if cid:
+            return SignalIdentity(IDENTITY_RESOLVED, contact_id=cid)
+        cp = extract_counterparty(kind, payload, default_region=default_region)
+        if cp is not None:
+            return SignalIdentity(IDENTITY_NEW, counterparty=cp)
+        return SignalIdentity(IDENTITY_NONE, reason=f"no counterparty for {kind}")
+
+    seen: set[str] = set()
+    known: dict[str, str] = {}               # contact_id -> email
+    unknown: list[tuple[str, str]] = []
+    for email, name in raw:
+        if email in seen or ("email", email) in own or is_automated_sender(email):
+            continue
+        seen.add(email)
+        cid = identifier_map.get(("email", email))
+        if cid:
+            known.setdefault(cid, email)
+        else:
+            unknown.append((email, name))
+
+    parties = len(known) + len(unknown)
+    if parties == 0:
+        return SignalIdentity(IDENTITY_NONE, reason=f"no plausible counterparty for {kind}")
+    if parties > 1:
+        names = sorted(known.values()) + sorted(e for e, _ in unknown)
+        return SignalIdentity(
+            IDENTITY_AMBIGUOUS,
+            reason=f"{parties} distinct plausible customers: {', '.join(names)}"[:500],
+        )
+    if known:
+        return SignalIdentity(IDENTITY_RESOLVED, contact_id=next(iter(known)))
+    email, name = unknown[0]
+    return SignalIdentity(IDENTITY_NEW, counterparty=("email", email, name))
+
+
+def load_own_identifiers(conn: sqlite3.Connection) -> frozenset[tuple[str, str]]:
+    """The business's own email addresses, learned from its stored sent mail.
+
+    Gmail marks sent mail with the SENT label (``email.sent``) or
+    ``direction='sent'`` (``email.content``); the From address of such mail
+    belongs to the business.  One olo.db holds one business, so every sent
+    message in it is evidence.  Returns an empty set when no signals exist.
+    """
+    own: set[tuple[str, str]] = set()
+    try:
+        rows = conn.execute(
+            "SELECT kind, payload FROM signals WHERE kind IN ('email.sent', 'email.content')"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return frozenset()
+    for kind, raw in rows:
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            own |= {("email", e) for e in _signal_own_emails(kind, payload)}
+    return frozenset(own)
+
+
+def own_identifiers_of(kind: str, payload: dict) -> frozenset[tuple[str, str]]:
+    """The business identifiers one signal proves (From of sent mail)."""
+    return frozenset(("email", e) for e in _signal_own_emails(kind, payload))

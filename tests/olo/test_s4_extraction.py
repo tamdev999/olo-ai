@@ -539,7 +539,11 @@ _CORPUS: list[dict] = [
             event_type="delivery", action="cancel",
             business_key="ORD-2024-S19",
             prior_confirmed_date="2024-03-18",
-            supporting_passage="cancel order ORD-2024-S19",
+            # Hardening: the passage must state the cancelled date it supports.
+            supporting_passage=(
+                "cancel order ORD-2024-S19. "
+                "The delivery scheduled for 2024-03-18 is no longer needed"
+            ),
             confidence=0.96,
         ),
         "label": Label(
@@ -1257,21 +1261,27 @@ class TestExtractionPipeline:
         assert result.thread_id == "thread-abc123"
 
     def test_date_format_validated(self) -> None:
-        """Dates that do not match YYYY-MM-DD are coerced to None."""
+        """A date that is not YYYY-MM-DD rejects the extraction.
+
+        Hardening (S1–S4): previously the malformed date was silently coerced
+        to None and a dateless commit was returned.  Invalid fields are now
+        rejected, never stripped or remapped.
+        """
+        from olo.extractor import ExtractionStatus, extract_commitment_outcome
+
         resp = _r(
             event_type="delivery", action="commit",
             confirmed_date="March 15 2024",   # invalid format
             supporting_passage="delivery scheduled for March 15 2024",
             confidence=0.85,
         )
-        result = extract_commitment_update(
-            "email.sent",
-            {"body": "Your delivery scheduled for March 15 2024."},
-            "gmail_biz",
-            _model_fn=lambda p: (resp, 10),
-        )
-        assert result is not None
-        assert result.confirmed_date is None   # invalid format stripped
+        args = ("email.sent", {"body": "Your delivery scheduled for March 15 2024."},
+                "gmail_biz")
+        result = extract_commitment_update(*args, _model_fn=lambda p: (resp, 10))
+        assert result is None
+        outcome = extract_commitment_outcome(*args, _model_fn=lambda p: (resp, 10))
+        assert outcome.status == ExtractionStatus.REJECTED
+        assert "confirmed_date" in outcome.reason
 
     def test_prior_confirmed_date_carried_through(self) -> None:
         """prior_confirmed_date is extracted and preserved."""

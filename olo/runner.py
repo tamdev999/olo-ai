@@ -93,8 +93,14 @@ def _run_identity_stage(
     source: str,
     identifier_map: dict,
     clock: Callable[[], datetime],
+    own_identifiers: frozenset = frozenset(),
 ) -> tuple[int, int, int]:
     """Attempt identity resolution for signals with identity_status='pending'.
+
+    S1–S4 hardening: identity comes from resolve_signal_identity — the
+    business's own identifiers (``own_identifiers`` plus the From address of
+    sent mail) are excluded, and a signal with more than one distinct
+    plausible customer is recorded 'ambiguous' instead of taking the first.
 
     For each signal in *signals*:
     - Calls resolve_contact_from_signal (read-only Rolodex lookup; never creates contacts).
@@ -111,10 +117,12 @@ def _run_identity_stage(
     NOTE: customer-cancel bug (now fixed in S3 — see ledger.py).
     """
     from olo.adapters.contacts import (
+        IDENTITY_AMBIGUOUS,
+        IDENTITY_NEW,
+        IDENTITY_RESOLVED,
         IdentityResolutionError,
         create_verified_contact,
-        extract_counterparty,
-        resolve_contact_from_signal,
+        resolve_signal_identity,
     )
     from olo.signals import format_utc
     resolved = unresolved = failed = 0
@@ -136,17 +144,25 @@ def _run_identity_stage(
         ambiguous = False
         error_reason: Optional[str] = None
 
-        # Step 1: read-only Rolodex lookup
+        # Step 1: read-only, fail-closed Rolodex lookup
+        identity = None
         try:
-            contact_id = resolve_contact_from_signal(
-                sig.kind, sig.payload, identifier_map,
+            identity = resolve_signal_identity(
+                sig.kind, sig.payload, identifier_map, own_identifiers=own_identifiers,
             )
         except Exception as exc:
             error_reason = str(exc)
 
-        # Step 2 (S3): create contact for genuine counterparties with no existing match
-        if not contact_id and error_reason is None:
-            counterparty = extract_counterparty(sig.kind, sig.payload)
+        if identity is not None and identity.status == IDENTITY_RESOLVED:
+            contact_id = identity.contact_id
+        elif identity is not None and identity.status == IDENTITY_AMBIGUOUS:
+            # Several distinct plausible customers: never pick one.
+            ambiguous = True
+            error_reason = identity.reason
+
+        # Step 2 (S3): create contact for the single genuine counterparty
+        if identity is not None and identity.status == IDENTITY_NEW and error_reason is None:
+            counterparty = identity.counterparty
             if counterparty is not None:
                 id_type, id_value, display_name = counterparty
                 try:
@@ -218,6 +234,7 @@ def retry_identity_resolution(
     statuses: tuple[str, ...] = ("pending", "unresolved", "failed"),
     identifier_map: Optional[dict] = None,
     clock: Callable[[], datetime] = utc_now,
+    own_identifiers: Optional[frozenset] = None,
 ) -> dict:
     """Reprocess signals in retryable identity states for *source*.
 
@@ -248,6 +265,12 @@ def retry_identity_resolution(
             identifier_map, _ = load_contact_index(conn)
         except Exception:
             identifier_map = {}
+    if own_identifiers is None:
+        try:
+            from olo.adapters.contacts import load_own_identifiers
+            own_identifiers = load_own_identifiers(conn)
+        except Exception:
+            own_identifiers = frozenset()
 
     # Find signals in retryable states
     placeholders = ",".join("?" * len(statuses))
@@ -291,7 +314,9 @@ def retry_identity_resolution(
 
     proxies = [_Proxy(r["signal_id"], r["kind"], r["payload"]) for r in rows]
 
-    r, u, f = _run_identity_stage(conn, proxies, source, identifier_map, clock)
+    r, u, f = _run_identity_stage(
+        conn, proxies, source, identifier_map, clock, own_identifiers,
+    )
     return {"retried": len(rows), "resolved": r, "unresolved": u, "failed": f}
 
 
@@ -340,6 +365,14 @@ def run_source(
         identifier_map, _contact_info = load_contact_index(conn)
     except Exception:
         identifier_map = {}
+    # The business's own addresses (learned from stored sent mail) are never
+    # counterparties; extended per batch from newly ingested sent mail.
+    try:
+        from olo.adapters.contacts import load_own_identifiers, own_identifiers_of
+        own_identifiers = load_own_identifiers(conn)
+    except Exception:
+        own_identifiers = frozenset()
+        own_identifiers_of = None  # type: ignore[assignment]
 
     # 2. Acquire lease
     try:
@@ -430,9 +463,17 @@ def run_source(
                         pass
                     # row creation failure is non-fatal; identity stage skipped
 
+                if own_identifiers_of is not None:
+                    for s in batch.signals:
+                        try:
+                            own_identifiers = own_identifiers | own_identifiers_of(
+                                s.kind, s.payload)
+                        except Exception:
+                            pass
                 try:
                     r, u, f = _run_identity_stage(
                         conn, batch.signals, source, identifier_map, clock,
+                        own_identifiers,
                     )
                     id_resolved   += r
                     id_unresolved += u

@@ -20,6 +20,16 @@ Speaker from transcript — for call.transcript, actor_role is confirmed by find
 Long-transcript safe — a keyword-density window finds the most commitment-dense
                   section for the prompt while verification always uses the full text.
 Reject-not-guess — confidence < 0.7 → None; unattributable speaker → None.
+Source-grounded  — (S1–S4 hardening) every extracted date must be a real
+                  calendar date stated explicitly in the supporting passage;
+                  alternatives ("X or Y"), ranges and competing dates are
+                  rejected, never resolved by picking one; the passage must be
+                  in the author's own text, not quoted/forwarded mail; a
+                  business_key must appear in that text.
+Explicit outcome — extract_commitment_outcome() returns an ExtractionOutcome
+                  that separates EXTRACTED, NO_COMMITMENT, REJECTED,
+                  MODEL_ERROR and BUDGET_EXHAUSTED, so failures are never
+                  mistaken for "no commitment".
 
 Extraction is intentionally separate from ledger writes: callers receive an
 ExtractionResult and pass it to apply_event themselves.  When actor_role is
@@ -37,18 +47,25 @@ import re
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from enum import Enum
+from itertools import pairwise
 from typing import Any, Callable, Optional
 
 from olo.ledger import (
     ACTIONS,
     CANCEL_ACTION,
+    DATED_ACTIONS,
     SUPPORTED_EVENT_TYPES,
     cancellation_field_error,
+    is_valid_iso_date,
 )
 
 __all__ = [
     "ExtractionResult",
+    "ExtractionOutcome",
+    "ExtractionStatus",
     "Budget",
+    "extract_commitment_outcome",
     "extract_commitment_update",
     "make_deepseek_model_fn",
     "migrate_extraction_cache",
@@ -434,96 +451,337 @@ def _default_model_fn(prompt: str) -> tuple[str, int]:
     return make_deepseek_model_fn()(prompt)
 
 
-# ── Parse and verify ─────────────────────────────────────────────────────────
+# ── Outcome types ────────────────────────────────────────────────────────────
 
-def _clean_date(v: Any) -> Optional[str]:
-    if isinstance(v, str) and _DATE_RE.match(v.strip()):
-        return v.strip()
+class ExtractionStatus(str, Enum):
+    """Why an extraction did or did not produce a result.
+
+    Only EXTRACTED carries a result.  MODEL_ERROR and BUDGET_EXHAUSTED are
+    retryable failures and must never be recorded as "no commitment".
+    """
+    EXTRACTED        = "extracted"         # verified commitment update
+    NO_COMMITMENT    = "no_commitment"     # model found nothing relevant
+    REJECTED         = "rejected"          # model claimed one; verification failed
+    MODEL_ERROR      = "model_error"       # transport/model exception or unusable output
+    BUDGET_EXHAUSTED = "budget_exhausted"  # call not made: budget spent
+    NO_INPUT         = "no_input"          # signal carries no text
+
+
+#: Statuses a worker should retry rather than finalise.
+RETRYABLE_STATUSES: frozenset[ExtractionStatus] = frozenset({
+    ExtractionStatus.MODEL_ERROR, ExtractionStatus.BUDGET_EXHAUSTED,
+})
+
+
+@dataclass(frozen=True)
+class ExtractionOutcome:
+    """Result of one extraction attempt.  ``result`` is set only when EXTRACTED."""
+    status: ExtractionStatus
+    result: Optional[ExtractionResult] = None
+    reason: str = ""
+
+    @property
+    def retryable(self) -> bool:
+        return self.status in RETRYABLE_STATUSES
+
+
+# ── Source evidence: authored text, date mentions, grounding ─────────────────
+
+#: Lines that start a quoted/forwarded block in an email body.  Everything
+#: from the first such line onward is treated as not authored by the sender.
+_REPLY_HEADER_RE = re.compile(
+    r"^\s*(?:"
+    r"On\s.+\bwrote:\s*$"                         # On Mon, Bob <b@x> wrote:
+    r"|-{2,}\s*(?:Original|Forwarded)\s+Message\s*-{2,}"
+    r"|-{2,}\s*Forwarded message\s*-{2,}"
+    r"|_{5,}\s*$"                                  # Outlook separator
+    r"|From:\s.+"                                  # From: header of a quoted mail
+    r")",
+    re.IGNORECASE,
+)
+
+_EMAIL_KINDS: frozenset[str] = frozenset({"email.sent", "email.received", "email.content"})
+
+
+def _authored_text(kind: str, full_text: str) -> str:
+    """The part of the signal written by its author (quoted replies removed).
+
+    For email kinds: drops ``>``-quoted lines and everything from the first
+    reply/forward header line onward.  Other kinds are returned unchanged.
+    """
+    if kind not in _EMAIL_KINDS:
+        return full_text
+    kept: list[str] = []
+    for line in full_text.splitlines():
+        if _REPLY_HEADER_RE.match(line):
+            break
+        if line.lstrip().startswith(">"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+_MONTHS: dict[str, int] = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+_MON = r"(?P<mon>" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?"
+_DAY = r"(?P<day>\d{1,2})(?:st|nd|rd|th)?"
+_YEAR = r"(?P<year>\d{4})"
+
+_DATE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})\b"),                 # 2024-03-15
+    re.compile(rf"\b{_MON}\s+{_DAY}(?:,?\s+{_YEAR})?\b", re.IGNORECASE),       # March 15[, 2024]
+    re.compile(rf"\b{_DAY}\s+(?:of\s+)?{_MON}(?:,?\s+{_YEAR})?\b", re.IGNORECASE),  # 15 March [2024]
+    re.compile(r"\b(?P<a>\d{1,2})/(?P<b>\d{1,2})/(?P<y4>\d{4})\b"),            # 3/15/2024
+)
+
+
+@dataclass(frozen=True)
+class _DateMention:
+    start: int
+    end: int
+    dates: frozenset[str]   # full ISO dates this mention can denote (may be empty)
+    month_days: frozenset[tuple[int, int]]  # (month, day) it can denote
+
+
+def _iso(y: int, m: int, d: int) -> Optional[str]:
+    try:
+        return datetime(y, m, d).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _date_mentions(text: str) -> list[_DateMention]:
+    """Explicit date mentions in *text*, left to right, non-overlapping.
+
+    A year-less mention ("April 10") denotes a month/day but no full date.
+    An all-numeric d/m vs m/d mention denotes every valid reading.
+    Relative expressions ("next Tuesday") are not dates here.
+    """
+    found: list[_DateMention] = []
+    taken: list[tuple[int, int]] = []
+    for pat in _DATE_PATTERNS:
+        for m in pat.finditer(text):
+            s, e = m.span()
+            if any(s < te and ts < e for ts, te in taken):
+                continue
+            g = m.groupdict()
+            dates: set[str] = set()
+            mds: set[tuple[int, int]] = set()
+            if g.get("y") is not None:
+                y, mo, d = int(g["y"]), int(g["m"]), int(g["d"])
+                iso = _iso(y, mo, d)
+                if iso:
+                    dates.add(iso)
+                    mds.add((mo, d))
+            elif g.get("mon") is not None:
+                mo = _MONTHS[g["mon"].lower().rstrip(".")]
+                d = int(g["day"])
+                if _iso(2000, mo, d):            # leap year: any valid month/day
+                    mds.add((mo, d))
+                    if g.get("year"):
+                        iso = _iso(int(g["year"]), mo, d)
+                        if iso:
+                            dates.add(iso)
+            else:
+                a, b, y = int(g["a"]), int(g["b"]), int(g["y4"])
+                for mo, d in {(a, b), (b, a)}:
+                    iso = _iso(y, mo, d)
+                    if iso:
+                        dates.add(iso)
+                        mds.add((mo, d))
+            if not mds:
+                continue
+            taken.append((s, e))
+            found.append(_DateMention(s, e, frozenset(dates), frozenset(mds)))
+    found.sort(key=lambda x: x.start)
+    return found
+
+
+def _grounds(mention: _DateMention, iso: str) -> bool:
+    """True when the mention unambiguously denotes exactly *iso*."""
+    return mention.dates == frozenset({iso})
+
+
+def _explained_by(mention: _DateMention, extracted: set[str]) -> bool:
+    """True when the mention refers to one of the extracted dates."""
+    if mention.dates & extracted:
+        return True
+    return any((int(x[5:7]), int(x[8:10])) in mention.month_days for x in extracted)
+
+
+_SENTENCE_BREAK = re.compile(r"[.!?\n]")
+
+
+def _context(text: str, start: int, end: int) -> str:
+    """The sentence(s) of *text* that contain the span [start, end)."""
+    left = start
+    while left > 0 and not _SENTENCE_BREAK.match(text[left - 1]):
+        left -= 1
+    right = end
+    while right < len(text) and not _SENTENCE_BREAK.match(text[right]):
+        right += 1
+    return text[left:right]
+
+
+_ALT_GAP = re.compile(r"\bor\b|/|\bversus\b|\bvs\.?\b", re.IGNORECASE)
+_RANGE_GAP = re.compile(r"\band\b|\bto\b|-|–", re.IGNORECASE)
+
+#: Actions whose event supersedes an earlier date (one unextracted earlier
+#: date in the same sentence is tolerated as that superseded date).
+_SUPERSEDING_ACTIONS: frozenset[str] = frozenset({"request_change", "confirm_change", "cancel"})
+
+
+def _date_evidence_error(
+    action: str,
+    dates: dict[str, Optional[str]],
+    passage: str,
+    context: str,
+) -> Optional[str]:
+    """Why the extracted dates are not supported by the source, or None.
+
+    * every non-null extracted date is stated explicitly and unambiguously
+      in the supporting passage (year included);
+    * the passage's sentence offers no alternatives ("X or Y", "between X
+      and Y") — an alternative is never resolved by picking one;
+    * no unexplained date competes with the extraction: none for commit /
+      reaffirm, at most one (the superseded date) for superseding actions.
+    """
+    extracted = {v for v in dates.values() if v is not None}
+    passage_mentions = _date_mentions(passage)
+    for field, value in dates.items():
+        if value is not None and not any(_grounds(m, value) for m in passage_mentions):
+            return f"{field}={value} is not stated explicitly in the supporting passage"
+
+    ctx_mentions = _date_mentions(context)
+    for a, b in pairwise(ctx_mentions):
+        gap = context[a.end:b.start]
+        if len(gap) <= 30 and _ALT_GAP.search(gap):
+            return "source offers alternative dates; none is definite"
+        before = context[max(0, a.start - 20):a.start].lower()
+        if len(gap) <= 12 and "between" in before and _RANGE_GAP.search(gap):
+            return "source gives a date range; no single date is definite"
+
+    unexplained = [m for m in ctx_mentions if not _explained_by(m, extracted)]
+    allowed = 1 if (action in _SUPERSEDING_ACTIONS and dates.get("prior_confirmed_date") is None) else 0
+    if len(unexplained) > allowed:
+        return f"{len(unexplained)} other date(s) in the same sentence compete with the extraction"
     return None
 
 
-def _parse_and_verify(
+# ── Parse and verify ─────────────────────────────────────────────────────────
+
+_DATE_KEYS: tuple[str, ...] = ("confirmed_date", "proposed_date", "prior_confirmed_date")
+
+
+def _parse_and_verify_outcome(
     raw: str,
+    kind: str,
     actor_role: str,
     full_text: str,
     thread_id: Optional[str],
     cache_hit: bool,
-) -> Optional[ExtractionResult]:
-    """Parse a raw model response and reject anything that cannot be verified.
+) -> ExtractionOutcome:
+    """Parse a raw model response and verify it against the source signal.
 
-    ``full_text`` is the complete original signal text (never the windowed
-    prompt text) — verification is always against the full source.
-
-    Rejects:
-    - Invalid JSON
-    - event_type not in SUPPORTED_EVENT_TYPES (including null)
-    - action not in ACTIONS
-    - confidence < _CONFIDENCE_THRESHOLD
-    - supporting_passage absent or not a verbatim substring of full_text
-    - action='cancel' violating the cancellation contract
-      (olo.ledger.cancellation_field_error)
+    Verification is always against the complete original text; the evidence
+    must sit in the author's own (unquoted) text.  Nothing is coerced: any
+    malformed field rejects the whole extraction.
     """
+    S = ExtractionStatus
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return None
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return ExtractionOutcome(S.MODEL_ERROR, reason="model output is not valid JSON")
     if not isinstance(data, dict):
-        return None
+        return ExtractionOutcome(S.MODEL_ERROR, reason="model output is not a JSON object")
 
     event_type = data.get("event_type")
+    if event_type is None:
+        return ExtractionOutcome(S.NO_COMMITMENT, reason="model found no commitment")
     if event_type not in SUPPORTED_EVENT_TYPES:
-        return None
+        return ExtractionOutcome(S.REJECTED, reason=f"unsupported event_type {event_type!r}")
 
     action = data.get("action")
     if action not in ACTIONS:
-        return None
+        return ExtractionOutcome(S.REJECTED, reason=f"unsupported action {action!r}")
 
-    # Cancellation contract (shared with the ledger): checked on the RAW
-    # values so a misplaced or malformed date is rejected, never remapped.
-    if action == CANCEL_ACTION and cancellation_field_error(
-        confirmed_date=data.get("confirmed_date"),
-        proposed_date=data.get("proposed_date"),
-        prior_confirmed_date=data.get("prior_confirmed_date"),
-    ):
-        return None
+    # Cancellation contract (shared with the ledger): raw values, never remapped.
+    if action == CANCEL_ACTION:
+        err = cancellation_field_error(
+            confirmed_date=data.get("confirmed_date"),
+            proposed_date=data.get("proposed_date"),
+            prior_confirmed_date=data.get("prior_confirmed_date"),
+        )
+        if err:
+            return ExtractionOutcome(S.REJECTED, reason=err)
+
+    # Every date must be null or a real calendar date (shared validator).
+    dates: dict[str, Optional[str]] = {}
+    for key in _DATE_KEYS:
+        value = data.get(key)
+        if value is not None and not is_valid_iso_date(value):
+            return ExtractionOutcome(S.REJECTED, reason=f"{key}={value!r} is not a valid date")
+        dates[key] = value
+    if action in DATED_ACTIONS and dates["confirmed_date"] is None:
+        return ExtractionOutcome(S.REJECTED, reason=f"action={action!r} has no confirmed_date")
 
     try:
         confidence = float(data.get("confidence", 0.0))
     except (TypeError, ValueError):
         confidence = 0.0
     if confidence < _CONFIDENCE_THRESHOLD:
-        return None
+        return ExtractionOutcome(S.REJECTED, reason=f"low confidence {confidence:.2f}")
 
     passage = data.get("supporting_passage") or ""
     if not isinstance(passage, str) or not passage.strip():
-        return None
+        return ExtractionOutcome(S.REJECTED, reason="no supporting passage")
     passage = passage.strip()
     # Hard verification against the FULL original text (not the prompt window).
     if passage not in full_text:
-        return None
+        return ExtractionOutcome(S.REJECTED, reason="supporting passage not in source text")
+
+    # The evidence must be the author's own words, not quoted correspondence.
+    authored = _authored_text(kind, full_text)
+    pos = authored.find(passage)
+    if pos < 0:
+        return ExtractionOutcome(
+            S.REJECTED, reason="supporting passage is only in quoted/forwarded text")
+
+    date_err = _date_evidence_error(
+        action, dates, passage, _context(authored, pos, pos + len(passage)))
+    if date_err:
+        return ExtractionOutcome(S.REJECTED, reason=date_err)
 
     bkey = data.get("business_key")
-    if not isinstance(bkey, str) or not bkey.strip():
-        bkey = None
+    if bkey is not None and not isinstance(bkey, str):
+        return ExtractionOutcome(S.REJECTED, reason="business_key is not a string")
+    bkey = bkey.strip() if isinstance(bkey, str) and bkey.strip() else None
+    if bkey is not None and bkey not in authored:
+        return ExtractionOutcome(
+            S.REJECTED, reason=f"business_key {bkey!r} does not appear in the author's text")
 
-    return ExtractionResult(
+    return ExtractionOutcome(S.EXTRACTED, ExtractionResult(
         event_type=event_type,
         action=action,
         actor_role=actor_role,
         business_key=bkey,
-        confirmed_date=_clean_date(data.get("confirmed_date")),
-        proposed_date=_clean_date(data.get("proposed_date")),
-        prior_confirmed_date=_clean_date(data.get("prior_confirmed_date")),
+        confirmed_date=dates["confirmed_date"],
+        proposed_date=dates["proposed_date"],
+        prior_confirmed_date=dates["prior_confirmed_date"],
         thread_id=thread_id,
         supporting_passage=passage,
         confidence=confidence,
         cache_hit=cache_hit,
-    )
+    ))
 
 
-# ── Main entry point ─────────────────────────────────────────────────────────
+# ── Main entry points ────────────────────────────────────────────────────────
 
-def extract_commitment_update(
+def extract_commitment_outcome(
     kind: str,
     payload: dict,
     source: str,
@@ -531,43 +789,22 @@ def extract_commitment_update(
     budget: Optional[Budget] = None,
     cache_conn: Optional[sqlite3.Connection] = None,
     _model_fn: Optional[Callable[[str], tuple[str, int]]] = None,
-) -> Optional[ExtractionResult]:
-    """Extract a commitment update from a business signal.
+) -> ExtractionOutcome:
+    """Extract a commitment update and say exactly why when there is none.
 
     Actor role for call.transcript:
       1. Initial role comes from direction (inbound → customer, else business).
-      2. After the model identifies the supporting_passage, the transcript is
-         re-checked for Agent:/Customer: markers:
-           - If markers present and passage attributed to a speaker: use that
-             role (overrides direction when they disagree).
-           - If markers present but passage unattributable: return None.
-           - If no markers: keep direction-based role.
+      2. After verification, Agent:/Customer: markers confirm or override it;
+         a passage that cannot be attributed is REJECTED.
 
-    Long transcript handling:
-      _signal_text extracts the full original text; _extract_relevant_window
-      provides a keyword-dense window for the prompt.  Verification is always
-      performed against the full original text.
-
-    Args:
-        kind:       Signal kind (e.g. 'email.received', 'call.transcript').
-        payload:    Signal payload dict.
-        source:     Signal source label (e.g. 'gmail_alice').
-        budget:     Shared Budget for this session; None = unlimited.
-        cache_conn: SQLite connection with an extraction_cache table (call
-                    migrate_extraction_cache first); None = no caching.
-        _model_fn:  Injected model backend for testing.
-                    Signature: (prompt: str) -> (response: str, tokens: int).
-                    Defaults to _default_model_fn (DeepSeek via DEEPSEEK_API_KEY).
-
-    Returns:
-        ExtractionResult if a commitment update was found and verified.
-        None when: not a commitment signal, confidence too low, supporting
-        passage unverifiable, budget exhausted, model error, or speaker
-        attribution uncertain on a marked transcript.
+    Only a fully verified extraction is EXTRACTED.  Model/transport errors
+    and an exhausted budget are distinct, retryable statuses; they are never
+    reported as NO_COMMITMENT.  Unusable model output is not cached.
     """
+    S = ExtractionStatus
     full_text = _signal_text(kind, payload)
     if not full_text.strip():
-        return None
+        return ExtractionOutcome(S.NO_INPUT, reason="signal has no text")
 
     role = _actor_role(kind, payload)
     thread_id: Optional[str] = None
@@ -590,7 +827,6 @@ def extract_commitment_update(
     # ── Cache lookup ─────────────────────────────────────────────────────────
     raw_response: Optional[str] = None
     tokens_used: int = 0
-    cache_hit = False
 
     if cache_conn is not None:
         row = cache_conn.execute(
@@ -600,25 +836,29 @@ def extract_commitment_update(
         if row:
             raw_response = row[0]
             tokens_used  = int(row[1])
-            cache_hit    = True
             if budget is not None:
                 budget.record_cache_hit()
 
     # ── Model call ───────────────────────────────────────────────────────────
     if raw_response is None:
         if budget is not None and not budget.within_budget():
-            return None
+            return ExtractionOutcome(S.BUDGET_EXHAUSTED, reason="extraction budget exhausted")
 
         fn = _model_fn or _default_model_fn
         try:
             raw_response, tokens_used = fn(prompt)
-        except Exception:
-            return None
+        except Exception as exc:
+            return ExtractionOutcome(S.MODEL_ERROR, reason=f"model call failed: {type(exc).__name__}")
 
         if budget is not None:
             budget.charge(tokens_used)
 
-        if cache_conn is not None and raw_response:
+        if not raw_response:
+            return ExtractionOutcome(S.MODEL_ERROR, reason="model returned an empty response")
+
+        outcome = _parse_and_verify_outcome(raw_response, kind, role, full_text, thread_id, False)
+        # Cache only usable model output, so a malformed reply is retried.
+        if cache_conn is not None and outcome.status != S.MODEL_ERROR:
             now = datetime.now(timezone.utc).isoformat()
             try:
                 cache_conn.execute(
@@ -630,14 +870,12 @@ def extract_commitment_update(
                 cache_conn.commit()
             except Exception:
                 pass
+    else:
+        outcome = _parse_and_verify_outcome(raw_response, kind, role, full_text, thread_id, True)
 
-    if not raw_response:
-        return None
-
-    # ── Parse, verify, then refine call attribution ───────────────────────────
-    result = _parse_and_verify(raw_response, role, full_text, thread_id, cache_hit)
-    if result is None:
-        return None
+    if outcome.status != S.EXTRACTED or outcome.result is None:
+        return outcome
+    result = outcome.result
 
     # For call transcripts: use speaker markers to confirm or override actor_role.
     if kind == "call.transcript":
@@ -646,10 +884,42 @@ def extract_commitment_update(
             attributed = _find_speaker_for_passage(transcript, result.supporting_passage)
             if attributed is None:
                 # Markers present but passage not attributable → unresolved.
-                # We cannot safely attribute this commitment to either party.
-                return None
+                return ExtractionOutcome(
+                    S.REJECTED, reason="passage cannot be attributed to a speaker")
             if attributed != result.actor_role:
                 # Transcript attribution overrides direction-based initial role.
                 result = replace(result, actor_role=attributed)
 
-    return result
+    return ExtractionOutcome(S.EXTRACTED, result)
+
+
+def extract_commitment_update(
+    kind: str,
+    payload: dict,
+    source: str,
+    *,
+    budget: Optional[Budget] = None,
+    cache_conn: Optional[sqlite3.Connection] = None,
+    _model_fn: Optional[Callable[[str], tuple[str, int]]] = None,
+) -> Optional[ExtractionResult]:
+    """Return the verified ExtractionResult, or None for every other outcome.
+
+    Compatibility wrapper around extract_commitment_outcome().  Callers that
+    must tell a failure from "no commitment" (the signal worker) use
+    extract_commitment_outcome() instead.
+
+    Args:
+        kind:       Signal kind (e.g. 'email.received', 'call.transcript').
+        payload:    Signal payload dict.
+        source:     Signal source label (e.g. 'gmail_alice').
+        budget:     Shared Budget for this session; None = unlimited.
+        cache_conn: SQLite connection with an extraction_cache table (call
+                    migrate_extraction_cache first); None = no caching.
+        _model_fn:  Injected model backend for testing.
+                    Signature: (prompt: str) -> (response: str, tokens: int).
+                    Defaults to _default_model_fn (DeepSeek via DEEPSEEK_API_KEY).
+    """
+    return extract_commitment_outcome(
+        kind, payload, source,
+        budget=budget, cache_conn=cache_conn, _model_fn=_model_fn,
+    ).result

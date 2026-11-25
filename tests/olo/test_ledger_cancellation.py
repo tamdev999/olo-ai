@@ -223,7 +223,7 @@ def _cancel_resp(**overrides) -> str:
         "event_type": "delivery", "action": "cancel", "business_key": "REF-1",
         "confirmed_date": None, "proposed_date": None,
         "prior_confirmed_date": "2024-03-20",
-        "supporting_passage": "cancellation of your delivery REF-1",
+        "supporting_passage": "cancellation of your delivery REF-1 previously scheduled for 2024-03-20",
         "confidence": 0.9,
     }
     data.update(overrides)

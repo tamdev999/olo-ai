@@ -822,10 +822,14 @@ def _with(case_id: str, **overrides) -> str:
 
 
 def _fp_response(case_id: str, action: str = "request_change") -> str:
-    """A verifiable extraction on a negative case (passage is real text)."""
+    """A verifiable extraction on a negative case (passage is real text).
+
+    Dateless, so it passes the extractor's date-grounding checks (the
+    negative texts state no dates) and reaches the scorer as an FP.
+    """
     c = _case(case_id)
     passage = _signal_text(c["kind"], c["payload"]).strip()[:40].strip()
-    return _r(event_type="delivery", action=action, proposed_date="2024-05-01",
+    return _r(event_type="delivery", action=action,
               supporting_passage=passage, confidence=0.9)
 
 
@@ -922,14 +926,14 @@ class TestLiveAcceptanceEvaluator:
         assert any("cache hit" in f for f in fails)
 
     def test_wrong_customer_fields_count_against_precision(self) -> None:
-        one = _run_offline(_marker_patch_fn({"s03": _with("s03", proposed_date="2024-03-23")}))
+        one = _run_offline(_marker_patch_fn({"s03": _with("s03", event_type="meeting")}))
         out = next(o for o in one.outcomes if o.case_id == "s03")
-        assert out.outcome == "WRONG" and out.mismatched == ("proposed_date",)
+        assert out.outcome == "WRONG" and out.mismatched == ("event_type",)
         assert one.precision == pytest.approx(17 / 18)
         assert _acceptance_failures(one) == []
 
         two = _run_offline(_marker_patch_fn({
-            "s03": _with("s03", proposed_date="2024-03-23"),
+            "s03": _with("s03", event_type="meeting"),
             "s04": _with("s04", event_type="delivery"),
         }))
         assert two.count("WRONG") == 2
@@ -937,9 +941,23 @@ class TestLiveAcceptanceEvaluator:
         assert any(f.startswith("strict precision") for f in _acceptance_failures(two))
 
     def test_wrong_business_date_is_rejected(self) -> None:
+        """Hardening: a date the source does not state never leaves the extractor.
+
+        Previously this reached the scorer as WRONG and was caught by the
+        authority rule; it is now rejected at extraction (date grounding), so
+        no business-actor result exists for it at all.
+        """
         rep = _run_offline(_marker_patch_fn({"s01": _with("s01", confirmed_date="2024-03-16")}))
         out = next(o for o in rep.outcomes if o.case_id == "s01")
-        assert out.outcome == "WRONG" and out.mismatched == ("confirmed_date",)
+        assert out.outcome == "FN" and out.actor_role is None
+        assert not any(f.startswith("incorrect authoritative business update")
+                       for f in _acceptance_failures(rep))
+
+    def test_wrong_business_field_in_source_is_caught_by_authority_rule(self) -> None:
+        """A business result that passes extraction but is wrong still fails."""
+        rep = _run_offline(_marker_patch_fn({"s01": _with("s01", event_type="meeting")}))
+        out = next(o for o in rep.outcomes if o.case_id == "s01")
+        assert out.outcome == "WRONG" and out.mismatched == ("event_type",)
         assert rep.precision >= LIVE_MIN_PRECISION  # caught by the authority rule
         assert any(f.startswith("incorrect authoritative business update")
                    and "s01" in f for f in _acceptance_failures(rep))
@@ -950,7 +968,7 @@ class TestLiveAcceptanceEvaluator:
                    and "s08" in f for f in _acceptance_failures(rep))
 
     def test_business_false_positive_is_rejected(self) -> None:
-        rep = _run_offline(_marker_patch_fn({"s21": _fp_response("s21", action="commit")}))
+        rep = _run_offline(_marker_patch_fn({"s21": _fp_response("s21", action="cancel")}))
         assert rep.count("FP") == 1
         assert any(f.startswith("incorrect authoritative business update")
                    and "s21" in f for f in _acceptance_failures(rep))
