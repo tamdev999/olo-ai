@@ -261,6 +261,8 @@ def build_email_content_signal(
         payload["bcc"] = bcc_addrs
     payload["attachments"] = attachments[:_MAX_ATTS]
     payload["truncated"]   = bool(doc.get("truncated"))
+    # Labels when the content was fetched (mailbox state; olo.message_state).
+    payload["label_ids"]   = list(label_ids)
     payload["content_refs"] = [
         {
             "sha256":     blob.sha256,

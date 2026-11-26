@@ -124,7 +124,7 @@ def test_installed_scheduler_runs_the_whole_pipeline(home: Path, tmp_path: Path)
         shim = (home / "scripts" / "olo_monitor_gmail_acme.py").read_text(encoding="utf-8")
         for flag in ("--enable-commitments", "--enable-projection", "--business-id", BANK,
                      "--deepseek-key-file", str(key), deepseek.base_url):
-            assert flag in shim
+            assert repr(flag) in shim                     # argv literals are repr()-quoted
         assert "sk-test-not-a-real-key" not in shim and TENANT_KEY not in shim
 
         job = _cron(home)
@@ -234,3 +234,64 @@ def test_setup_refuses_a_group_readable_key_file(home: Path, tmp_path: Path) -> 
         key.chmod(0o640)
         r = _setup_s5(home, registry, key, deepseek)
         assert r.returncode == 1 and "owner-only" in r.stderr
+
+
+REQUEST = "Could we move the ORD-501 delivery from 2026-06-10 to 2026-06-15"
+RESCUE_ROUTES = {**ROUTES, REQUEST: {
+    "event_type": "delivery", "action": "request_change", "business_key": "ORD-501",
+    "confirmed_date": None, "proposed_date": "2026-06-15", "prior_confirmed_date": "2026-06-10",
+    "supporting_passage": REQUEST, "confidence": 0.95}}
+
+
+def test_spam_rescue_reaches_sqlite_ledger_and_hindsight_through_the_shim(home: Path, tmp_path: Path) -> None:
+    """Source → persistence → processing through the generated cron shim: the
+    customer's change request lands in spam, is captured with its full
+    content once the owner marks it "Not spam", and reaches the ledger as a
+    pending (unconfirmed) customer request and Hindsight."""
+    with FakeGoogleServer(email=OWNER) as google, FakeDeepSeek(RESCUE_ROUTES) as deepseek,             FakeHindsight(TENANT_KEY) as hindsight:
+        _save_creds(google, "acme", home)
+        registry, key = _business(home, hindsight, tmp_path)
+        assert _setup_s5(home, registry, key, deepseek).returncode == 0
+        job = _cron(home)
+        _cron_run_and_wait(home, job, expect_status="completed")          # bootstrap
+        _sent(google, "m1", PASSAGE)
+        google.gmail.add_message("m2", labels=["SPAM"], subject=REQUEST + "?",
+                                 from_="Alice Customer <alice@customer.test>", to=OWNER)
+        _cron_run_and_wait(home, job, expect_status="completed")
+        conn = _db(home)
+        assert conn.execute("SELECT COUNT(*) FROM signals WHERE external_id='c:m2'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM commitment_versions").fetchone()[0] == 1
+        conn.close()
+
+        google.gmail.move_labels("m2", add=["INBOX"], remove=["SPAM"])      # "Not spam"
+        _cron_run_and_wait(home, job, expect_status="completed")
+        conn = _db(home)
+        kinds = {r[0] for r in conn.execute(
+            "SELECT kind FROM signals WHERE json_extract(payload,'$.message_id')='m2'")}
+        versions = conn.execute(
+            "SELECT version, actor_role, action, proposed_date, is_confirmed FROM commitment_versions"
+            " ORDER BY version").fetchall()
+        state = conn.execute("SELECT state FROM gmail_message_state WHERE message_id='m2'").fetchone()[0]
+        conn.close()
+        assert {"email.received", "email.content", "email.labels_removed"} <= kinds
+        assert [tuple(v) for v in versions] == [
+            (1, "business", "commit", None, 1),
+            (2, "customer", "request_change", "2026-06-15", 0)]
+        assert state == "active"
+        assert "sig:c:m2" in hindsight.docs and hindsight.errors == []
+
+
+def test_subprocesses_import_this_repository(tmp_path: Path) -> None:
+    """The cron/CLI subprocess environment resolves `olo` and `hermes_cli` to
+    the code under test (the WSL test venv's editable install points at a
+    stale copy elsewhere)."""
+    import subprocess
+    repo = _repo_root().resolve()
+    env = {**os.environ, "HERMES_HOME": str(tmp_path)}
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(repo), os.environ.get("PYTHONPATH", "")) if p)
+    out = subprocess.run([sys.executable, "-c",
+                          "import olo.runner, hermes_cli; print(olo.runner.__file__); "
+                          "print(hermes_cli.__file__)"],
+                         capture_output=True, text=True, env=env, cwd=str(tmp_path), check=True)
+    for line in out.stdout.splitlines():
+        assert Path(line).resolve().is_relative_to(repo), line

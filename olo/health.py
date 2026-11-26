@@ -195,6 +195,8 @@ def backlog(conn: sqlite3.Connection, *, max_attempts: int = 5) -> dict[str, Any
                   " (SELECT 1 FROM hindsight_projection p WHERE p.status='confirmed'"
                   "  AND p.signal_id = 'ledger:' || v.commitment_id || ':v' || v.version)"),
         "operator": _operator_items(conn, max_attempts),
+        "mailbox_states": {r[0]: int(r[1]) for r in _rows(
+            conn, "SELECT state, COUNT(*) FROM gmail_message_state GROUP BY state")},
     }
 
 

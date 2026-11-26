@@ -14,6 +14,7 @@ No side effects at import time.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
 from collections.abc import Callable
@@ -138,8 +139,19 @@ def _recover_pending(
     """
     from olo.signals import format_utc
 
+    from olo.message_state import apply_signals as _apply_mailbox_state
+
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # The signals a crash left untracked also never had their mailbox
+        # state recorded: apply it in the same transaction (idempotent).
+        untracked = conn.execute(
+            "SELECT s.kind, s.payload FROM signals s LEFT JOIN signal_resolution sr"
+            " ON sr.signal_id = s.external_id AND sr.source = s.source"
+            " WHERE s.source = ? AND sr.signal_id IS NULL ORDER BY s.id", (source,)).fetchall()
+        _apply_mailbox_state(conn, source, [
+            _StoredSignal(external_id="", kind=k, payload=json.loads(pl) if isinstance(pl, str) else pl)
+            for k, pl in untracked], format_utc(clock()))
         backfilled = backfill_signal_resolution(conn, source, format_utc(clock()))
         conn.execute("COMMIT")
     except Exception:
@@ -601,6 +613,8 @@ def run_source(
                     now_str = format_utc(clock())
                     conn.execute("BEGIN IMMEDIATE")
                     ensure_signal_resolution(conn, batch.signals, source, now_str)
+                    from olo.message_state import apply_signals as _apply_mailbox_state
+                    _apply_mailbox_state(conn, source, batch.signals, now_str)
                     conn.execute("COMMIT")
                 except Exception:
                     try:

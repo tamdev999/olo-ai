@@ -15,6 +15,8 @@ Outcomes (``commitment_outcome``) and their ``commitment_status``:
   no_input            skipped     the signal carries no text
   superseded          skipped     metadata copy of a Gmail message whose full
                                   content (email.content) is authoritative
+  content_unavailable skipped     metadata copy of a message deleted before
+                                  its full content was fetched
   (awaiting_content)  pending     metadata copy while full content is enabled
                                   but the content copy has not arrived yet
   rejected            unresolved  evidence failed verification (never written)
@@ -59,6 +61,7 @@ OUTCOME_NO_COMMITMENT     = "no_commitment"
 OUTCOME_NO_INPUT          = "no_input"
 OUTCOME_SUPERSEDED        = "superseded"
 OUTCOME_AWAITING_CONTENT  = "awaiting_content"   # counted only; row stays pending
+OUTCOME_CONTENT_UNAVAILABLE = "content_unavailable"  # deleted before content arrived
 OUTCOME_REJECTED          = "rejected"
 OUTCOME_LEDGER_UNRESOLVED = "ledger_unresolved"
 OUTCOME_LEDGER_INVALID    = "ledger_invalid"
@@ -207,6 +210,17 @@ def run_commitment_stage(
             # message.  Its metadata copy is superseded once the content copy
             # exists; until then it waits (never extracted twice, never lost).
             if not _has_content_copy(conn, payload.get("message_id")):
+                from olo.message_state import DELETED, state_of
+                if state_of(conn, source, payload.get("message_id") or "") == DELETED:
+                    # Deleted before its full content was fetched: it can no
+                    # longer arrive, so stop waiting (the metadata stays).
+                    conn.execute("BEGIN IMMEDIATE")
+                    _record(conn, source, sid, "skipped", OUTCOME_CONTENT_UNAVAILABLE,
+                            "message deleted from the mailbox before its full content "
+                            "was fetched", now)
+                    conn.execute("COMMIT")
+                    counts[OUTCOME_CONTENT_UNAVAILABLE] = counts.get(OUTCOME_CONTENT_UNAVAILABLE, 0) + 1
+                    continue
                 counts[OUTCOME_AWAITING_CONTENT] = counts.get(OUTCOME_AWAITING_CONTENT, 0) + 1
                 continue
             conn.execute("BEGIN IMMEDIATE")

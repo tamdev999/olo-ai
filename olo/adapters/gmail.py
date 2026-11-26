@@ -35,6 +35,10 @@ _SYSTEM_LABELS = frozenset({
     "SENT", "TRASH", "SPAM", "DRAFT", "CHAT",
 })
 _SKIP_LABELS = frozenset({"DRAFT", "SPAM", "TRASH", "CHAT"})
+# Label moves that can bring a never-captured message into scope: out of
+# SPAM / TRASH / DRAFT, or into INBOX / SENT (post-audit batch 2).
+_RESCUE_FROM = frozenset({"SPAM", "TRASH", "DRAFT"})
+_RESCUE_TO = frozenset({"INBOX", "SENT"})
 # P1: change entries (messagesDeleted, labelsAdded, labelsRemoved) skip only
 # DRAFT and CHAT per spec §5.2.  Trashing or spamming a message still produces
 # a signal; permanently deleting a trashed message still produces email.deleted.
@@ -624,29 +628,7 @@ class GmailAdapter(MonitorAdapter):
             msg_id = msg_stub.get("id", "")
             if not msg_id or msg_id in seen_ids:
                 continue
-            msg = client.get_message_or_none(msg_id, _METADATA_HEADERS)
-            if msg is None:
-                continue
-            label_ids: list[str] = msg.get("labelIds", [])
-            if any(lbl in _SKIP_LABELS for lbl in label_ids):
-                continue
-            sig = self._message_to_signal(msg, record_id)
-            if sig is not None:
-                signals.append(sig)
-                seen_ids.add(msg_id)
-                # B3: emit email.content when gmail.readonly scope is available.
-                # Only skip on None return (404 — message deleted since history
-                # entry was created).  Any SourceError (network failure, 403,
-                # 429) propagates to fail the batch so the checkpoint does not
-                # advance without the content blob — no silent data loss.
-                if full_content:
-                    raw_full = client.get_message_full(msg_id)
-                    if raw_full:  # None means 404 (deleted) — skip gracefully
-                        from olo.adapters.gmail_full import build_email_content_signal
-                        content_sig = build_email_content_signal(
-                            self.source, raw_full, record_id
-                        )
-                        signals.append(content_sig)
+            signals.extend(self._message_signals(client, msg_id, record_id, seen_ids, full_content))
 
         for entry in record.get("messagesDeleted", []):
             msg_stub = entry.get("message", {})
@@ -684,11 +666,25 @@ class GmailAdapter(MonitorAdapter):
                 msg_label_ids = msg_stub.get("labelIds", [])
                 if any(lbl in _CHANGE_SKIP_LABELS for lbl in msg_label_ids):
                     continue
+                if not msg_id:
+                    continue
+                # Rescue: a message that arrived in SPAM / TRASH / as a DRAFT
+                # was never captured; when it is moved out (or into INBOX /
+                # SENT) and is no longer in a skipped label, capture it now.
+                # Ingest de-duplicates by id, so a message captured before is
+                # harmless; DRAFT and CHAT stay excluded (_SKIP_LABELS).
+                moved = set(entry.get("labelIds", []))
+                rescued = (moved & _RESCUE_FROM if event_type == "labelsRemoved"
+                           else moved & _RESCUE_TO)
+                if (rescued and msg_id not in seen_ids
+                        and not any(lbl in _SKIP_LABELS for lbl in msg_label_ids)):
+                    signals.extend(self._message_signals(
+                        client, msg_id, record_id, seen_ids, full_content))
                 changed_labels = [
                     lbl for lbl in entry.get("labelIds", [])
                     if lbl in _CHANGE_SIGNAL_LABELS
                 ]
-                if not changed_labels or not msg_id:
+                if not changed_labels:
                     continue
                 current_labels = [
                     lbl for lbl in msg_stub.get("labelIds", [])
@@ -712,6 +708,31 @@ class GmailAdapter(MonitorAdapter):
                 ))
 
         return signals
+
+    def _message_signals(self, client: "GoogleClient", msg_id: str, record_id: str,
+                         seen_ids: set[str], full_content: bool) -> list[NormalizedSignal]:
+        """The metadata signal and, with gmail.readonly, the full-content
+        signal of one message — or nothing when it is gone (404) or sits in a
+        skipped label.
+
+        Only a 404 (deleted since the history entry) is skipped; any other
+        SourceError (network, 403, 429) propagates and fails the batch, so the
+        checkpoint never advances without the content blob.
+        """
+        msg = client.get_message_or_none(msg_id, _METADATA_HEADERS)
+        if msg is None or any(lbl in _SKIP_LABELS for lbl in msg.get("labelIds", [])):
+            return []
+        sig = self._message_to_signal(msg, record_id)
+        if sig is None:
+            return []
+        seen_ids.add(msg_id)
+        out = [sig]
+        if full_content:
+            raw_full = client.get_message_full(msg_id)
+            if raw_full:
+                from olo.adapters.gmail_full import build_email_content_signal
+                out.append(build_email_content_signal(self.source, raw_full, record_id))
+        return out
 
     def _message_to_signal(self, msg: Mapping, record_id: str) -> Optional[NormalizedSignal]:
         msg_id = msg.get("id", "")

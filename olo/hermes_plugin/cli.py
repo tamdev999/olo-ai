@@ -137,6 +137,8 @@ def _print_health(conn) -> None:
           f" retrying={b['commitment_retrying']}")
     print(f"    projection_outbox={_json.dumps(b['projection_outbox'], sort_keys=True)}"
           f" in_flight={b['operations_in_flight']} ledger_unprojected={b['ledger_unprojected']}")
+    if b["mailbox_states"]:
+        print(f"    mailbox={_json.dumps(b['mailbox_states'], sort_keys=True)}")
     conditions = assess(conn, datetime.now(UTC))
     if conditions:
         print("  Attention:")

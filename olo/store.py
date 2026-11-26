@@ -323,6 +323,18 @@ _DDL_STATEMENTS = [
     seen_at        TEXT NOT NULL,
     PRIMARY KEY (bank_id, hour)
 )""",
+    # Post-audit batch 2: each Gmail message's current mailbox state
+    # (active / trash / spam / deleted) from history signals, ordered by
+    # history id.  Evidence is never deleted; see olo.message_state.
+    """CREATE TABLE IF NOT EXISTS gmail_message_state (
+    source      TEXT NOT NULL,
+    message_id  TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK (state IN ('active','trash','spam','deleted')),
+    label_ids   TEXT NOT NULL DEFAULT '[]',
+    history_id  INTEGER,
+    changed_at  TEXT NOT NULL,
+    PRIMARY KEY (source, message_id)
+)""",
     # Post-audit batch 1: last outcome of each pipeline stage per source, so
     # degradation is visible (`hermes olo status`) and survives restarts.
     """CREATE TABLE IF NOT EXISTS pipeline_health (

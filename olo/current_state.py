@@ -119,6 +119,9 @@ class LabelledMemory:
     link: str
     notes: tuple[str, ...] = ()
     authoritative: bool = False
+    #: Mailbox state of the source message when it is no longer active
+    #: ('trash' | 'spam' | 'deleted'); None when active or not an email.
+    source_state: Optional[str] = None
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -155,7 +158,9 @@ def current_truth(context: CustomerContext) -> tuple[CommitmentState, ...]:
 def customer_state(conn: sqlite3.Connection, contact_id: str) -> list[CommitmentState]:
     """The customer's commitments, from olo.db."""
     from olo.ledger import get_all_versions, get_current_state
+    from olo.message_state import message_states
 
+    mailbox = message_states(conn)
     out: list[CommitmentState] = []
     for (cid,) in conn.execute(
             "SELECT id FROM commitments WHERE contact_id=? ORDER BY created_at, id", (contact_id,)):
@@ -176,10 +181,33 @@ def customer_state(conn: sqlite3.Connection, contact_id: str) -> list[Commitment
             superseded_dates=tuple(sorted(earlier)),
             pending_action=st.get("pending_action"),
             pending_date=st.get("pending_proposed_date"),
-            history=tuple({k: v[k] for k in ("version", "actor_role", "action", "confirmed_date",
-                                              "proposed_date", "is_confirmed", "occurred_at")}
+            history=tuple({**{k: v[k] for k in ("version", "actor_role", "action",
+                                                 "confirmed_date", "proposed_date",
+                                                 "is_confirmed", "occurred_at", "source_doc_id")},
+                           # A version stays in force when its source email is
+                           # deleted; the state is shown, nothing is cancelled.
+                           "evidence_state": _evidence_state(v["source_doc_id"], mailbox)}
                           for v in versions)))
     return out
+
+
+def _evidence_state(source_doc_id: Optional[str], mailbox: dict[str, str]) -> str:
+    doc = source_doc_id or ""
+    if doc.startswith("gmail:"):
+        return mailbox.get(doc[len("gmail:"):], "active")
+    return "active"
+
+
+def signal_messages(conn: sqlite3.Connection) -> dict[str, str]:
+    """``sig:<signal>`` document id -> Gmail message id of that signal."""
+    try:
+        rows = conn.execute(
+            "SELECT external_id, json_extract(payload, '$.message_id') FROM signals"
+            " WHERE kind LIKE 'email.%' AND json_extract(payload, '$.message_id') IS NOT NULL"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {f"sig:{r[0]}": r[1] for r in rows}
 
 
 def dates_mentioned(text: str, years: set[int]) -> set[str]:
@@ -273,18 +301,53 @@ def _date_label(text: str, s: CommitmentState, years: set[int]) -> tuple[str, li
     return CONSISTENT, notes
 
 
+def _source_state(r: dict, source_docs: dict, messages: dict, mailbox: dict) -> Optional[str]:
+    """Worst mailbox state among the result's own document and its sources."""
+    docs = [r.get("document_id")] + [source_docs.get(f) for f in r.get("source_fact_ids") or []]
+    states = {mailbox.get(messages.get(d or ""), "active") for d in docs if d}
+    for worst in ("deleted", "trash", "spam"):
+        if worst in states:
+            return worst
+    return None
+
+
 def label_memories(results: list[dict], states: list[CommitmentState], ent_tag: str, *,
                    links: Optional[dict] = None, source_docs: Optional[dict] = None,
+                   messages: Optional[dict] = None, mailbox: Optional[dict] = None,
                    ) -> tuple[list[LabelledMemory], list[dict]]:
     """(labelled, excluded): every result labelled against the commitment
-    its provenance links it to.  Another customer's memory is excluded."""
+    its provenance links it to.  Another customer's memory is excluded.
+
+    *messages* (document -> Gmail message id) and *mailbox* (message id ->
+    non-active state) mark memories whose source email was deleted, trashed
+    or marked as spam; the label itself is unchanged (evidence is history,
+    not a retraction)."""
     links, source_docs = links or {}, source_docs or {}
+    messages, mailbox = messages or {}, mailbox or {}
+    labelled = _label(results, states, ent_tag, links, source_docs)
+    out: list[LabelledMemory] = []
+    for m, r in zip(labelled[0], [r for r in results if not _other_customer(r, ent_tag)]):
+        state = _source_state(r, source_docs, messages, mailbox)
+        if state:
+            m = LabelledMemory(m.text, m.type, m.document_id, m.label, m.commitment_id, m.link,
+                               m.notes + (f"source email is {state} in the mailbox; kept as "
+                                          "history, not a retraction",), False, state)
+        out.append(m)
+    return out, labelled[1]
+
+
+def _other_customer(r: dict, ent_tag: str) -> bool:
+    ents = {t for t in r.get("tags") or [] if t.startswith("ent:")}
+    return bool(ents) and ents != {ent_tag}
+
+
+def _label(results: list[dict], states: list[CommitmentState], ent_tag: str,
+           links: dict, source_docs: dict) -> tuple[list[LabelledMemory], list[dict]]:
     by_id = {s.commitment_id: s for s in states}
     labelled: list[LabelledMemory] = []
     excluded: list[dict] = []
     for r in results:
-        ents = {t for t in r.get("tags") or [] if t.startswith("ent:")}
-        if ents and ents != {ent_tag}:
+        if _other_customer(r, ent_tag):
             excluded.append({**r, "excluded": "another customer's memory"})
             continue
         text = r.get("text") or ""
@@ -351,8 +414,10 @@ def customer_context(conn: sqlite3.Connection, client: Any, bank_id: str, contac
                 "document_id": x.get("document_id"), "tags": x.get("tags") or [],
                 "source_fact_ids": x.get("source_fact_ids") or []}
                for x in (reply.get("results") or [])]
+    from olo.message_state import message_states
     labelled, excluded = label_memories(results, states, ent_tag, links=signal_links(conn),
-                                        source_docs=source_docs)
+                                        source_docs=source_docs, messages=signal_messages(conn),
+                                        mailbox=message_states(conn))
     return CustomerContext(contact_id, tuple(states), tuple(labelled), tuple(excluded))
 
 

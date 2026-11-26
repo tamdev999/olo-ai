@@ -387,8 +387,9 @@ If event_type is null, all other fields must also be null and confidence must be
 #: Version of the extraction contract (prompt construction + verification).
 #: Part of every cache key: bump it whenever either changes so no cached
 #: answer is reinterpreted under different rules.
-#:   1 — S4 extractor;  2 — S1–S4 hardening + S5 part 1 (prepared signals).
-EXTRACTION_VERSION: str = "2"
+#:   1 — S4 extractor;  2 — S1–S4 hardening + S5 part 1 (prepared signals);
+#:   3 — post-audit batch 2 (MIME/charset/HTML rendering, quote detection).
+EXTRACTION_VERSION: str = "3"
 
 #: Output tokens assumed for a model function that does not declare its cap.
 DEFAULT_MAX_OUTPUT_TOKENS: int = 400

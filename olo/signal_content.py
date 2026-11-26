@@ -23,14 +23,23 @@ Exact evidence — ``full_text`` is a deterministic rendering of the stored
                  content and ``content_sha256`` names the verified blob it came
                  from; the blob itself is never modified.
 Authored text  — ``authored_text`` drops ``>``-quoted lines and everything from
-                 the first reply/forward header; only it may support an
-                 authoritative statement.
+                 the start of quoted history (attribution lines, forward
+                 markers, Outlook header blocks; never a lone "From:" line);
+                 only it may support an authoritative statement.  The
+                 commitment extractor and the Hindsight projection both use
+                 ``PreparedSignal.authored_text`` (``authored_sha256``).
+MIME           — the readable body of a Gmail document: text/plain from
+                 multipart/alternative (HTML otherwise), each part decoded with
+                 its declared charset; attachments and attached messages are
+                 not body text; HTML loses head/style/script/comments and its
+                 quote containers become quoted lines.
 
 No side effects at import time; no network; blob reads are injected.
 """
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import html
 import json
@@ -133,91 +142,201 @@ def load_content(payload: dict, blob_reader: Optional[BlobReader]) -> ContentLoa
         return ContentLoad("unreadable", sha, media, raw)
 
 
-def _b64url_text(data: str) -> str:
+def _part_header(part: dict, name: str) -> str:
+    for h in part.get("headers") or []:
+        if isinstance(h, dict) and (h.get("name") or "").lower() == name:
+            return h.get("value") or ""
+    return ""
+
+
+_CHARSET_RE = re.compile(r"""charset\s*=\s*["']?([A-Za-z0-9_.:+-]+)""", re.IGNORECASE)
+
+
+def _part_charset(part: dict) -> str:
+    m = _CHARSET_RE.search(_part_header(part, "content-type"))
+    if not m:
+        return "utf-8"
+    try:
+        return codecs.lookup(m.group(1)).name
+    except LookupError:
+        return "utf-8"
+
+
+def _part_text(part: dict) -> str:
+    """A text part's body decoded with its declared charset.
+
+    The Gmail API has already undone the transfer encoding (base64,
+    quoted-printable): ``body.data`` is the part's raw bytes, base64url.
+    """
+    data = (part.get("body") or {}).get("data") or ""
     raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
-    return raw.decode("utf-8", errors="replace")
+    return raw.decode(_part_charset(part), errors="replace")
 
 
-def _walk_parts(part: dict) -> list[dict]:
-    out = [part]
-    for sub in part.get("parts") or []:
-        if isinstance(sub, dict):
-            out.extend(_walk_parts(sub))
-    return out
+def _is_attachment(part: dict) -> bool:
+    return bool(part.get("filename")) or _part_header(
+        part, "content-disposition").lower().startswith("attachment")
 
 
+def _mime_body(part: dict) -> str:
+    """The message text a person reads, from a MIME part tree.
+
+    * multipart/alternative: the text/plain alternative, else the HTML one;
+    * other multipart types: their readable children in order;
+    * attachments (a filename or ``Content-Disposition: attachment``) and
+      attached messages (``message/rfc822``) are not the message text.
+    """
+    mime = (part.get("mimeType") or "").lower()
+    if _is_attachment(part) or mime == "message/rfc822":
+        return ""
+    if mime.startswith("multipart/"):
+        children = [c for c in part.get("parts") or [] if isinstance(c, dict)]
+        if mime == "multipart/alternative":
+            for wanted in ("text/plain", "text/html"):
+                for c in children:
+                    if (c.get("mimeType") or "").lower() == wanted and not _is_attachment(c):
+                        text = _mime_body(c)
+                        if text.strip():
+                            return text
+            for c in children:                       # nested multipart alternative
+                text = _mime_body(c)
+                if text.strip():
+                    return text
+            return ""
+        return "\n".join(t for t in (_mime_body(c) for c in children) if t.strip())
+    if not (part.get("body") or {}).get("data"):
+        return ""
+    if mime == "text/plain":
+        return _part_text(part)
+    if mime == "text/html":
+        return _html_to_text(_part_text(part))
+    return ""
+
+
+_DROP_HTML_RE = re.compile(
+    r"<!--.*?-->|<(head|style|script|title)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+#: Where mail clients start the quoted original in HTML: Gmail, Outlook,
+#: Apple Mail / Thunderbird citations.
+_HTML_QUOTE_START_RE = re.compile(
+    r"<div\b[^>]*\bclass=[\"'][^\"']*\bgmail_quote\b"
+    r"|<div\b[^>]*\bid=[\"'](?:divRplyFwdMsg|appendonsend|mail-editor-reference-message-container)[\"']"
+    r"|<div\b[^>]*\bclass=[\"'][^\"']*\bmoz-cite-prefix\b"
+    r"|<blockquote\b[^>]*\btype=[\"']cite[\"']",
+    re.IGNORECASE)
 _BLOCKQUOTE_RE = re.compile(r"<blockquote\b[^>]*>(.*?)</blockquote>", re.IGNORECASE | re.DOTALL)
-_BREAK_TAG_RE = re.compile(r"<\s*(br|/p|/div|/li|/tr)\b[^>]*>", re.IGNORECASE)
+_BREAK_TAG_RE = re.compile(r"<\s*(br|/p|/div|/li|/tr|/h[1-6]|hr)\b[^>]*>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _html_to_text(markup: str) -> str:
-    """Plain text from HTML; blockquoted content becomes ``>``-quoted lines."""
+    """Plain text from HTML.
+
+    Document head, styles, scripts and comments are dropped.  Quoted
+    originals become ``>``-quoted lines: everything from a mail client's
+    quote container (Gmail ``gmail_quote``, Outlook ``divRplyFwdMsg``,
+    citation blocks) onward, and any ``<blockquote>``.
+    """
+    markup = _DROP_HTML_RE.sub("", markup)
+    m = _HTML_QUOTE_START_RE.search(markup)
+    authored, quoted = (markup[:m.start()], markup[m.start():]) if m else (markup, "")
+
     def quote(m: re.Match[str]) -> str:
         inner = _html_to_text(m.group(1))
         return "\n" + "\n".join("> " + line for line in inner.splitlines()) + "\n"
 
-    text = _BLOCKQUOTE_RE.sub(quote, markup)
-    text = _BREAK_TAG_RE.sub("\n", text)
-    text = html.unescape(_TAG_RE.sub("", text))
-    return "\n".join(line.rstrip() for line in text.splitlines()).strip()
+    def flat(fragment: str) -> str:
+        text = _BLOCKQUOTE_RE.sub(quote, fragment)
+        text = _BREAK_TAG_RE.sub("\n", text)
+        text = html.unescape(_TAG_RE.sub("", text)).replace("\xa0", " ")
+        lines = [line.rstrip() for line in text.splitlines()]
+        return "\n".join(lines).strip()
+
+    out = flat(authored)
+    if quoted:
+        q = flat(_BLOCKQUOTE_RE.sub(lambda mm: mm.group(1), quoted))
+        out += "\n" + "\n".join("> " + line if line else ">" for line in q.splitlines())
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
 def _render_gmail_doc(doc: dict) -> tuple[str, str, bool]:
     """(subject, body, truncated) from a canonical Gmail message document."""
     payload = doc.get("payload") or {}
-    subject = ""
-    for h in payload.get("headers") or []:
-        if isinstance(h, dict) and (h.get("name") or "").lower() == "subject":
-            subject = (h.get("value") or "").strip()
-            break
-    parts = _walk_parts(payload)
-    plain = [p for p in parts if (p.get("mimeType") or "").lower() == "text/plain"
-             and (p.get("body") or {}).get("data")]
-    htmls = [p for p in parts if (p.get("mimeType") or "").lower() == "text/html"
-             and (p.get("body") or {}).get("data")]
-    if plain:
-        body = "\n".join(_b64url_text(p["body"]["data"]) for p in plain)
-    elif htmls:
-        body = "\n".join(_html_to_text(_b64url_text(p["body"]["data"])) for p in htmls)
-    else:
-        body = ""
-    body = body.replace("\r\n", "\n").replace("\r", "\n").strip()
+    subject = _part_header(payload, "subject").strip()
+    body = _mime_body(payload).replace("\r\n", "\n").replace("\r", "\n").strip()
     return subject, body, bool(doc.get("truncated"))
 
 
 # ── Authored text (quoted replies excluded) ───────────────────────────────────
 
-#: Lines that start a quoted/forwarded block in an email body.  Everything
-#: from the first such line onward is not authored by the sender.
-_REPLY_HEADER_RE = re.compile(
+#: A line that by itself starts a quoted or forwarded original.
+_QUOTE_START_RE = re.compile(
     r"^\s*(?:"
-    r"On\s.+\bwrote:\s*$"                         # On Mon, Bob <b@x> wrote:
+    r"(?:On|Le|Am|El|Il|Op)\s.+\b(?:wrote|a écrit|schrieb|escribió|ha scritto|schreef)\s*:\s*$"
     r"|-{2,}\s*(?:Original|Forwarded)\s+Message\s*-{2,}"
     r"|-{2,}\s*Forwarded message\s*-{2,}"
-    r"|_{5,}\s*$"                                  # Outlook separator
-    r"|From:\s.+"                                  # From: header of a quoted mail
+    r"|Begin forwarded message:\s*$"
     r")",
     re.IGNORECASE,
 )
+#: Gmail wraps a long attribution line: "On Tue, Jun 2, 2026 at 9:00 AM Alice <a@x>"
+#: on one line and "wrote:" on the next.
+_ATTRIBUTION_START_RE = re.compile(r"^\s*(?:On|Le|Am|El|Il|Op)\s.+\d", re.IGNORECASE)
+_WROTE_END_RE = re.compile(r"\b(?:wrote|a écrit|schrieb|escribió|ha scritto|schreef)\s*:\s*$",
+                           re.IGNORECASE)
+#: Outlook / RFC 822 style header block of a quoted original.
+_HDR_FROM_RE = re.compile(r"^\s*\**\s*(?:From|Von|De|Van)\s*:\**\s+\S", re.IGNORECASE)
+_HDR_DATE_RE = re.compile(r"^\s*\**\s*(?:Sent|Date|Gesendet|Envoyé|Enviado|Datum)\s*:", re.IGNORECASE)
+_HDR_TO_RE = re.compile(r"^\s*\**\s*(?:To|Subject|Cc|An|Betreff|À|Objet|Para|Asunto)\s*:", re.IGNORECASE)
+_SEPARATOR_RE = re.compile(r"^\s*(?:_{5,}|-{5,})\s*$")
+#: A From: line whose whole value is an address ("Name <a@b>", "a@b",
+#: "[mailto:a@b]") is a quoted header even without the rest of the block.
+_HDR_ADDRESS_RE = re.compile(
+    r"^\s*\**\s*(?:From|Von|De|Van)\s*:\**\s+(?:[^<>@\n]{0,80}<[^<>@\s]+@[^<>\s]+>"
+    r"|\S+@\S+|[^\n]{0,80}\[mailto:[^\]]+\])\s*$", re.IGNORECASE)
+
+
+def _quote_start(lines: list[str], i: int) -> bool:
+    """True when line *i* starts quoted history (never a lone ``From:``)."""
+    line = lines[i]
+    if _QUOTE_START_RE.match(line):
+        return True
+    if (_ATTRIBUTION_START_RE.match(line) and i + 1 < len(lines)
+            and _WROTE_END_RE.search(lines[i + 1]) and not _WROTE_END_RE.search(line)):
+        return True
+    if _HDR_FROM_RE.match(line):
+        if _HDR_ADDRESS_RE.match(line):
+            return True                      # "From: Bob <bob@x.com>": a header, not prose
+        window = lines[i + 1:i + 6]
+        return any(_HDR_DATE_RE.match(w) for w in window) and any(_HDR_TO_RE.match(w) for w in window)
+    if _SEPARATOR_RE.match(line):
+        nxt = next((w for w in lines[i + 1:i + 3] if w.strip()), "")
+        return bool(_HDR_FROM_RE.match(nxt)) and _quote_start(lines, lines.index(nxt, i + 1))
+    return False
 
 
 def authored_text(kind: str, full_text: str) -> str:
-    """The part of the signal written by its author (quoted replies removed).
+    """The part of the signal written by its author (quoted history removed).
 
-    For email kinds: drops ``>``-quoted lines and everything from the first
-    reply/forward header line onward.  Other kinds are returned unchanged.
+    For email kinds: drops ``>``-quoted lines and everything from the start
+    of a quoted or forwarded original: an attribution line ("On … wrote:",
+    also when Gmail wraps it over two lines, and common translations), an
+    "Original/Forwarded message" marker, a ``From:`` header whose value is an
+    address, or an Outlook header block (``From:`` followed by ``Sent:``/
+    ``Date:`` and ``To:``/``Subject:`` lines).  A line that merely begins
+    with "From:" in prose ("From: Monday the warehouse is closed") is the
+    author's text.  Other kinds are returned unchanged.
     """
     if kind not in EMAIL_KINDS:
         return full_text
+    lines = full_text.splitlines()
     kept: list[str] = []
-    for line in full_text.splitlines():
-        if _REPLY_HEADER_RE.match(line):
+    for i, line in enumerate(lines):
+        if _quote_start(lines, i):
             break
         if line.lstrip().startswith(">"):
             continue
         kept.append(line)
-    return "\n".join(kept)
+    return "\n".join(kept).rstrip()
 
 
 # ── Trusted actor ─────────────────────────────────────────────────────────────
@@ -264,6 +383,16 @@ class PreparedSignal:
     @property
     def ready(self) -> bool:
         return self.status == PREP_READY
+
+    @property
+    def quoted_omitted(self) -> bool:
+        """True when quoted or forwarded history was removed from full_text."""
+        return self.authored_text.strip() != self.full_text.strip()
+
+    @property
+    def authored_sha256(self) -> str:
+        """Checksum of the authored text both extraction and projection use."""
+        return hashlib.sha256(self.authored_text.encode("utf-8")).hexdigest()
 
 
 def _compose_email(subject: str, body: str) -> str:

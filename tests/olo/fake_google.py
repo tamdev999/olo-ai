@@ -39,6 +39,10 @@ class FakeMessage:
     from_: str = "sender@example.com"
     to: str = "recipient@example.com"
     message_id_header: str = ""
+    # A Gmail API ``payload`` (MIME tree with headers and base64url bodies) to
+    # serve for format=full; its headers also serve format=metadata.  None
+    # keeps the simple single-part text/plain body.
+    payload: Optional[dict] = None
 
 
 @dataclass
@@ -59,8 +63,12 @@ class FakeGmailState:
         from_: str = "sender@example.com",
         to: str = "recipient@example.com",
         internal_date_ms: Optional[str] = None,
+        payload: Optional[dict] = None,
     ) -> FakeMessage:
-        """Add a new message and a messagesAdded history record."""
+        """Add a new message and a messagesAdded history record.
+
+        *payload*: a Gmail API-shaped MIME payload (tests/olo/gmail_fixtures).
+        """
         labels = labels or ["INBOX", "UNREAD"]
         ts_ms = internal_date_ms or str(int(datetime.now(UTC).timestamp() * 1000))
         msg = FakeMessage(
@@ -73,6 +81,7 @@ class FakeGmailState:
             from_=from_,
             to=to,
             message_id_header=f"<{msg_id}@example.com>",
+            payload=payload,
         )
         self.messages[msg_id] = msg
         self._bump_history({"messagesAdded": [{"message": {
@@ -116,6 +125,20 @@ class FakeGmailState:
             "id": msg_id, "threadId": msg_id,
             "labelIds": msg_labels,
         }, "labelIds": labels}]})
+
+    def move_labels(self, msg_id: str, add: list[str], remove: list[str]) -> None:
+        """One history record with labelsRemoved and labelsAdded, as Gmail
+        writes for a move (e.g. 'Not spam': remove SPAM, add INBOX)."""
+        msg = self.messages[msg_id]
+        msg.label_ids = [lbl for lbl in msg.label_ids if lbl not in remove]
+        msg.label_ids += [lbl for lbl in add if lbl not in msg.label_ids]
+        stub = {"id": msg_id, "threadId": msg.thread_id, "labelIds": list(msg.label_ids)}
+        record: dict = {}
+        if remove:
+            record["labelsRemoved"] = [{"message": dict(stub), "labelIds": list(remove)}]
+        if add:
+            record["labelsAdded"] = [{"message": dict(stub), "labelIds": list(add)}]
+        self._bump_history(record)
 
     def _bump_history(self, record_data: dict) -> None:
         h_id = str(int(self.current_history_id) + 1)
@@ -628,7 +651,13 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             "internalDate": msg.internal_date,
             "sizeEstimate": msg.size_estimate,
         }
-        if fmt == "full":
+        if msg.payload is not None:
+            headers = msg.payload.get("headers") or headers
+        if fmt == "full" and msg.payload is not None:
+            base["payload"] = msg.payload
+            base["historyId"] = self.__class__.gmail.current_history_id
+            base["snippet"] = ""
+        elif fmt == "full":
             # B3: return a full MIME payload with inline text/plain body
             import base64 as _base64
             body_text = f"Test body for message {msg.id}. Subject: {msg.subject}"

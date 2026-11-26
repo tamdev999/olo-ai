@@ -96,7 +96,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
-from olo.signal_content import EMAIL_KINDS, PROSE_KINDS, authored_text, load_content
+from olo.signal_content import (
+    EMAIL_KINDS,
+    PREP_CONTENT_ERROR,
+    PREP_MISSING_CONTENT,
+    PROSE_KINDS,
+    load_content,
+    prepare_signal,
+)
 from olo.signals import format_utc
 
 __all__ = [
@@ -220,14 +227,19 @@ def _signal_documents(
             # Retained prose is the author's own text only: quoted replies and
             # forwarded history are other people's earlier statements, which
             # Hindsight's extraction would otherwise record as facts of this
-            # message.  The full original stays immutable in olo.db
-            # (content_sha256 names its blob); the commitment extractor reads
-            # the same authored text.
-            own = authored_text(row["kind"], content).rstrip()
+            # message.  It is the commitment extractor's own prepared text
+            # (prepare_signal → authored_text, checksum authored_sha256); the
+            # full original stays immutable in olo.db (content_sha256).
+            prepared = prepare_signal(
+                row["kind"], payload, subject=row["subject"], occurred_at=row["occurred_at"],
+                blob_reader=lambda sha: get_blob_raw(source, sha, conn))
+            if prepared.status in (PREP_MISSING_CONTENT, PREP_CONTENT_ERROR):
+                continue
+            content = prepared.authored_text
             extra["text_scope"] = "authored"
-            if own != content.rstrip():
+            extra["authored_sha256"] = prepared.authored_sha256
+            if prepared.quoted_omitted:
                 extra["quoted_history"] = "omitted"
-            content = own
         if not content.strip():
             continue
         contact = row["contact_id"] if row["identity_status"] == "resolved" else ""
