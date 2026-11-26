@@ -156,7 +156,7 @@ class Hindsight:
         if bank_id not in self.banks:
             raise HindsightAPIError("bank not found", status_code=404)
         overrides = self.banks[bank_id]
-        resolved = {"retain_extraction_mode": "concise",
+        resolved = {"retain_extraction_mode": "concise", "enable_auto_consolidation": True,
                     "retain_strategies": self.global_strategies, **overrides}
         return {"bank_id": bank_id, "config": resolved, "overrides": dict(overrides)}
 
@@ -176,8 +176,13 @@ class Hindsight:
         return (strategies.get("structured-no-llm") or {}).get("enable_observations") is False
 
     def retain(self, items, *, operation_id, async_, bank_id):
+        from olo.m3.hindsight.client import HindsightAPIError
         if self.raise_on_retain:
             raise ConnectionError("hindsight down")
+        if len({i.get("strategy") for i in items}) > 1:     # as Hindsight 1.2.1
+            raise HindsightAPIError(
+                "operation_id requires all retain items to resolve to a single strategy",
+                status_code=400)
         if not self._prepared(bank_id):
             self.unprepared_retains.append(bank_id)
         self.retained.setdefault(bank_id, []).extend(items)

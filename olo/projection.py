@@ -32,20 +32,30 @@ the ``usage_guard`` budget (server-reported LLM spend since a persisted
 window baseline) are reached; the guard's stop cancels this bank's in-flight
 operations.  These are client-side controls, not a server-enforced monetary
 cap: work already accepted by Hindsight runs until it completes or is
-cancelled.  Without readable usage statistics nothing is submitted.
+cancelled.  Without readable usage statistics nothing is submitted.  Each
+submission holds one retain strategy: Hindsight 1.2.1 rejects an
+operation_id whose items resolve to several strategies (HTTP 400).
 
 Bank preparation (S5 preflight): before anything is retained the bank is
-created if missing and Olo's ``structured-no-llm`` retain strategy (chunks
-extraction, observations off) is merged into its ``retain_strategies``.
-Hindsight's config PATCH replaces a top-level key wholesale, so the current
-strategies are read and only Olo's entry is added or corrected; every other
-bank setting is left alone.  Repeating it is a read and no write.  A bank that
-cannot be prepared receives nothing: ledger-state documents would otherwise
-fall back to LLM extraction.
+created if missing, Olo's ``structured-no-llm`` retain strategy (chunks
+extraction, observations off) is merged into its ``retain_strategies``, and
+the bank's ``enable_auto_consolidation`` is turned off (Hindsight's
+automatic consolidations are bank-wide and on by default).  Hindsight's
+config PATCH replaces a top-level key wholesale, so the current strategies
+are read and only Olo's entry is added or corrected; every other bank setting
+is left alone.  Repeating it is a read and no write.  A bank that cannot be
+prepared receives nothing: ledger-state documents would otherwise fall back
+to LLM extraction.
 
-Consolidation: server auto-consolidation is off (setup.sh), so observations
-form only when the stage asks for them.  Prose documents carry the
-``olo:prose`` tag and consolidation is scoped to it: Hindsight 1.2.1 counts
+Consolidation: auto-consolidation is off, so observations form only when the
+stage asks for them.  Prose documents with a verified customer carry the
+``olo:prose`` tag and consolidation is scoped to it.  The request scope only
+selects candidates: each memory's own observation_scopes (per customer,
+per month and cross-month) still decide batching, related-observation lookup
+and the observations written — verified live with two customers in one bank
+(docs/olo/m3/S5_PREFLIGHT_EVIDENCE.md).  Unlinked prose is not tagged: with
+no customer scope Hindsight would pool every unverified sender of a month
+into shared observations.  Hindsight 1.2.1 counts
 and consolidates structured memories too (a retain strategy's
 ``enable_observations`` is not applied per memory — verified live), so a
 bank-wide run would send ledger-state and structured signal memories to the
@@ -202,7 +212,11 @@ def _signal_documents(
             source=source, contact_id=contact or "", contact_info=contact_info,
             entity_cache=entity_cache, production=True, extra_metadata=extra,
         )
-        if _is_prose(item):
+        # Only prose with a verified customer scope is consolidated.  Unlinked
+        # prose has no observation_scopes, so Hindsight would consolidate it in
+        # "combined" mode over its own tags ({ym:YYYY-MM}) — pooling every
+        # unverified sender of a month into shared observations.
+        if _is_prose(item) and item.get("observation_scopes"):
             item["tags"] = [*item["tags"], PROSE_SCOPE_TAG]
         items.append(item)
     return items
@@ -319,15 +333,29 @@ def _has(strategies: dict, name: str, wanted: dict) -> bool:
     return isinstance(got, dict) and all(got.get(k) == v for k, v in wanted.items())
 
 
+def _prepared(state: dict, name: str, wanted: dict) -> bool:
+    return (_has(_strategies(state), name, wanted)
+            and (state.get("config") or {}).get("enable_auto_consolidation") is False)
+
+
 def prepare_bank(client: Any, bank_id: str) -> str:
     """Make *bank_id* ready for Olo documents; returns created/updated/unchanged.
 
-    Creates the bank when the server does not know it, then ensures the
-    resolved ``retain_strategies`` contain Olo's structured strategy with the
-    required settings.  The PATCH carries the current resolved strategies
-    plus Olo's entry, because Hindsight replaces a top-level config key
-    wholesale; no other key is sent.  Raises BankNotPrepared when the server
-    refuses or the result cannot be verified.
+    Creates the bank when the server does not know it, then ensures:
+
+    * the resolved ``retain_strategies`` contain Olo's structured strategy
+      with the required settings — the PATCH carries the current resolved
+      strategies plus Olo's entry, because Hindsight replaces a top-level
+      config key wholesale;
+    * ``enable_auto_consolidation`` is off for the bank.  Every automatic
+      consolidation Hindsight 1.2.1 queues (after a retain, a document update
+      or delete) is bank-wide, and its default is on: it would hand
+      ledger-state and structured memories — which carry customer observation
+      scopes — to the consolidation LLM.  The stage's own prose-scoped
+      consolidation is the only one Olo runs.
+
+    No other key is sent.  Raises BankNotPrepared when the server refuses or
+    the result cannot be verified.
     """
     from olo.m3.feeder import _BANK_CONFIG_OVERRIDES, STRUCTURED_STRATEGY
     from olo.m3.hindsight.client import HindsightAPIError, HindsightError
@@ -343,18 +371,24 @@ def prepare_bank(client: Any, bank_id: str) -> str:
             client.ensure_bank(bank_id)
             created = True
             state = client.get_bank_config(bank_id=bank_id)
-        strategies = _strategies(state)
-        if _has(strategies, STRUCTURED_STRATEGY, wanted):
+        if _prepared(state, STRUCTURED_STRATEGY, wanted):
             return "created" if created else "unchanged"
-        strategies[STRUCTURED_STRATEGY] = {**(strategies.get(STRUCTURED_STRATEGY) or {}), **wanted}
-        state = client.patch_bank_config({"retain_strategies": strategies}, bank_id=bank_id)
+        updates: dict[str, Any] = {}
+        strategies = _strategies(state)
+        if not _has(strategies, STRUCTURED_STRATEGY, wanted):
+            strategies[STRUCTURED_STRATEGY] = {**(strategies.get(STRUCTURED_STRATEGY) or {}), **wanted}
+            updates["retain_strategies"] = strategies
+        if (state.get("config") or {}).get("enable_auto_consolidation") is not False:
+            updates["enable_auto_consolidation"] = False
+        state = client.patch_bank_config(updates, bank_id=bank_id)
     except HindsightError as exc:
         raise BankNotPrepared(
             f"bank {bank_id!r}: {type(exc).__name__} "
             f"(HTTP {getattr(exc, 'status_code', None)})") from exc
-    if not _has(_strategies(state), STRUCTURED_STRATEGY, wanted):
+    if not _prepared(state, STRUCTURED_STRATEGY, wanted):
         raise BankNotPrepared(
-            f"bank {bank_id!r}: {STRUCTURED_STRATEGY!r} strategy not in effect after update")
+            f"bank {bank_id!r}: {STRUCTURED_STRATEGY!r} strategy or disabled "
+            "auto-consolidation not in effect after update")
     return "created" if created else "updated"
 
 
@@ -519,10 +553,11 @@ def _guard_stops(conn, cfg: ProjectionConfig, baseline, now: str, counts: dict) 
 
 # ── Consolidation ─────────────────────────────────────────────────────────────
 
-#: Tag carried by every prose document the stage projects, and the only scope
-#: consolidation is asked to cover.  Ledger-state and structured signal
+#: Tag carried by every prose document with a verified customer, and the only
+#: scope consolidation is asked to cover.  Ledger-state and structured signal
 #: documents share entity tags with prose, so an entity scope would hand them
-#: to the consolidation LLM; this tag never matches them.
+#: to the consolidation LLM; this tag never matches them.  It selects
+#: candidates only: it is never part of a memory's observation_scopes.
 PROSE_SCOPE_TAG = "olo:prose"
 _CONSOLIDATION_SCOPES = [[PROSE_SCOPE_TAG]]
 
@@ -765,13 +800,19 @@ def _changed_documents(conn, cfg: ProjectionConfig, source: str,
 
 def _next_batch(queue, cfg: ProjectionConfig, used: list[int]):
     """Split *queue* into (batch, rest) within batch size and run/window caps.
-    ``used`` = [run_docs, run_prose, win_docs, win_prose]."""
+    ``used`` = [run_docs, run_prose, win_docs, win_prose].
+
+    A batch holds one retain strategy: Hindsight 1.2.1 rejects a retain with
+    an operation_id whose items resolve to more than one strategy (HTTP 400).
+    """
     lim = cfg.limits
     run_docs, run_prose, win_docs, win_prose = used
+    strategy = queue[0][0].get("strategy") if queue else None
     batch: list[tuple[dict, str]] = []
     rest: list[tuple[dict, str]] = []
     for item, fp in queue:
-        fits = (len(batch) < cfg.batch_size
+        fits = (item.get("strategy") == strategy
+                and len(batch) < cfg.batch_size
                 and run_docs + len(batch) < lim.max_docs_per_run
                 and win_docs + len(batch) < lim.max_docs_per_window)
         if fits and _is_prose(item):

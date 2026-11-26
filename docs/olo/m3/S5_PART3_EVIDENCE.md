@@ -70,3 +70,4 @@ cause has **not** been established.
 |---|---|
 | `tests/olo/test_gcal_full.py::test_tc3_added_signal_for_new_secondary_calendar` | `SourceError: google network: URLError` from the local fake Google server; failed on first attempt and passed on retry under `scripts/run_tests.sh` (flagged FLAKY); reproduced once in a sequential pytest run. |
 | `tests/olo/test_google_cron_e2e.py` (assertion at line 132: `hermes cron run` exit code) | Failed once in a single-process full pytest run; passed 3/3 when run alone and passed under `scripts/run_tests.sh`. |
+| `tests/olo/test_gmail_adapter.py::test_crash_mid_run_resumes_without_loss` | 2026-11-26, final S5 preflight: `SourceError: google network: URLError` from the local fake Google server in a full `scripts/run_tests.sh tests/olo` run (failed on attempt and file retry); the file passed 3/3 when run alone with retries disabled. Same symptom as `test_gcal_full` above; S5 does not touch the Gmail adapter. |

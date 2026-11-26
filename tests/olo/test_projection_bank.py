@@ -41,6 +41,15 @@ def clock() -> Clock:
     return Clock()
 
 
+def _offsets(submits: list[tuple[str, int]]) -> list[tuple[int, int]]:
+    """(start, size) of each submission within the bank's retained items."""
+    out, start = [], 0
+    for _, n in submits:
+        out.append((start, n))
+        start += n
+    return out
+
+
 # ── Bank preparation ──────────────────────────────────────────────────────────
 
 class TestBankPreparation:
@@ -53,6 +62,17 @@ class TestBankPreparation:
         assert p.hindsight.unprepared_retains == []
         strategies = p.hindsight.banks[p.bank]["retain_strategies"]
         assert strategies[STRUCTURED] == WANTED
+        assert p.hindsight.banks[p.bank]["enable_auto_consolidation"] is False
+
+    def test_auto_consolidation_is_turned_off_for_the_bank(self, tmp_path, clock) -> None:
+        """Hindsight's automatic consolidations are bank-wide and on by default:
+        they would hand ledger-state memories to the consolidation LLM."""
+        p = Pipeline(tmp_path)
+        p.hindsight.banks[p.bank] = {"retain_strategies": {STRUCTURED: dict(WANTED)},
+                                     "enable_auto_consolidation": True}
+        r = p.run(*_signals(1), clock=clock)
+        assert r.projection["bank_prepared"] == "updated"
+        assert p.hindsight.patches == [(p.bank, {"enable_auto_consolidation": False})]
 
     def test_repeat_preparation_writes_nothing(self, tmp_path, clock) -> None:
         p = Pipeline(tmp_path)
@@ -73,7 +93,8 @@ class TestBankPreparation:
         assert bank["retain_extraction_mode"] == "verbatim"
         assert bank["enable_observations"] is True
         assert bank["retain_strategies"] == {"legal-verbatim": other, STRUCTURED: WANTED}
-        assert [set(u) for _, u in p.hindsight.patches] == [{"retain_strategies"}]
+        assert [set(u) for _, u in p.hindsight.patches] == [
+            {"retain_strategies", "enable_auto_consolidation"}]
 
     def test_server_level_strategies_survive_the_bank_override(self, tmp_path, clock) -> None:
         p = Pipeline(tmp_path)
@@ -118,9 +139,22 @@ class TestBankPreparation:
             prepare_bank(hs, "olo-x")
         assert "olo-x" in hs.banks and hs.retained == {}
 
+    def test_each_submission_holds_one_strategy(self, tmp_path, clock) -> None:
+        """Hindsight 1.2.1 rejects a retain whose items mix strategies under one
+        operation_id (HTTP 400): prose signals and ledger-state documents go in
+        separate submissions."""
+        p = Pipeline(tmp_path)
+        r = p.run(content("m1", sent=True, body=COMMIT_BODY, day=1), clock=clock)
+        assert r.projection["failed"] == 0 and r.projection["submitted"] == 2
+        assert set(_outbox(p).values()) == {"confirmed"}
+        strategies = [{d["strategy"] for d in p.hindsight.retained[p.bank][i:i + n]}
+                      for i, n in _offsets(p.hindsight.submits)]
+        assert sorted(map(sorted, strategies)) == [["prose"], ["structured-no-llm"]]
+
     def test_existing_prepared_bank_is_left_untouched(self) -> None:
         hs = Hindsight()
-        hs.banks["olo-x"] = {"retain_strategies": {STRUCTURED: dict(WANTED)}}
+        hs.banks["olo-x"] = {"retain_strategies": {STRUCTURED: dict(WANTED)},
+                             "enable_auto_consolidation": False}
         assert prepare_bank(hs, "olo-x") == "unchanged"
         assert hs.patches == []
 
@@ -149,6 +183,36 @@ class TestConsolidation:
         ledger = [d for k, d in docs.items() if k.startswith("ledger:")]
         assert ledger and all("olo:prose" not in d["tags"] for d in ledger)
         assert p.hindsight.scopes == [[["olo:prose"]]]
+
+    def test_each_customer_keeps_its_own_observation_scopes(self, tmp_path, clock) -> None:
+        """The prose tag is a candidate filter only: each verified customer's
+        document keeps its per-customer, cross-month scopes, which Hindsight
+        uses for batching, related-observation lookup and writes."""
+        p = Pipeline(tmp_path)
+        p.run(content("m1", sent=True, day=1, to="alice@x.com", body="Alice prefers mornings."),
+              content("m2", sent=True, day=2, to="bob@y.com", body="Bob prefers evenings."),
+              clock=clock)
+        docs = p.hindsight.docs(p.bank)
+        res = p.resolution()
+        for sig in ("c:m1", "c:m2"):
+            ent = f"ent:{res[sig]['contact_id']}"
+            assert docs[f"sig:{sig}"]["observation_scopes"] == [[ent, "ym:*"], [ent]]
+            assert all("olo:prose" not in s for s in docs[f"sig:{sig}"]["observation_scopes"])
+        assert res["c:m1"]["contact_id"] != res["c:m2"]["contact_id"]
+
+    def test_unverified_prose_is_never_consolidated(self, tmp_path, clock) -> None:
+        """Unlinked prose has no customer scope; Hindsight would consolidate it
+        over its own tags ({ym:YYYY-MM}), pooling different senders."""
+        p = Pipeline(tmp_path)
+        r = p.run(content("m1", sent=True, day=1, to="alice@x.com, bob@y.com", body="Group note."),
+                  content("m2", sent=True, day=2, to="carol@z.com, dan@w.com", body="Other note."),
+                  clock=clock)
+        docs = p.hindsight.docs(p.bank)
+        for sig in ("sig:c:m1", "sig:c:m2"):
+            assert docs[sig]["strategy"] == "prose" and "observation_scopes" not in docs[sig]
+            assert "olo:prose" not in docs[sig]["tags"]
+        assert r.projection["consolidation_pending"] == 0
+        assert p.hindsight.consolidations == []
 
     def test_waits_while_retains_are_in_flight(self, tmp_path, clock) -> None:
         p = Pipeline(tmp_path)

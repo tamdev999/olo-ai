@@ -109,3 +109,90 @@ cancellation (stale, or over budget) is covered by offline tests.
 - **No proof that observations formed:** the stage can tell that work remains (prose still pending), not why. When the attempt bound is reached it stops and reports; an operator must investigate.
 - **No paid run yet:** prose fact extraction and consolidation by DeepSeek were not exercised. That is the paid S5 acceptance run, which needs separate approval.
 - **Isolation depends on the topology:** isolation is per business server and key. One Hindsight server shared by several businesses would need a per-tenant extension, which 1.2.1's built-in one is not.
+
+# Final S5 preflight check (consolidation scopes, acceptance readiness)
+
+Recorded 2026-11-26.
+
+**No paid calls.** A disposable server set up by setup.sh used an
+OpenAI-compatible provider pointed at a local fake LLM on 127.0.0.1. The fake
+logs every prompt, answers deterministically, and reports token usage. The
+signal and ledger documents were built by Olo's real projection code.
+
+## 1. Does `observation_scopes=[["olo:prose"]]` override customer scopes?
+
+**No.** Source of the pinned Hindsight 1.2.1, `engine/consolidation/consolidator.py`:
+
+- **The request scope only selects candidates.** `_fetch_unconsolidated_rows` calls `find_unconsolidated` with `tags ⊇ scope` for each scope in the request.
+- **Batching uses each memory's own stored scopes.** `_consolidation_batch_key` keys batches on the memory's resolved `observation_scopes`. Memories with different target scopes never share an LLM call.
+- **Write passes use the memory's scopes too.** Each scope from `_resolve_obs_tags_list(sub_batch[0])` gets its own pass and becomes that pass's `obs_tags_override`.
+- **Existing observations are looked up strictly.** `_find_related_observations` searches with `tags_match="all_strict"` on the pass scope.
+- **Re-queued rounds keep the request scope.** A round-limit re-queue passes the same `observation_scopes` on.
+
+**Live run** (one bank, two verified customers, Alice and Bob):
+
+| Check | Result |
+|---|---|
+| Facts in any consolidation call | always one customer only (5 Alice calls, 4 Bob calls) |
+| Observations offered to a call | only that customer's |
+| Dedup checks (merge/keep) | one customer each |
+| Observations written | tags `{ent:<customer>, ym:<month>}` or `{ent:<customer>}`; never two customers; never `olo:prose` |
+| Cross-channel | Alice's call transcript and email consolidated together (same customer scope) |
+| Cross-month | April facts were offered the same customer's March observations through the `[ent]` pass |
+| Ledger-state memory | never in any prompt; stays unconsolidated |
+| Retain-extraction and consolidation tokens | both appear in the bank's LLM trace; `UsageGuard` raised `BudgetExceededError` from consolidation spend |
+
+## 2. Unsafe case found and corrected
+
+**The problem:** unlinked prose (identity unverified, so it has no
+`observation_scopes`) carried `olo:prose` in commit 3abbde41. Hindsight
+consolidates such a memory in "combined" mode over its own tags,
+`{ym:YYYY-MM, olo:prose}`.
+
+**Live proof:** two unrelated groups (Carol/Dan and Erin/Frank) went into one
+LLM call and wrote shared observations tagged `{olo:prose, ym:2024-03}`.
+
+**Correction:** only prose with a verified customer scope is tagged. The
+corrected copies stayed unconsolidated in the same run.
+
+## 3. Ledger exclusion made independent of server settings
+
+Every automatic consolidation Hindsight queues is bank-wide:
+- after a retain;
+- after a document update or delete;
+- after a memory edit;
+- after a bank delete.
+
+Hindsight's default is `enable_auto_consolidation = true`, and ledger-state
+documents carry customer observation scopes. `prepare_bank` now also sets the
+bank-level `enable_auto_consolidation` to false, a supported per-bank field,
+verified live. Until now the exclusion relied only on setup.sh's server-wide
+value.
+
+## 4. Production defect found and corrected: mixed-strategy retains
+
+Hindsight 1.2.1 answers `400 "operation_id requires all retain items to
+resolve to a single strategy"`. The stage batched prose signals with
+structured ledger-state documents under one operation_id, so every such
+submission would have failed.
+
+**Fix:** a submission now holds one strategy. The test stand-in enforces the
+server's rule, and the regression tests fail on the previous code.
+
+## 5. Acceptance harness dry run (zero spend)
+
+`scripts/olo/m3/s5_acceptance/driver.py` ran unchanged, end to end:
+- **Hindsight:** the local fake LLM.
+- **Olo extractor:** the test suite's scripted model.
+- **No DeepSeek traffic:** no server log line names api.deepseek.com.
+
+| Check | Result |
+|---|---|
+| Preflight | no key → 401, wrong key → 401, trace on, no banks |
+| Bank preparation | `created`; auto-consolidation false; structured strategy in effect |
+| Ledger | delivery v1 commit 2026-06-10; v2 customer `request_change`, unconfirmed; v3 business `confirm_change` 2026-06-15; meeting a separate commitment |
+| Retains | 4 single-strategy operations, all completed |
+| Restart replay | 4 duplicates; versions, operations and documents unchanged |
+| Probes | same document_id replaced; cancellation → `cancelled` |
+
+The runbook for the paid run is `docs/olo/m3/S5_ACCEPTANCE_RUNBOOK.md`.
