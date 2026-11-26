@@ -312,6 +312,30 @@ _DDL_STATEMENTS = [
     baseline_input_tokens   INTEGER NOT NULL,
     baseline_output_tokens  INTEGER NOT NULL
 )""",
+    # Post-audit batch 1: every hour bucket of the bank's LLM trace Olo has
+    # seen, at its largest value.  Hindsight ages trace rows out after a day;
+    # these rows keep a rolling budget window from losing spend.
+    """CREATE TABLE IF NOT EXISTS hindsight_usage_hours (
+    bank_id        TEXT NOT NULL,
+    hour           TEXT NOT NULL,
+    input_tokens   INTEGER NOT NULL,
+    output_tokens  INTEGER NOT NULL,
+    seen_at        TEXT NOT NULL,
+    PRIMARY KEY (bank_id, hour)
+)""",
+    # Post-audit batch 1: last outcome of each pipeline stage per source, so
+    # degradation is visible (`hermes olo status`) and survives restarts.
+    """CREATE TABLE IF NOT EXISTS pipeline_health (
+    source               TEXT NOT NULL,
+    stage                TEXT NOT NULL,
+    last_attempt_at      TEXT NOT NULL,
+    last_success_at      TEXT,
+    status               TEXT NOT NULL CHECK (status IN ('ok','degraded','failed','disabled')),
+    detail               TEXT NOT NULL DEFAULT '{}',
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    needs_operator       TEXT,
+    PRIMARY KEY (source, stage)
+)""",
     """CREATE TABLE IF NOT EXISTS olo_bindings (
     name      TEXT NOT NULL PRIMARY KEY CHECK (name IN ('business_id','hindsight_bank_id')),
     value     TEXT NOT NULL,

@@ -82,14 +82,33 @@ class TestUsageGuard:
         assert set(_ops(p).values()) == {"cancelled"} and p.hindsight.cancelled
         assert set(_outbox(p).values()) == {"failed"}
 
-    def test_window_baseline_survives_restart(self, tmp_path, clock) -> None:
+    def test_spend_survives_restart_and_server_trace_retention(self, tmp_path, clock) -> None:
+        """Hindsight 1.2.1 ages trace rows out after a day: spend the server
+        no longer reports must still count for the open window (audit D11)."""
         p = Pipeline(tmp_path)
+        hour = clock.now.strftime("%Y-%m-%dT%H:00:00Z")
+        p.guard.hours = {hour: (0, 5_000_000)}                # $6 at the output price
+        r1 = p.run(*_signals(1), clock=clock)
+        assert not r1.projection["budget_exceeded"]
+        clock.advance(hours=2)
+        later = clock.now.strftime("%Y-%m-%dT%H:00:00Z")
+        p.guard.hours = {later: (0, 2_500_000)}               # first hour aged out; +$3
+        r2 = p.run(content("m9", sent=True, day=9, body="One more note."), clock=clock)  # "restart"
+        assert r2.projection["budget_exceeded"] == 1          # $6 + $3 >= $8
+        assert r2.projection["window_spend_usd"] == pytest.approx(9.0)
+        clock.advance(hours=25)                               # new window: old hours excluded
+        p.guard.hours = {}
+        r3 = p.run(clock=clock)
+        assert not r3.projection.get("budget_exceeded")
+
+    def test_spend_is_never_lowered_by_a_shrinking_bucket(self, tmp_path, clock) -> None:
+        p = Pipeline(tmp_path)
+        hour = clock.now.strftime("%Y-%m-%dT%H:00:00Z")
+        p.guard.hours = {hour: (0, 6_000_000)}                # $7.20
         p.run(*_signals(1), clock=clock)
-        p.run(clock=clock)                                    # "restart"
-        assert p.guard.snapshots == 1                         # stored baseline reused
-        clock.advance(hours=25)
-        p.run(clock=clock)
-        assert p.guard.snapshots == 2                         # new window, new baseline
+        p.guard.hours = {hour: (0, 1_000_000)}                # server now reports less
+        r = p.run(content("m9", sent=True, day=9, body="One more note."), clock=clock)
+        assert r.projection["window_spend_usd"] == pytest.approx(7.2)
 
 
 class TestDocumentCaps:

@@ -23,15 +23,17 @@ import sqlite3
 import pytest
 
 from olo.current_state import (
+    CONSISTENT,
     CURRENT_LEDGER,
     HISTORICAL,
-    MEMORY,
     SUPERSEDED_LEDGER,
+    UNCERTAIN,
     UNCONFIRMED_REQUEST,
+    current_truth,
+    customer_context,
     customer_state,
     dates_mentioned,
     label_memories,
-    recall_for_customer,
 )
 from olo.ledger import LedgerEvent, migrate, replay_events
 from olo.projection import LEDGER_CURRENT_TAG, LEDGER_SUPERSEDED_TAG, _ledger_documents
@@ -169,17 +171,16 @@ class TestCustomerRetrieval:
     def test_before_confirmation_the_proposed_date_is_always_an_unconfirmed_request(self, text) -> None:
         conn = _ledger(COMMIT, REQUEST)
         [m], _ = label_memories([_obs(text)], customer_state(conn, ALICE), f"ent:{ALICE}")
-        assert m["label"] == UNCONFIRMED_REQUEST
-        assert any("not confirmed by the business" in n for n in m["notes"])
+        assert m.label == UNCONFIRMED_REQUEST and not m.authoritative
+        assert any("not confirmed by the business" in n for n in m.notes)
 
-    def test_after_confirmation_the_live_stale_observation_is_labelled_historical(self) -> None:
+    def test_after_confirmation_the_live_stale_observation_is_historical(self) -> None:
         conn = _ledger(COMMIT, REQUEST, CONFIRM)
-        stale = ("The ORD-501 delivery is confirmed for 2026-06-10. (2026-06-03 09:00: Order "
-                 "ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15.)")
+        stale = ("Order ORD-501's delivery is confirmed for 2026-06-10. (2026-06-03 09:00: Alice "
+                 "Customer's ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15.)")
         [m], _ = label_memories([_obs(stale)], customer_state(conn, ALICE), f"ent:{ALICE}")
-        assert m["label"] == HISTORICAL
-        assert any("2026-06-10 is no longer in force" in n and "current is scheduled, 2026-06-15" in n
-                   for n in m["notes"])
+        assert m.label == HISTORICAL and m.link == "business_key"
+        assert any("no longer in force" in n and "2026-06-15" in n for n in m.notes)
 
     def test_ledger_documents_are_labelled_by_version_from_the_ledger(self) -> None:
         conn = _ledger(COMMIT, REQUEST, CONFIRM)
@@ -189,33 +190,162 @@ class TestCustomerRetrieval:
                    {"type": "world", "text": "Status as of version 3: scheduled, date 2026-06-15.",
                     "document_id": f"ledger:{cid}:v3", "tags": [f"ent:{ALICE}"]}]
         labelled, _ = label_memories(results, customer_state(conn, ALICE), f"ent:{ALICE}")
-        assert [m["label"] for m in labelled] == [SUPERSEDED_LEDGER, CURRENT_LEDGER]
+        assert [m.label for m in labelled] == [SUPERSEDED_LEDGER, CURRENT_LEDGER]
 
     def test_another_customers_memory_is_excluded(self) -> None:
         conn = _ledger(COMMIT)
         labelled, excluded = label_memories(
-            [_obs("Bob's order is due 2026-06-10.", ent=BOB), _obs("Thanks for the call.")],
+            [_obs("Bob's ORD-501 is due 2026-06-10.", ent=BOB), _obs("Thanks for the call.")],
             customer_state(conn, ALICE), f"ent:{ALICE}")
-        assert [m["text"] for m in labelled] == ["Thanks for the call."]
-        assert labelled[0]["label"] == MEMORY and len(excluded) == 1
-
-    def test_recall_for_customer_is_tag_scoped_and_leads_with_ledger_state(self) -> None:
-        conn = _ledger(COMMIT, REQUEST, CONFIRM)
-        calls = []
-
-        class Client:
-            def recall(self, query, **kw):
-                calls.append(kw)
-                return {"results": [_obs("The ORD-501 delivery is confirmed for 2026-06-10.")]}
-
-        view = recall_for_customer(conn, Client(), "olo-b", ALICE, "When is ORD-501?")
-        assert calls[0]["tags"] == [f"ent:{ALICE}"] and calls[0]["tags_match"] == "all_strict"
-        assert view["current"][0]["current_date"] == "2026-06-15"
-        assert view["memories"][0]["label"] == HISTORICAL
+        assert [m.text for m in labelled] == ["Thanks for the call."]
+        assert labelled[0].label == UNCERTAIN and len(excluded) == 1
 
     def test_month_day_dates_resolve_in_the_ledgers_years(self) -> None:
         assert dates_mentioned("on 15th of June and Jun 10, or 2026-06-05", {2026}) == {
             "2026-06-15", "2026-06-10", "2026-06-05"}
+
+
+# ── Commitment-specific provenance (audit D4) ─────────────────────────────────
+
+def _orders():
+    """The audit's counterexample: three orders of one customer.
+
+    ORD-501 moved 06-10 → 06-15 (confirmed); ORD-777 is current on 06-10;
+    ORD-888 is current on 06-20 with a pending customer request for 06-15.
+    """
+    return _ledger(
+        COMMIT, CONFIRM,
+        _ev(business_key="ORD-777", source_doc_id="gmail:b1", thread_id="t2",
+            occurred_at="2026-06-04T09:00:00+00:00", confirmed_date="2026-06-10"),
+        _ev(business_key="ORD-888", source_doc_id="gmail:c1", thread_id="t3",
+            occurred_at="2026-06-04T10:00:00+00:00", confirmed_date="2026-06-20"),
+        _ev(business_key="ORD-888", source_doc_id="gmail:c2", thread_id="t3", actor_role="customer",
+            occurred_at="2026-06-05T10:00:00+00:00", action="request_change", confirmed_date=None,
+            proposed_date="2026-06-15", prior_confirmed_date="2026-06-20"))
+
+
+def _cid(conn, key):
+    return conn.execute("SELECT id FROM commitments WHERE business_key=?", (key,)).fetchone()[0]
+
+
+class TestCommitmentProvenance:
+    def test_audit_counterexample_order_a_date_is_not_historical_because_of_order_b(self) -> None:
+        conn = _orders()
+        labelled, _ = label_memories(
+            [_obs("ORD-777 delivery is confirmed for 2026-06-10."),
+             _obs("ORD-501 delivery is confirmed for 2026-06-15."),
+             _obs("ORD-888 delivery is confirmed for 2026-06-15.")],
+            customer_state(conn, ALICE), f"ent:{ALICE}")
+        assert [(m.label, m.commitment_id) for m in labelled] == [
+            (CONSISTENT, _cid(conn, "ORD-777")),         # was 'historical' (ORD-501 once 06-10)
+            (CONSISTENT, _cid(conn, "ORD-501")),         # was 'unconfirmed_request' (ORD-888)
+            (UNCONFIRMED_REQUEST, _cid(conn, "ORD-888"))]
+
+    def test_signal_provenance_links_without_any_key_in_the_text(self) -> None:
+        conn = _orders()
+        links = {"sig:c:a1": (_cid(conn, "ORD-501"), 1), "sig:c:a2": (_cid(conn, "ORD-501"), 2),
+                 "sig:c:b1": (_cid(conn, "ORD-777"), 1), "sig:c:c2": (_cid(conn, "ORD-888"), 2)}
+        facts = [
+            {"type": "world", "text": "Delivery confirmed for 2026-06-10.", "document_id": "sig:c:a1"},
+            {"type": "world", "text": "Delivery moved from 2026-06-10 to 2026-06-15.",
+             "document_id": "sig:c:a2"},
+            {"type": "world", "text": "Delivery confirmed for 2026-06-10.", "document_id": "sig:c:b1"},
+            {"type": "world", "text": "Customer asked to move delivery to 2026-06-15.",
+             "document_id": "sig:c:c2"}]
+        labelled, _ = label_memories(facts, customer_state(conn, ALICE), f"ent:{ALICE}", links=links)
+        assert [(m.label, m.link) for m in labelled] == [
+            (HISTORICAL, "signal_provenance"),           # superseded version of ORD-501
+            (CONSISTENT, "signal_provenance"),           # the change to ORD-501's current version
+            (CONSISTENT, "signal_provenance"),           # same text, but ORD-777: current
+            (UNCONFIRMED_REQUEST, "signal_provenance")]  # ORD-888's pending request
+
+    def test_observation_sources_link_or_stay_uncertain(self) -> None:
+        conn = _orders()
+        links = {"sig:c:a2": (_cid(conn, "ORD-501"), 2), "sig:c:b1": (_cid(conn, "ORD-777"), 1)}
+        obs = [dict(_obs("The delivery is confirmed for 2026-06-10."), source_fact_ids=["f1"]),
+               dict(_obs("Deliveries on 2026-06-10 and 2026-06-15."), source_fact_ids=["f1", "f2"]),
+               dict(_obs("Something about 2026-06-10."), source_fact_ids=["f3"]),
+               _obs("A delivery is confirmed for 2026-06-10.")]
+        labelled, _ = label_memories(obs, customer_state(conn, ALICE), f"ent:{ALICE}", links=links,
+                                     source_docs={"f1": "sig:c:b1", "f2": "sig:c:a2", "f3": "sig:c:zz"})
+        assert labelled[0].label == CONSISTENT and labelled[0].commitment_id == _cid(conn, "ORD-777")
+        assert labelled[1].label == UNCERTAIN and "links to 2 commitments" in labelled[1].notes[-1]
+        assert labelled[2].label == UNCERTAIN                    # source not linked
+        assert labelled[3].label == UNCERTAIN and labelled[3].commitment_id is None   # unlinked
+        assert not any(m.authoritative for m in labelled)
+
+    def test_same_date_orders_of_two_customers_do_not_mix(self) -> None:
+        conn = _ledger(COMMIT, CONFIRM,
+                       _ev(contact_id=BOB, business_key="ORD-501", source_doc_id="gmail:z1",
+                           thread_id="tz", confirmed_date="2026-06-10"))
+        [a], _ = label_memories([_obs("ORD-501 is confirmed for 2026-06-10.")],
+                                customer_state(conn, ALICE), f"ent:{ALICE}")
+        [b], _ = label_memories([_obs("ORD-501 is confirmed for 2026-06-10.", ent=BOB)],
+                                customer_state(conn, BOB), f"ent:{BOB}")
+        assert (a.label, b.label) == (HISTORICAL, CONSISTENT)
+
+    def test_a_date_the_ledger_never_held_is_uncertain_not_consistent(self) -> None:
+        conn = _orders()
+        [m], _ = label_memories([_obs("ORD-501 delivery is confirmed for 2026-06-22.")],
+                                customer_state(conn, ALICE), f"ent:{ALICE}")
+        assert m.label == UNCERTAIN and "not held by the ledger" in m.notes[0]
+
+    def test_text_naming_another_commitment_is_uncertain(self) -> None:
+        conn = _orders()
+        links = {"sig:c:b1": (_cid(conn, "ORD-777"), 1)}
+        [m], _ = label_memories([{"type": "world", "text": "ORD-501 confirmed for 2026-06-10.",
+                                  "document_id": "sig:c:b1"}],
+                                customer_state(conn, ALICE), f"ent:{ALICE}", links=links)
+        assert m.label == UNCERTAIN and "another commitment" in m.notes[-1]
+
+
+# ── The enforced interface for Hermes tools ───────────────────────────────────
+
+class _Client:
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def recall(self, query, **kw):
+        self.calls.append(kw)
+        return self.reply
+
+
+class TestEnforcedInterface:
+    def test_customer_context_is_tag_scoped_with_sources_and_ledger_first(self) -> None:
+        conn = _orders()
+        client = _Client({"results": [_obs("ORD-501 delivery is confirmed for 2026-06-10.")]})
+        ctx = customer_context(conn, client, "olo-b", ALICE, "When is ORD-501?")
+        assert client.calls[0]["tags"] == [f"ent:{ALICE}"]
+        assert client.calls[0]["tags_match"] == "all_strict"
+        assert client.calls[0]["include_source_facts"] is True
+        truth = {s.business_key: s.current_date for s in current_truth(ctx)}
+        assert truth == {"ORD-501": "2026-06-15", "ORD-777": "2026-06-10", "ORD-888": "2026-06-20"}
+        assert ctx.memories[0].label == HISTORICAL and not ctx.memories[0].authoritative
+
+    @pytest.mark.parametrize("raw", [
+        {"results": [_obs("ORD-501 delivery is confirmed for 2026-06-10.")]},   # client.recall reply
+        [_obs("ORD-501 delivery is confirmed for 2026-06-10.")],                # its results list
+        {"current": [{"business_key": "ORD-501", "current_date": "2026-06-10"}]},  # look-alike dict
+    ])
+    def test_raw_hindsight_recall_is_never_accepted_as_current_truth(self, raw) -> None:
+        with pytest.raises(TypeError, match="never authoritative"):
+            current_truth(raw)
+
+    def test_view_dict_is_not_truth_either(self) -> None:
+        ctx = customer_context(_orders(), _Client({"results": []}), "olo-b", ALICE, "q")
+        with pytest.raises(TypeError):
+            current_truth(ctx.as_dict())
+        assert current_truth(ctx) == ctx.current
+
+    def test_observation_source_facts_from_recall_are_used(self) -> None:
+        conn = _orders()
+        reply = {"results": [dict(_obs("The delivery is confirmed for 2026-06-10."),
+                                  source_fact_ids=["f1"])],
+                 "source_facts": {"f1": {"document_id": f"ledger:{_cid(conn, 'ORD-777')}:v1"}}}
+        ctx = customer_context(conn, _Client(reply), "olo-b", ALICE, "q")
+        assert ctx.memories[0].link == "observation_sources"
+        assert ctx.memories[0].commitment_id == _cid(conn, "ORD-777")
+        assert ctx.memories[0].label == CONSISTENT
 
 
 # ── Projection: authored prose, strategies, cancellation ──────────────────────

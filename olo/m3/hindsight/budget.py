@@ -213,6 +213,35 @@ class UsageGuard:
             )
         return current
 
+    @property
+    def budget_usd(self) -> float:
+        return self._budget_usd
+
+    def hourly_usage(self) -> list[tuple[str, TokenSnapshot]]:
+        """Per-hour token totals the server still holds (``period=1d``).
+
+        Hindsight 1.2.1 keeps trace rows for one day by default and sweeps
+        them hourly, so a cumulative total shrinks as rows age out.  One hour
+        bucket only grows until it ages out; a caller that records each
+        bucket's largest value (``olo.projection``) keeps every hour it has
+        seen.  Fails closed like ``snapshot``.
+        """
+        from olo.m3.hindsight.client import HindsightAPIError, HindsightUnavailable, _request
+        self._require_tracing()
+        path = self._client._bank_path("/llm-requests/stats", self._bank_id)
+        try:
+            raw = _request(self._client._cfg, "GET", path, params={"period": "1d"})
+        except (HindsightAPIError, HindsightUnavailable) as exc:
+            raise StatsUnavailableError(f"Stats endpoint unreachable: {exc}") from exc
+        if not isinstance(raw, dict) or not isinstance(raw.get("buckets"), list):
+            raise StatsUnavailableError("Stats response has no buckets list")
+        out: list[tuple[str, TokenSnapshot]] = []
+        for i, bucket in enumerate(raw["buckets"]):
+            if not isinstance(bucket, dict) or not isinstance(bucket.get("time"), str):
+                raise StatsUnavailableError(f"bucket[{i}] has no time")
+            out.append((bucket["time"], parse_stats({"buckets": [bucket]})))
+        return out
+
     def remaining_usd(self, baseline: TokenSnapshot) -> float:
         """Return USD remaining in the budget (raises on unavailable stats)."""
         current = self._get_stats()

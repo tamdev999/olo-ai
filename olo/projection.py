@@ -37,8 +37,10 @@ Bounded work (S5 part 3): every submission is an operation in
 in-flight documents are never resubmitted; stale operations are cancelled;
 a document stops being retried after ``max_attempts_per_doc``.  Submissions
 stop when the per-run or per-window document caps (persisted in olo.db) or
-the ``usage_guard`` budget (server-reported LLM spend since a persisted
-window baseline) are reached; the guard's stop cancels this bank's in-flight
+the ``usage_guard`` budget are reached.  Spend is the server-reported LLM
+usage of each hour of the window, recorded in olo.db at its largest value
+(``hindsight_usage_hours``): Hindsight ages trace rows out after a day, so a
+cumulative total minus a stored baseline lost spend; the guard's stop cancels this bank's in-flight
 operations.  These are client-side controls, not a server-enforced monetary
 cap: work already accepted by Hindsight runs until it completes or is
 cancelled.  Without readable usage statistics nothing is submitted.  Each
@@ -469,7 +471,7 @@ def prepare_bank(client: Any, bank_id: str) -> str:
     except HindsightError as exc:
         raise BankNotPrepared(
             f"bank {bank_id!r}: {type(exc).__name__} "
-            f"(HTTP {getattr(exc, 'status_code', None)})") from exc
+            f"(HTTP {getattr(exc, 'status_code', None)}): {str(exc)[:120]}") from exc
     if not _prepared(state, wanted):
         raise BankNotPrepared(
             f"bank {bank_id!r}: Olo retain strategies {sorted(wanted)} or disabled "
@@ -479,34 +481,63 @@ def prepare_bank(client: Any, bank_id: str) -> str:
 
 # ── Budget window (persisted) ─────────────────────────────────────────────────
 
-def _window_baseline(conn, cfg: ProjectionConfig, now_dt: datetime, now: str):
-    """(window_start, baseline TokenSnapshot) for this bank's current window.
-
-    A new window takes a fresh server snapshot (fails closed when stats are
-    unavailable); an open window reuses the stored baseline, so restarting
-    the worker never resets spend accounting.
-    """
-    from olo.m3.hindsight.budget import TokenSnapshot
-
+def _window(conn, cfg: ProjectionConfig, now_dt: datetime, now: str) -> str:
+    """Start of this bank's current budget window (persisted in olo.db, so a
+    restart never opens a new window).  Opening one first proves the usage
+    statistics are readable (fails closed with StatsUnavailableError)."""
     row = conn.execute(
-        "SELECT window_start, baseline_input_tokens, baseline_output_tokens"
-        " FROM hindsight_budget_window WHERE bank_id=?", (cfg.bank_id,)).fetchone()
+        "SELECT window_start FROM hindsight_budget_window WHERE bank_id=?",
+        (cfg.bank_id,)).fetchone()
     if row is not None:
         start = datetime.fromisoformat(row[0])
         if now_dt - start < timedelta(hours=cfg.limits.window_hours):
-            return row[0], TokenSnapshot(int(row[1]), int(row[2]))
-    snap = cfg.usage_guard.snapshot()
+            return row[0]
+    _observe_usage(conn, cfg, now)
     conn.execute("BEGIN IMMEDIATE")
     conn.execute(
         "INSERT INTO hindsight_budget_window"
         " (bank_id, window_start, baseline_input_tokens, baseline_output_tokens)"
-        " VALUES (?,?,?,?) ON CONFLICT(bank_id) DO UPDATE SET"
-        "  window_start=excluded.window_start,"
-        "  baseline_input_tokens=excluded.baseline_input_tokens,"
-        "  baseline_output_tokens=excluded.baseline_output_tokens",
-        (cfg.bank_id, now, snap.input_tokens, snap.output_tokens))
+        " VALUES (?,?,0,0) ON CONFLICT(bank_id) DO UPDATE SET"
+        "  window_start=excluded.window_start, baseline_input_tokens=0,"
+        "  baseline_output_tokens=0",
+        (cfg.bank_id, now))
     conn.execute("COMMIT")
-    return now, snap
+    return now
+
+
+def _hour_key(value: str) -> str:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:00:00Z")
+
+
+def _observe_usage(conn, cfg: ProjectionConfig, now: str) -> None:
+    """Record every hour bucket the server reports, keeping each hour's
+    largest value: Hindsight drops trace rows after a day, Olo does not."""
+    hours = cfg.usage_guard.hourly_usage()
+    conn.execute("BEGIN IMMEDIATE")
+    for hour, snap in hours:
+        conn.execute(
+            "INSERT INTO hindsight_usage_hours (bank_id, hour, input_tokens, output_tokens, seen_at)"
+            " VALUES (?,?,?,?,?) ON CONFLICT(bank_id, hour) DO UPDATE SET"
+            "  input_tokens=MAX(input_tokens, excluded.input_tokens),"
+            "  output_tokens=MAX(output_tokens, excluded.output_tokens),"
+            "  seen_at=excluded.seen_at",
+            (cfg.bank_id, _hour_key(hour), snap.input_tokens, snap.output_tokens, now))
+    conn.execute("COMMIT")
+
+
+def window_spend(conn, bank_id: str, window_start: str):
+    """Tokens recorded for the hours overlapping the window (the partial
+    first hour included: an upper bound, never an under-count)."""
+    from olo.m3.hindsight.budget import TokenSnapshot
+
+    row = conn.execute(
+        "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)"
+        " FROM hindsight_usage_hours WHERE bank_id=? AND hour >= ?",
+        (bank_id, _hour_key(window_start))).fetchone()
+    return TokenSnapshot(int(row[0]), int(row[1]))
 
 
 def _window_usage(conn, bank_id: str, window_start: str) -> tuple[int, int]:
@@ -678,18 +709,25 @@ def _add(counts: dict[str, int], more: dict[str, int]) -> None:
         counts[k] = counts.get(k, 0) + v
 
 
-def _guard_stops(conn, cfg: ProjectionConfig, baseline, now: str, counts: dict) -> bool:
-    """True when the usage guard forbids more work; on overspend this bank's
-    in-flight operations (retains and consolidations) are cancelled."""
-    from olo.m3.hindsight.budget import BudgetExceededError, StatsUnavailableError
+def _guard_stops(conn, cfg: ProjectionConfig, window_start: str, now: str, counts: dict) -> bool:
+    """True when the usage budget forbids more work; on overspend this bank's
+    in-flight operations (retains and consolidations) are cancelled.
+
+    Spend is the window's recorded hour buckets (``window_spend``), refreshed
+    from the server first, so it cannot shrink when the server ages trace
+    rows out.
+    """
+    from olo.m3.hindsight.budget import StatsUnavailableError
     try:
-        cfg.usage_guard.check(baseline)
-    except BudgetExceededError:
-        counts["budget_exceeded"] = 1
-        _add(counts, _cancel_in_flight(conn, cfg, now, "usage budget exceeded"))
-        return True
+        _observe_usage(conn, cfg, now)
     except StatsUnavailableError:
         counts["stats_unavailable"] = 1
+        return True
+    spent = window_spend(conn, cfg.bank_id, window_start).cost_usd()
+    counts["window_spend_usd"] = round(spent, 6)
+    if spent >= cfg.usage_guard.budget_usd:
+        counts["budget_exceeded"] = 1
+        _add(counts, _cancel_in_flight(conn, cfg, now, "usage budget exceeded"))
         return True
     return False
 
@@ -770,7 +808,7 @@ def _record_consolidation(conn, cfg: ProjectionConfig, source: str, op: str, now
     conn.execute("COMMIT")
 
 
-def _consolidate(conn, cfg: ProjectionConfig, source: str, baseline, window_start: str,
+def _consolidate(conn, cfg: ProjectionConfig, source: str, window_start: str,
                  now: str, counts: dict) -> None:
     """Trigger one prose-scoped consolidation when the server reports prose
     memories pending consolidation.
@@ -806,7 +844,7 @@ def _consolidate(conn, cfg: ProjectionConfig, source: str, baseline, window_star
         _record_consolidation(conn, cfg, source, running, now, detail="adopted")
         counts["consolidation_in_flight"] = 1
         return
-    if _guard_stops(conn, cfg, baseline, now, counts):
+    if _guard_stops(conn, cfg, window_start, now, counts):
         return
     try:
         reply = cfg.client.trigger_consolidation(
@@ -887,26 +925,27 @@ def run_projection_stage(
     _add(counts, _poll_in_flight(conn, cfg, now_dt, now))
     try:
         counts["bank_prepared"] = prepare_bank(cfg.client, cfg.bank_id)
-    except BankNotPrepared:
+    except BankNotPrepared as exc:
         counts["bank_unprepared"] = 1        # fail closed: nothing submitted
+        counts["bank_unprepared_reason"] = str(exc)[:200]
         return counts
 
     try:
-        window_start, baseline = _window_baseline(conn, cfg, now_dt, now)
+        window_start = _window(conn, cfg, now_dt, now)
     except StatsUnavailableError:
         counts["stats_unavailable"] = 1      # fail closed: nothing submitted
         return counts
 
     todo = _changed_documents(conn, cfg, source, counts)
-    stopped = _submit(conn, cfg, source, todo, baseline, window_start, now, counts, _fault)
+    stopped = _submit(conn, cfg, source, todo, window_start, now, counts, _fault)
     _add(counts, _poll_in_flight(conn, cfg, now_dt, now))
     if stopped:
         return counts
     # Work still running server-side is cancelled if spend went over.
     in_flight = _submitted(conn, cfg.bank_id, "retain") + _submitted(conn, cfg.bank_id, "consolidation")
-    if in_flight and _guard_stops(conn, cfg, baseline, now, counts):
+    if in_flight and _guard_stops(conn, cfg, window_start, now, counts):
         return counts
-    _consolidate(conn, cfg, source, baseline, window_start, now, counts)
+    _consolidate(conn, cfg, source, window_start, now, counts)
     if counts["consolidation_submitted"]:
         settled = _poll_in_flight(conn, cfg, now_dt, now)
         _add(counts, settled)
@@ -971,7 +1010,7 @@ def _next_batch(queue, cfg: ProjectionConfig, used: list[int]):
     return batch, rest
 
 
-def _submit(conn, cfg: ProjectionConfig, source: str, todo, baseline, window_start: str,
+def _submit(conn, cfg: ProjectionConfig, source: str, todo, window_start: str,
             now: str, counts: dict, _fault) -> bool:
     """Submit *todo* in batches; True when the usage guard stopped the run."""
     win_docs, win_prose = _window_usage(conn, cfg.bank_id, window_start)
@@ -979,7 +1018,7 @@ def _submit(conn, cfg: ProjectionConfig, source: str, todo, baseline, window_sta
     queue = list(todo)
     stopped = False
     while queue:
-        if _guard_stops(conn, cfg, baseline, now, counts):
+        if _guard_stops(conn, cfg, window_start, now, counts):
             stopped = True
             break
         batch, rest = _next_batch(queue, cfg, used)

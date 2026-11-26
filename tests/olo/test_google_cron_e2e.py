@@ -36,7 +36,13 @@ def _hermes_exe() -> str:
 
 
 def _run(args: list[str], home: Path, **kwargs) -> subprocess.CompletedProcess:
-    env = {**os.environ, "HERMES_HOME": str(home)}
+    # The `hermes` executable's editable install may point at another checkout
+    # (it did in the WSL test venv: a stale pre-S5 copy).  Putting this repo
+    # first on PYTHONPATH makes the CLI, the plugin and every cron-run shim
+    # import the code under test, not whatever the installer recorded.
+    repo = str(_repo_root())
+    pythonpath = os.pathsep.join(p for p in (repo, os.environ.get("PYTHONPATH", "")) if p)
+    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": pythonpath}
     return subprocess.run(
         [_hermes_exe(), *args],
         capture_output=True, text=True, env=env, check=False,

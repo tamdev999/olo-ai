@@ -251,12 +251,29 @@ class Hindsight:
 
 
 class Guard:
-    """UsageGuard stand-in: server-reported spend is driven by the test."""
+    """UsageGuard stand-in: server-reported spend is driven by the test.
+
+    ``hours`` is what the server's trace still holds per hour bucket — a test
+    deletes entries to model Hindsight's one-day retention sweep.
+    """
+
+    budget_usd = 8.0
 
     def __init__(self) -> None:
         self.exceeded = False
         self.unavailable = False
         self.snapshots = 0
+        self.hours: dict[str, tuple[int, int]] = {}
+
+    def hourly_usage(self):
+        from olo.m3.hindsight.budget import StatsUnavailableError, TokenSnapshot
+        if self.unavailable:
+            raise StatsUnavailableError("stats endpoint down")
+        self.snapshots += 1
+        hours = dict(self.hours)
+        if self.exceeded:
+            hours["2999-01-01T00:00:00Z"] = (0, 10_000_000)     # $12 at output price
+        return [(h, TokenSnapshot(i, o)) for h, (i, o) in hours.items()]
 
     def snapshot(self):
         from olo.m3.hindsight.budget import StatsUnavailableError, TokenSnapshot

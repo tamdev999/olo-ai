@@ -88,6 +88,10 @@ class RunResult:
     # S5 part 2: downstream stages (empty when not enabled)
     commitment: dict = field(default_factory=dict)   # counts by commitment outcome
     projection: dict = field(default_factory=dict)   # Hindsight outbox counts
+    # Post-audit batch 1: persisted stage health of this run (olo.health)
+    degraded: tuple = ()             # what stopped this run's processing short
+    attention_total: int = 0         # items awaiting an operator (S5 stages on)
+    attention_new: int = 0           # of which added by this run
 
 
 @dataclass(frozen=True)
@@ -475,22 +479,43 @@ def run_source(
     id_resolved = id_unresolved = id_failed = 0
     backfilled = resumed = 0
 
+    ds: dict = {"stage": None, "commitment": {}, "projection": {}, "errors": {}}
+
     def _downstream() -> tuple[dict, dict]:
         from olo.store import renew_lease
-        commitment_counts: dict = {}
-        projection_counts: dict = {}
         if commitment is not None:
             from olo.commitments import run_commitment_stage
-            commitment_counts = run_commitment_stage(
+            ds["stage"] = "commitment"
+            ds["commitment"] = run_commitment_stage(
                 conn, source, commitment, clock,
                 renew=lambda: renew_lease(source, run_id, conn, clock=clock, ttl=lease_ttl),
                 _fault=_fault,
             )
         if projection is not None:
             from olo.projection import run_projection_stage
+            ds["stage"] = "projection"
             renew_lease(source, run_id, conn, clock=clock, ttl=lease_ttl)
-            projection_counts = run_projection_stage(conn, source, projection, clock, _fault=_fault)
-        return commitment_counts, projection_counts
+            ds["projection"] = run_projection_stage(conn, source, projection, clock, _fault=_fault)
+        ds["stage"] = None
+        return ds["commitment"], ds["projection"]
+
+    def _health(run_status: str, error: Optional[str]):
+        """Persist stage health (olo.health); never changes the run's outcome."""
+        from olo.health import RunHealth, record_run
+        from olo.signals import format_utc as _format_utc
+        try:
+            return record_run(
+                conn, source, _format_utc(clock()), run_status=run_status, error=error,
+                fetched=fetched, inserted=inserted,
+                identity=(id_resolved, id_unresolved, id_failed),
+                commitment_enabled=commitment is not None, commitment=ds["commitment"],
+                projection_enabled=projection is not None, projection=ds["projection"],
+                stage_errors=ds["errors"],
+                max_attempts=getattr(commitment, "max_attempts", 5))
+        except Exception as exc:
+            print(f"olo: could not record pipeline health: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return RunHealth(degraded=(f"health not recorded: {type(exc).__name__}",))
 
     try:
         # 2b. Recovery (S5): recreate tracking rows lost to an interrupted
@@ -510,8 +535,17 @@ def run_source(
             # 3.2 Get committed cursor
             cursor = get_checkpoint(source, conn)
 
-            # 3.3 Fetch
-            batch: FetchBatch = adapter.fetch(cursor, limit=limit)
+            # 3.3 Fetch.  A failed fetch (outage, rate limit, revoked
+            # credentials) must not block signals already ingested: the
+            # downstream stages run before the run is recorded as failed.
+            try:
+                batch: FetchBatch = adapter.fetch(cursor, limit=limit)
+            except Exception:
+                try:
+                    _downstream()
+                except Exception as stage_exc:
+                    ds["errors"][ds["stage"] or "downstream"] = f"{type(stage_exc).__name__}: {stage_exc}"
+                raise
             if _fault:
                 _fault("after_fetch")
 
@@ -604,9 +638,10 @@ def run_source(
                 c_counts, p_counts = _downstream()
                 final_cursor = get_checkpoint(source, conn)
                 updated = finish_run(source, run_id, "succeeded", conn, clock=clock)
-                conn.close()
                 actual_status = "succeeded" if updated else "failed"
                 actual_error = None if updated else "run was abandoned by a successor before finish_run"
+                health = _health(actual_status, actual_error)
+                conn.close()
                 return RunResult(
                     run_id=run_id,
                     status=actual_status,
@@ -624,15 +659,19 @@ def run_source(
                     identity_resumed=resumed,
                     commitment=c_counts,
                     projection=p_counts,
+                    degraded=health.degraded,
+                    attention_total=health.attention_total,
+                    attention_new=health.attention_new,
                 )
 
         # 4. Loop exhausted with has_more still True → partial
         c_counts, p_counts = _downstream()
         final_cursor = get_checkpoint(source, conn)
         updated = finish_run(source, run_id, "partial", conn, clock=clock)
-        conn.close()
         actual_status = "partial" if updated else "failed"
         actual_error = None if updated else "run was abandoned by a successor before finish_run"
+        health = _health(actual_status, actual_error)
+        conn.close()
         return RunResult(
             run_id=run_id,
             status=actual_status,
@@ -650,15 +689,21 @@ def run_source(
             identity_resumed=resumed,
             commitment=c_counts,
             projection=p_counts,
+            degraded=health.degraded,
+            attention_total=health.attention_total,
+            attention_new=health.attention_new,
         )
 
     except Exception as exc:
         # 5. Any exception after acquire_run → failed
         error_str = f"{type(exc).__name__}: {exc}"
+        if ds["stage"] is not None:
+            ds["errors"][ds["stage"]] = error_str
         try:
             finish_run(source, run_id, "failed", conn, clock=clock, error=error_str)
         except Exception:
             pass
+        _health("failed", error_str)
         try:
             conn.close()
         except Exception:
@@ -699,6 +744,8 @@ def main(argv: list[str] | None = None) -> int:
     s5.add_argument("--projection-budget-usd", type=float)
     s5.add_argument("--own-email", action="append", default=[])
     s5.add_argument("--hindsight-registry")
+    s5.add_argument("--deepseek-base-url",
+                    help="DeepSeek API base URL (https://api.deepseek.com/v1, or a loopback test server)")
     args = parser.parse_args(argv)
 
     # Parse options
@@ -730,6 +777,7 @@ def main(argv: list[str] | None = None) -> int:
         projection_budget_usd=args.projection_budget_usd,
         own_emails=tuple(args.own_email),
         hindsight_registry=args.hindsight_registry,
+        deepseek_base_url=args.deepseek_base_url,
     )
     stages = None
     if request.enabled:
@@ -789,6 +837,19 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    # The scheduler must not see success when the authoritative pipeline is
+    # degraded, or when this run left new items no retry will settle.
+    if result.degraded:
+        print("olo: degraded: " + "; ".join(result.degraded)
+              + " (see `hermes olo status`)", file=sys.stderr)
+        return 1
+    if result.attention_new:
+        print(f"olo: {result.attention_new} new item(s) need an operator "
+              f"({result.attention_total} in total; see `hermes olo status`)", file=sys.stderr)
+        return 1
+    if result.attention_total:
+        print(f"olo: {result.attention_total} item(s) still need an operator "
+              "(see `hermes olo status`)", file=sys.stderr)
     # succeeded → empty stdout and stderr (Hermes silent success)
 
     return 0

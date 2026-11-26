@@ -243,27 +243,60 @@ def _view(current_date, pending, superseded, memories, excluded=()):
             "memories": list(memories), "excluded": list(excluded)}
 
 
+def _m(text, label, **kw):
+    return {"text": text, "label": label, "commitment_id": "cmt_d", "authoritative": False, **kw}
+
+
 def test_current_view_requires_labels_on_superseded_and_requested_dates() -> None:
     stale = "The ORD-501 delivery is confirmed for 2026-06-10. (rescheduled to 2026-06-15.)"
-    good = _view("2026-06-15", None, ["2026-06-10"], [{"text": stale, "label": "historical"}])
+    old_only = "The ORD-501 delivery is confirmed for 2026-06-10."
+    good = _view("2026-06-15", None, ["2026-06-10"], [_m(stale, "historical")])
     assert checks.current_view(good, {"delivery": ("2026-06-15", None)}).ok
-    bad = _view("2026-06-15", None, ["2026-06-10"], [{"text": stale, "label": "memory"}])
+    bad = _view("2026-06-15", None, ["2026-06-10"], [_m(old_only, "consistent")])
     assert checks.current_view(bad, {"delivery": ("2026-06-15", None)}).hindsight
-    asked = _view("2026-06-10", "2026-06-15", [], [{"text": "Delivery confirmed for June 15.",
-                                                    "label": "memory"}])
+    change = _view("2026-06-15", None, ["2026-06-10"], [_m(stale, "consistent")])
+    assert checks.current_view(change, {"delivery": ("2026-06-15", None)}).ok   # names both
+    asked = _view("2026-06-10", "2026-06-15", [], [_m("Delivery confirmed for June 15.", "consistent")])
     assert checks.current_view(asked, {"delivery": ("2026-06-10", "2026-06-15")}).hindsight
-    wrong_ledger = _view("2026-06-15", None, ["2026-06-10"], [{"text": "Status as of version 1",
-                                                               "label": "current_ledger",
-                                                               "document_id": "ledger:cmt_d:v1"}])
+    wrong_ledger = _view("2026-06-15", None, ["2026-06-10"], [
+        _m("Status as of version 1", "current_ledger", document_id="ledger:cmt_d:v1")])
     assert checks.current_view(wrong_ledger, {"delivery": ("2026-06-15", None)}).hindsight
-    current_doc = _view("2026-06-15", None, ["2026-06-10"], [{
-        "text": "CURRENT: version 3 ... supersedes version 1 (date 2026-06-10).",
-        "label": "current_ledger", "document_id": "ledger:cmt_d:v3"}])
+    current_doc = _view("2026-06-15", None, ["2026-06-10"], [
+        _m("CURRENT: version 3 ... supersedes version 1 (date 2026-06-10).", "current_ledger",
+           document_id="ledger:cmt_d:v3")])
     assert checks.current_view(current_doc, {"delivery": ("2026-06-15", None)}).ok
+    unlinked = _view("2026-06-15", None, ["2026-06-10"], [
+        dict(_m(old_only, "consistent"), commitment_id=None)])
+    assert checks.current_view(unlinked, {"delivery": ("2026-06-15", None)}).hindsight
+    uncertain = _view("2026-06-15", None, ["2026-06-10"], [
+        dict(_m(old_only, "uncertain"), commitment_id=None)])
+    assert checks.current_view(uncertain, {"delivery": ("2026-06-15", None)}).ok
+    authoritative = _view("2026-06-15", None, [], [dict(_m("x", "uncertain"), authoritative=True)])
+    assert checks.current_view(authoritative, {"delivery": ("2026-06-15", None)}).hindsight
     leaked = _view("2026-06-15", None, [], [], excluded=[{"text": "Bob's order"}])
     assert checks.current_view(leaked, {"delivery": ("2026-06-15", None)}).hindsight
     assert checks.current_view(good, {"delivery": ("2026-06-10", None)}).ledger
     assert checks.current_view(None, {"delivery": ("2026-06-15", None)}).hindsight
+
+
+def test_current_view_judges_each_memory_by_its_own_commitment() -> None:
+    """The audit counterexample at the check level: another order's dates
+    must not fail (or pass) a memory."""
+    view = {"current": [
+        {"commitment_id": "c501", "event_type": "delivery", "current_date": "2026-06-15",
+         "current_version": 2, "pending_date": None, "superseded_dates": ["2026-06-10"]},
+        {"commitment_id": "c777", "event_type": "delivery", "current_date": "2026-06-10",
+         "current_version": 1, "pending_date": None, "superseded_dates": []},
+        {"commitment_id": "c888", "event_type": "delivery", "current_date": "2026-06-20",
+         "current_version": 1, "pending_date": "2026-06-15", "superseded_dates": []}],
+        "memories": [
+            {"text": "ORD-777 confirmed for 2026-06-10.", "label": "consistent", "commitment_id": "c777"},
+            {"text": "ORD-501 confirmed for 2026-06-15.", "label": "consistent", "commitment_id": "c501"},
+            {"text": "ORD-888 confirmed for 2026-06-15.", "label": "unconfirmed_request",
+             "commitment_id": "c888"}], "excluded": []}
+    assert checks.current_view(view, {}).ok
+    view["memories"][2]["label"] = "consistent"
+    assert checks.current_view(view, {}).hindsight
 
 
 def test_authored_prose_and_strategy_and_log_checks() -> None:

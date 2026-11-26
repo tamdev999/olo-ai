@@ -99,8 +99,16 @@ def _hermes_exe() -> str:
     raise RuntimeError(f"hermes not found in {scripts}")
 
 
+def _repo_env(home) -> dict:
+    """Subprocess env that imports the code under test: the repo first on
+    PYTHONPATH (the `hermes` editable install may point at another checkout)."""
+    repo = str(Path(__file__).resolve().parents[2])
+    pythonpath = os.pathsep.join(p for p in (repo, os.environ.get("PYTHONPATH", "")) if p)
+    return {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": pythonpath}
+
+
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
-    env = {**os.environ, "HERMES_HOME": _TEST_HOME}
+    env = _repo_env(_TEST_HOME)
     return subprocess.run(
         [_hermes_exe(), *args],
         capture_output=True, text=True, env=env, check=False,

@@ -357,7 +357,6 @@ def cancellation(result: dict) -> Findings:
 # ── Current state vs history (S5 live findings) ───────────────────────────────
 
 LEDGER_CURRENT, LEDGER_SUPERSEDED = "ledger:current", "ledger:superseded"
-NON_CURRENT_LABELS = ("historical", "superseded_ledger", "unconfirmed_request")
 
 
 def _current_version(c: dict):
@@ -394,9 +393,13 @@ def current_view(view: dict | None, expected: dict) -> Findings:
     """The customer-facing view: ledger state first, every memory labelled.
 
     *expected* maps event_type → (current_date, pending_date).  Labels are
-    re-verified here with this module's own date matching: a memory stating a
-    superseded or proposed date must carry a non-current label, and only a
-    current-version ledger document may be labelled current.
+    re-verified here with this module's own date matching, per memory against
+    the commitment it is linked to (never across a customer's commitments): a
+    memory stating its commitment's pending request must be an
+    ``unconfirmed_request``; a ``consistent`` memory may name a superseded
+    date only alongside the current one; only the current version's ledger
+    document is ``current_ledger``; no memory is authoritative; unlinked
+    memories must be ``uncertain``.
     """
     f = Findings()
     if not view:
@@ -411,23 +414,36 @@ def current_view(view: dict | None, expected: dict) -> Findings:
             continue
         _expect(f.ledger, f"view {et} current date", c.get("current_date"), cur_date)
         _expect(f.ledger, f"view {et} pending (unconfirmed) date", c.get("pending_date"), pending)
-    old = {d for c in current.values() for d in c.get("superseded_dates") or []}
-    asked = {c["pending_date"] for c in current.values() if c.get("pending_date")}
+    by_id = {c.get("commitment_id"): c for c in view.get("current") or []}
     for m in view.get("memories") or []:
-        text, label = m.get("text") or "", m.get("label")
-        # A current-version ledger document names the version it supersedes
-        # (and so its date); it is verified by version below, not by dates.
-        if (label != "current_ledger" and label not in NON_CURRENT_LABELS
-                and any(mentions(text, d) for d in old | asked)):
-            f.hindsight.append(f"memory states a superseded or unconfirmed date but is labelled "
-                               f"{label!r}: {text[:140]!r}")
-        if label == "current_ledger":
-            cid_v = (m.get("document_id") or "").rsplit(":v", 1)
-            ok = any(c.get("commitment_id") and f"ledger:{c['commitment_id']}" == cid_v[0]
-                     and str(c.get("current_version")) == (cid_v[1] if len(cid_v) == 2 else "")
-                     for c in current.values())
-            if not ok:
-                f.hindsight.append(f"{m.get('document_id')} labelled current but is not the current version")
+        text, label, cid = m.get("text") or "", m.get("label"), m.get("commitment_id")
+        if m.get("authoritative"):
+            f.hindsight.append(f"a recalled memory is marked authoritative: {text[:100]!r}")
+        if label == "uncertain":
+            continue                          # explicitly unassigned; never current truth
+        c = by_id.get(cid)
+        if c is None:
+            f.hindsight.append(f"memory labelled {label!r} without a commitment of this customer: "
+                               f"{text[:100]!r}")
+            continue
+        if label in ("current_ledger", "superseded_ledger"):
+            want = (f"ledger:{cid}:v{c.get('current_version')}" == m.get("document_id"))
+            if (label == "current_ledger") != want:
+                f.hindsight.append(f"{m.get('document_id')} labelled {label} but the ledger's "
+                                   f"current version is v{c.get('current_version')}")
+            continue
+        # Dates are judged against the memory's OWN commitment only.
+        old = set(c.get("superseded_dates") or [])
+        asked = {c["pending_date"]} if c.get("pending_date") else set()
+        says_old = any(mentions(text, d) for d in old)
+        says_asked = any(mentions(text, d) for d in asked)
+        says_now = bool(c.get("current_date")) and mentions(text, c["current_date"])
+        if says_asked and label != "unconfirmed_request":
+            f.hindsight.append(f"memory states the pending request {sorted(asked)} for {cid} but is "
+                               f"labelled {label!r}: {text[:140]!r}")
+        elif label == "consistent" and says_old and not says_now:
+            f.hindsight.append(f"memory states superseded {sorted(old)} for {cid} but is labelled "
+                               f"consistent: {text[:140]!r}")
     for x in view.get("excluded") or []:
         f.hindsight.append(f"recall for the customer returned another customer's memory: "
                            f"{(x.get('text') or '')[:100]!r}")

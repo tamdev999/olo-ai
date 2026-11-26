@@ -63,6 +63,7 @@ class ActivationRequest:
     projection_budget_usd: Optional[float] = None
     own_emails: tuple[str, ...] = ()
     hindsight_registry: Optional[str] = None
+    deepseek_base_url: Optional[str] = None
 
     @property
     def enabled(self) -> bool:
@@ -128,13 +129,30 @@ def _positive(value: Optional[float], name: str) -> float:
     return value
 
 
+#: Where extraction may send business text: DeepSeek itself, or a loopback
+#: server (tests and local proxies).  Anything else is refused.
+_DEEPSEEK_URL_RE = re.compile(
+    r"https://api\.deepseek\.com(/v1)?/?|http://(127\.0\.0\.1|localhost):\d{1,5}(/v1)?/?")
+
+
+def _deepseek_base_url(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if not _DEEPSEEK_URL_RE.fullmatch(value):
+        raise ActivationError(
+            f"--deepseek-base-url must be https://api.deepseek.com[/v1] or a loopback "
+            f"http://127.0.0.1:<port>[/v1] URL, not {value!r}")
+    return value.rstrip("/")
+
+
 def _registry_path(req: ActivationRequest, environ: Mapping[str, str]) -> str:
     if req.hindsight_registry:
         path = Path(req.hindsight_registry)
     elif environ.get("HERMES_HOME"):
         path = Path(environ["HERMES_HOME"]) / "hindsight_port_registry.json"
     else:
-        raise ActivationError("no Hindsight port registry: set HERMES_HOME or pass a registry")
+        from hermes_constants import get_hermes_home
+        path = get_hermes_home() / "hindsight_port_registry.json"
     if not path.exists():
         raise ActivationError(f"Hindsight port registry not found: {path}")
     return str(path)
@@ -193,6 +211,7 @@ def activate(
         if not key:
             raise ActivationError(
                 "no DeepSeek key: set DEEPSEEK_API_KEY or pass --deepseek-key-file")
+        base_url = _deepseek_base_url(req.deepseek_base_url)
         from olo.adapters.contacts import load_own_identifiers
         own = frozenset(("email", e.strip().lower()) for e in req.own_emails if "@" in e)
         own |= load_own_identifiers(conn)
@@ -207,7 +226,8 @@ def activate(
     if req.enable_commitments:
         from olo.commitments import CommitmentStageConfig
         from olo.extractor import Budget, make_deepseek_model_fn
-        model_fn = (model_factory or make_deepseek_model_fn)(api_key=key)
+        model_kwargs = {"base_url": base_url} if base_url else {}
+        model_fn = (model_factory or make_deepseek_model_fn)(api_key=key, **model_kwargs)
         commitment = CommitmentStageConfig(
             model_fn=model_fn,
             budget=Budget(max_calls=max_calls, max_total_tokens=max_tokens),

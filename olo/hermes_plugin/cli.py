@@ -109,7 +109,41 @@ def _cmd_status(args: argparse.Namespace) -> None:
                 f" batches={r['batches']} inserted={r['inserted']}{err}"
             )
 
+    _print_health(conn)
     conn.close()
+
+
+def _print_health(conn) -> None:
+    """Stage health, backlog and every condition needing attention (olo.health)."""
+    import json as _json
+    from datetime import UTC, datetime
+
+    from olo.health import assess, backlog
+
+    rows = conn.execute(
+        "SELECT source, stage, status, last_success_at, last_attempt_at, consecutive_failures"
+        " FROM pipeline_health ORDER BY source, stage").fetchall()
+    if rows:
+        print("  Pipeline health:")
+        for r in rows:
+            print(f"    {r['source']}/{r['stage']:<10s} {r['status']:<9s}"
+                  f" last_ok={r['last_success_at'] or 'never'}"
+                  f" last_attempt={r['last_attempt_at']}"
+                  + (f" failures={r['consecutive_failures']}" if r['consecutive_failures'] else ""))
+    b = backlog(conn)
+    print("  Backlog:")
+    print(f"    identity={_json.dumps(b['identity'], sort_keys=True)}")
+    print(f"    commitment={_json.dumps(b['commitment'], sort_keys=True)}"
+          f" retrying={b['commitment_retrying']}")
+    print(f"    projection_outbox={_json.dumps(b['projection_outbox'], sort_keys=True)}"
+          f" in_flight={b['operations_in_flight']} ledger_unprojected={b['ledger_unprojected']}")
+    conditions = assess(conn, datetime.now(UTC))
+    if conditions:
+        print("  Attention:")
+        for c in conditions:
+            print(f"    [{c.severity.upper()}] {c.stage}: {c.message}")
+    else:
+        print("  Attention: none")
 
 
 def _cursor_phase_str(cursor: str) -> str:
@@ -132,6 +166,68 @@ def _cursor_phase_str(cursor: str) -> str:
 
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
+
+#: setup flag -> (runner flag, kind).  The runner accepts the same names.
+_S5_FLAGS: tuple[tuple[str, str], ...] = (
+    ("business_id", "--business-id"), ("bank_id", "--bank-id"),
+    ("deepseek_key_file", "--deepseek-key-file"), ("deepseek_base_url", "--deepseek-base-url"),
+    ("extract_max_calls", "--extract-max-calls"), ("extract_max_tokens", "--extract-max-tokens"),
+    ("projection_max_docs", "--projection-max-docs"),
+    ("projection_max_prose_docs", "--projection-max-prose-docs"),
+    ("projection_budget_usd", "--projection-budget-usd"),
+    ("hindsight_registry", "--hindsight-registry"),
+)
+
+
+def _s5_argv(args: argparse.Namespace, conn) -> list[str]:
+    """Runner arguments that enable the S5 stages, validated now.
+
+    Validation is the runner's own activation (olo.activation.activate), so a
+    shim is only written for a configuration the scheduled worker will
+    accept.  Nothing is enabled unless asked; key files are referenced by
+    path, never copied.
+    """
+    from olo.activation import ActivationError, ActivationRequest, activate
+    from olo.store import utc_now
+    from olo.signals import format_utc
+
+    enable_c = bool(getattr(args, "enable_commitments", False))
+    enable_p = bool(getattr(args, "enable_projection", False))
+    if not (enable_c or enable_p):
+        stray = [flag for name, flag in _S5_FLAGS if getattr(args, name, None) is not None]
+        if stray or getattr(args, "own_email", None):
+            print("olo setup: S5 options given without --enable-commitments or "
+                  f"--enable-projection: {', '.join(stray) or '--own-email'}", file=sys.stderr)
+            sys.exit(1)
+        return []
+    request = ActivationRequest(
+        business_id=args.business_id, enable_commitments=enable_c, enable_projection=enable_p,
+        bank_id=args.bank_id, deepseek_key_file=args.deepseek_key_file,
+        extract_max_calls=args.extract_max_calls, extract_max_tokens=args.extract_max_tokens,
+        projection_max_docs=args.projection_max_docs,
+        projection_max_prose_docs=args.projection_max_prose_docs,
+        projection_budget_usd=args.projection_budget_usd,
+        own_emails=tuple(args.own_email or ()), hindsight_registry=args.hindsight_registry,
+        deepseek_base_url=args.deepseek_base_url,
+    )
+    try:
+        activate(request, conn, format_utc(utc_now()))
+    except ActivationError as exc:
+        print(f"olo setup: S5 activation refused: {exc}", file=sys.stderr)
+        sys.exit(1)
+    argv: list[str] = []
+    if enable_c:
+        argv.append("--enable-commitments")
+    if enable_p:
+        argv.append("--enable-projection")
+    for name, flag in _S5_FLAGS:
+        value = getattr(args, name, None)
+        if value is not None:
+            argv += [flag, str(value)]
+    for email in args.own_email or ():
+        argv += ["--own-email", email]
+    return argv
+
 
 def _cmd_setup(args: argparse.Namespace) -> None:
     """Migrate DB, install shim script, print cron create command."""
@@ -238,6 +334,7 @@ def _cmd_setup(args: argparse.Namespace) -> None:
     parts: list[str] = [repr("--source"), repr(source)]
     for k, v in options.items():
         parts += [repr("--option"), repr(f"{k}={v}")]
+    parts += [repr(a) for a in _s5_argv(args, conn)]
     argv_literal = "[" + ", ".join(parts) + "]"
 
     tmpl_path = Path(__file__).parent.parent / "cron_scripts" / "olo_monitor.py.tmpl"
@@ -944,6 +1041,23 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
         help="Adapter option (may be repeated)",
     )
     setup_p.add_argument("--force", action="store_true", help="Overwrite existing shim")
+    s5 = setup_p.add_argument_group(
+        "S5 stages (off by default; validated now and written into the shim)")
+    s5.add_argument("--enable-commitments", action="store_true",
+                    help="Extract commitments into the ledger (DeepSeek)")
+    s5.add_argument("--enable-projection", action="store_true",
+                    help="Project signals and ledger state into the business's Hindsight bank")
+    s5.add_argument("--business-id")
+    s5.add_argument("--bank-id")
+    s5.add_argument("--deepseek-key-file", help="Owner-only key file (the key is never copied)")
+    s5.add_argument("--deepseek-base-url")
+    s5.add_argument("--extract-max-calls", type=int)
+    s5.add_argument("--extract-max-tokens", type=int)
+    s5.add_argument("--projection-max-docs", type=int)
+    s5.add_argument("--projection-max-prose-docs", type=int)
+    s5.add_argument("--projection-budget-usd", type=float)
+    s5.add_argument("--own-email", action="append", default=[])
+    s5.add_argument("--hindsight-registry")
     setup_p.set_defaults(func=_cmd_setup)
 
     # google (sub-group)
