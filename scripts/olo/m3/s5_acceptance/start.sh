@@ -4,11 +4,14 @@
 # documents (cwd = business home; Hindsight reads ./.env).
 #
 # Run as root in WSL.  The DeepSeek key is read from KEY_FILE (a dotenv file
-# defining HINDSIGHT_API_LLM_API_KEY) into the server's environment only; it
-# is never written to the business .env and never printed.  The Hindsight
-# model is pinned to deepseek-chat (the model the gate used and the usage
-# guard's prices are based on); Hindsight's own default would be
-# deepseek-v4-flash.  Gate server (18800) and production data are untouched.
+# defining HINDSIGHT_API_LLM_API_KEY) into the server's environment only: it
+# is never written to the business .env, never printed and never placed on a
+# command line.  Shell builtins copy it into a one-time file (mode 600, owner
+# olo_hs) inside the private (700) disposable home; the server's own shell
+# sources and deletes that file before exec, so process arguments carry only
+# its path.  The model (deepseek-flash, thinking disabled) comes from the .env
+# written by the real setup.sh.  Gate server (18800) and production data are
+# untouched.
 set -euo pipefail
 KEY_FILE="${KEY_FILE:-/root/olo_m3_secrets/deepseek.env}"
 HH=/home/olo_hs/s5accept_hermes
@@ -29,20 +32,36 @@ sudo -u olo_hs env -i PATH=/usr/bin:/bin HOME=/home/olo_hs HERMES_HOME="$HH" \
   HF_HOME=/var/cache/huggingface HINDSIGHT_PORT="$PORT" HINDSIGHT_PYTHON="$VENV/bin/python3" \
   bash "$HH/setup.sh" s5accept --provider=deepseek | grep -E "Provenance|Tenant|Bank ID" || true
 BH="$HH/businesses/s5accept"
+grep -E "^HINDSIGHT_API_LLM_(PROVIDER|MODEL|EXTRA_BODY)=" "$BH/.env"
 install -d -o olo_hs -g olo_hs "$BH/.pg0"
 cp -a "$PG0SRC" "$BH/.pg0/"; chown -R olo_hs:olo_hs "$BH/.pg0"
 : > "$HH/server.log"; chown olo_hs:olo_hs "$HH/server.log"
 
-LLM_KEY=$(sed -n 's/^HINDSIGHT_API_LLM_API_KEY=//p' "$KEY_FILE" | head -1)
+# The key never leaves shell builtins (read, printf): no process sees it in argv.
+LLM_KEY=""
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$line" == HINDSIGHT_API_LLM_API_KEY=* ]]; then LLM_KEY="${line#*=}"; break; fi
+done < "$KEY_FILE"
+unset line
+LLM_KEY="${LLM_KEY%$'\r'}"; LLM_KEY="${LLM_KEY#\"}"; LLM_KEY="${LLM_KEY%\"}"
 [[ -n "$LLM_KEY" ]] || { echo "HINDSIGHT_API_LLM_API_KEY missing in $KEY_FILE" >&2; exit 1; }
-sudo -u olo_hs env -i PATH=/usr/bin:/bin HOME="$BH" HF_HOME=/var/cache/huggingface HF_HUB_OFFLINE=1 \
-  HINDSIGHT_API_LLM_API_KEY="$LLM_KEY" HINDSIGHT_API_LLM_MODEL=deepseek-chat \
-  bash -c "cd '$BH' && exec nohup $VENV/bin/hindsight-api --host 127.0.0.1 --port $PORT >> '$HH/server.log' 2>&1" &
+[[ "$LLM_KEY" =~ ^[A-Za-z0-9._-]+$ ]] || { unset LLM_KEY; echo "unexpected characters in the key" >&2; exit 1; }
+KEY_ONCE="$HH/.llm_key.once"
+( umask 077; printf 'export HINDSIGHT_API_LLM_API_KEY=%s\n' "$LLM_KEY" > "$KEY_ONCE" )
 unset LLM_KEY
+chown olo_hs:olo_hs "$KEY_ONCE"
+sudo -u olo_hs env -i PATH=/usr/bin:/bin HOME="$BH" HF_HOME=/var/cache/huggingface HF_HUB_OFFLINE=1 \
+  bash -c ". '$KEY_ONCE' && rm -f '$KEY_ONCE' && cd '$BH' && exec nohup $VENV/bin/hindsight-api --host 127.0.0.1 --port $PORT >> '$HH/server.log' 2>&1" &
+UP=0
 for i in $(seq 1 60); do
   sleep 3
-  [[ "$(curl -s -o /dev/null -w '%{http_code}' -m 3 http://127.0.0.1:$PORT/health || true)" == 200 ]] \
-    && { echo "server up after $((i*3))s"; break; }
+  if [[ "$(curl -s -o /dev/null -w '%{http_code}' -m 3 http://127.0.0.1:$PORT/health || true)" == 200 ]]; then
+    echo "server up after $((i*3))s"; UP=1; break
+  fi
 done
+if [[ -e "$KEY_ONCE" ]]; then
+  rm -f "$KEY_ONCE"; echo "one-time key file was not consumed; stopping" >&2; exit 1
+fi
 grep -E "LLM: provider|Loaded tenant extension|Connection verified|ERROR" "$HH/server.log" \
   | sed -E 's/(sk-)[A-Za-z0-9-]+/\1<redacted>/g; s/[0-9a-f]{64}/<redacted>/g' | cut -c1-160 | head -6
+[[ $UP == 1 ]] || { echo "server did not become healthy; run down.sh and do not run the driver" >&2; exit 1; }

@@ -19,6 +19,7 @@ from typing import Optional
 import pytest
 
 from olo.extractor import (
+    DEFAULT_DEEPSEEK_MODEL,
     _DEEPSEEK_INPUT_PER_M,
     _DEEPSEEK_OUTPUT_PER_M,
     Budget,
@@ -311,7 +312,10 @@ LIVE_MIN_RECALL:    float = 0.75
 LIVE_MIN_PRECISION: float = 0.90
 LIVE_MAX_FP:        int   = 1
 LIVE_COST_CAP_USD:  float = 1.00
-LIVE_MODEL:         str   = "deepseek-chat"
+# The recorded S4 live results (docs/olo/m3/s4_live_accuracy_*.json) were
+# measured on deepseek-chat, discontinued 2026-07-24.  A rerun measures the
+# current extractor model and is a new result, not a reproduction.
+LIVE_MODEL:         str   = DEFAULT_DEEPSEEK_MODEL
 
 REQUIRED_ACTIONS: tuple[str, ...] = (
     "commit", "reaffirm", "request_change", "confirm_change", "cancel",

@@ -255,6 +255,18 @@ if [[ -n "$EXISTING_KEY" ]]; then
     BUSINESS_API_KEY="$EXISTING_KEY"
 fi
 
+# ── LLM model (provider deepseek) ────────────────────────────────────────────
+# One model for every LLM operation: retain, consolidation and reflect fall
+# back to HINDSIGHT_API_LLM_MODEL and HINDSIGHT_API_LLM_EXTRA_BODY when their
+# own variables are unset.  deepseek-chat was discontinued on 2026-07-24 and
+# Hindsight's deepseek default (deepseek-v4-flash) is a retired legacy name;
+# deepseek-flash thinks by default, so thinking is disabled explicitly.
+LLM_MODEL_LINES=""
+if [[ "$PROVIDER" == "deepseek" ]]; then
+    LLM_MODEL_LINES="HINDSIGHT_API_LLM_MODEL=deepseek-flash
+HINDSIGHT_API_LLM_EXTRA_BODY='{\"thinking\":{\"type\":\"disabled\"}}'"
+fi
+
 # ── Write per-business .env ───────────────────────────────────────────────────
 # Created 0600 from the start: the file holds the tenant key.
 umask 077
@@ -268,6 +280,7 @@ HINDSIGHT_API_DATABASE_URL=${DATABASE_URL}
 HINDSIGHT_API_HOST=127.0.0.1
 HINDSIGHT_API_PORT=${PORT}
 HINDSIGHT_API_LLM_PROVIDER=${PROVIDER}
+${LLM_MODEL_LINES}
 # HINDSIGHT_API_LLM_API_KEY=  <-- set via Hermes secret scope, NOT here
 
 # C4: Per-business tenant authentication (enforced by the tenant extension).

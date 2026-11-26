@@ -5,12 +5,25 @@ and the Hindsight projection stage (bank preparation, one-strategy retains,
 prose-scoped consolidation, usage guard).  Gmail-shaped messages are built by
 the real Gmail full-content builder; no mailbox is read.
 
-Spend controls (client-side; Hindsight has no server-side monetary cap):
+Model: deepseek-flash with thinking disabled, for the extractor and for every
+Hindsight operation (checked before any paid step; the run stops otherwise).
+
+Spend controls (client-side; Hindsight has no server-side monetary cap, so
+work it has already accepted can finish after a stop — these bound what is
+started, not a guaranteed maximum):
   * extraction Budget: 8 calls / 16,000 tokens;
   * projection: 20 documents / 8 prose documents per run, UsageGuard $0.15;
   * this driver stops before any paid step once the combined upper bound
-    (extraction + Hindsight tokens at DeepSeek V3 list prices) reaches $0.20.
-Failures are recorded, never retried selectively.  No secret is printed.
+    (extraction + Hindsight tokens, reasoning counted as output, at the
+    deepseek-flash peak list prices in olo/m3/hindsight/budget.py) reaches
+    $0.20, or as soon as Hindsight records any reasoning token.
+
+Every step is judged by scripts/olo/m3/s5_acceptance/checks.py into ledger,
+Hindsight and incomplete-processing failures; the evidence ends with a
+verdict and the exit status is 0 only when all three are empty.  Processing
+that does not settle (timeouts, unfinished operations, pending consolidation,
+missing observations) is a failure, and the scenario then stops.  Failures
+are recorded, never retried selectively.  No secret is printed.
 
 Usage (WSL, root):  python driver.py <evidence.json>
 """
@@ -28,16 +41,21 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 HH = Path("/home/olo_hs/s5accept_hermes")
 os.environ["HERMES_HOME"] = str(HH)
 EVIDENCE = Path(sys.argv[1])
 STOP_USD = 0.20
-IN_PER_M, OUT_PER_M = 0.14, 0.28
+EXPECTED_MODEL = "deepseek-flash"
 
 from olo.activation import ActivationRequest, activate
 from olo.adapters import FetchBatch
 from olo.adapters.gmail_full import build_email_content_signal
 from olo.ledger import get_all_versions, get_current_state
+import checks
+from checks import Findings
+from olo.m3.hindsight.budget import COST_INPUT_PER_M as IN_PER_M
+from olo.m3.hindsight.budget import COST_OUTPUT_PER_M as OUT_PER_M
 from olo.m3.hindsight.budget import parse_stats
 from olo.m3.hindsight.client import HindsightClient, HindsightConfig, _request
 from olo.projection import PROSE_SCOPE_TAG, prepare_bank
@@ -49,7 +67,7 @@ BANK, BIZ, SOURCE = "olo-s5accept", "s5accept", "gmail_s5accept"
 OWNER, ALICE = "owner@s5accept.test", "Alice Customer <alice@customer.test>"
 REGISTRY = HH / "hindsight_port_registry.json"
 DB = Path("/root/olo_s5accept_db/olo.db")
-ev: dict = {"started": format_utc(datetime.now(UTC)), "steps": {}}
+ev: dict = {"started": format_utc(datetime.now(UTC)), "steps": {}, "verdict": Findings().as_dict()}
 state: dict = {}
 
 
@@ -57,16 +75,47 @@ def save() -> None:
     EVIDENCE.write_text(json.dumps(ev, indent=2, default=str), encoding="utf-8")
 
 
-def step(name, fn):
+def _verdict(name: str, f: Findings) -> None:
+    v = ev["verdict"]
+    for c, items in f.as_dict().items():
+        v[c].extend(f"{name}: {x}" for x in items)
+    v["pass"] = not any(v[c] for c in checks.CATEGORIES)
+
+
+def step(name, fn, check=None):
+    """Run *fn*; judge its result with *check* (result -> Findings).  *fn* may
+    return ``(result, Findings)`` itself.  An exception is incomplete
+    processing, never a pass."""
     t0 = time.time()
     try:
-        ev["steps"][name] = {"ok": True, "result": fn()}
+        out = fn()
+        result, f = out if isinstance(out, tuple) and isinstance(out[-1], Findings) else (out, Findings())
+        if check is not None:
+            f.add(check(result))
+        ev["steps"][name] = {"ok": f.ok, "result": result, "findings": f.as_dict()}
     except Exception as exc:
+        f = Findings(incomplete=[f"step raised {type(exc).__name__}: {str(exc)[:300]}"])
         ev["steps"][name] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:500]}",
-                             "trace": traceback.format_exc()[-1500:]}
+                             "trace": traceback.format_exc()[-1500:], "findings": f.as_dict()}
     ev["steps"][name]["seconds"] = round(time.time() - t0, 1)
+    _verdict(name, f)
     save()
     return ev["steps"][name]
+
+
+def skipped(name: str, why: str) -> None:
+    f = Findings(incomplete=[f"not run: {why}"])
+    ev["steps"][name] = {"ok": False, "skipped": why, "findings": f.as_dict()}
+    _verdict(name, f)
+    save()
+
+
+def abort(why: str, code: int) -> None:
+    """Stop before any paid step; the evidence never reads as a pass."""
+    ev["stopped"] = why
+    _verdict("abort", Findings(incomplete=[why]))
+    save()
+    sys.exit(code)
 
 
 # ── Gmail-shaped messages ─────────────────────────────────────────────────────
@@ -123,19 +172,23 @@ client = HindsightClient(hcfg)
 
 # ── Spend ─────────────────────────────────────────────────────────────────────
 
-def hs_tokens() -> tuple[int, int]:
-    snap = parse_stats(client.get_llm_stats(bank_id=BANK))
-    return snap.input_tokens, snap.output_tokens
+def hs_tokens() -> tuple[int, int, int]:
+    """(input, output incl. reasoning, reasoning) tokens the bank's trace holds."""
+    raw = client.get_llm_stats(bank_id=BANK)
+    snap = parse_stats(raw)
+    thoughts = sum(int((b.get("tokens") or {}).get("thoughts", 0) or 0) for b in raw.get("buckets") or [])
+    return snap.input_tokens, snap.output_tokens, thoughts
 
 
 def spend() -> dict:
-    i, o = hs_tokens()
-    i, o = i - state["base_in"], o - state["base_out"]
+    i, o, t = hs_tokens()
+    i, o, t = i - state["base_in"], o - state["base_out"], t - state["base_thoughts"]
     hs = i * IN_PER_M / 1e6 + o * OUT_PER_M / 1e6
     b = state.get("budget")
     ex = b.cost_usd if b else 0.0
     ex_upper = (b.tokens_used * OUT_PER_M / 1e6) if b else 0.0
-    return {"hindsight_tokens_in": i, "hindsight_tokens_out": o, "hindsight_usd": round(hs, 5),
+    return {"hindsight_tokens_in": i, "hindsight_tokens_out": o, "hindsight_thoughts_tokens": t,
+            "hindsight_usd": round(hs, 5),
             "extraction_calls": b.calls_used if b else 0, "extraction_tokens": b.tokens_used if b else 0,
             "extraction_usd": round(ex, 5), "total_usd_upper": round(hs + max(ex, ex_upper), 5)}
 
@@ -146,6 +199,11 @@ def guard(name: str) -> bool:
     save()
     if s["total_usd_upper"] >= STOP_USD:
         ev["stopped"] = f"spend {s['total_usd_upper']} >= {STOP_USD} before {name}"
+        save()
+        return False
+    if s["hindsight_thoughts_tokens"]:
+        ev["stopped"] = (f"Hindsight recorded {s['hindsight_thoughts_tokens']} reasoning tokens before "
+                         f"{name}: thinking is not disabled")
         save()
         return False
     return True
@@ -191,7 +249,7 @@ def memory() -> dict:
     out = {}
     for d in client.list_documents(bank_id=BANK, limit=100).get("items", []):
         full = client.get_document(d["id"], bank_id=BANK)
-        out[d["id"]] = {"text": (full.get("original_text") or "")[:300], "tags": full.get("tags"),
+        out[d["id"]] = {"text": (full.get("original_text") or "")[:600], "tags": full.get("tags"),
                         "facts": full.get("nodes_by_fact_type"), "units": full.get("memory_unit_count")}
     return out
 
@@ -199,12 +257,47 @@ def memory() -> dict:
 def observations() -> list:
     items = _request(hcfg, "GET", f"/v1/default/banks/{BANK}/memories/list",
                      params={"type": "observation", "limit": "100"}).get("items", [])
-    return [{"tags": sorted(o.get("tags") or []), "text": (o.get("text") or "")[:200]} for o in items]
+    return [{"tags": sorted(o.get("tags") or []), "text": (o.get("text") or "")[:500]} for o in items]
+
+
+def prose_pending():
+    try:
+        return client.count_memories(consolidation_state="pending", tags=[PROSE_SCOPE_TAG], bank_id=BANK)
+    except Exception:
+        return None
+
+
+def alice_tag() -> tuple[str, Findings]:
+    """The one verified customer contact of the scenario's signals."""
+    contacts = {r["contact_id"] for r in resolution().values() if r.get("contact_id")}
+    f = Findings()
+    if len(contacts) != 1:
+        f.ledger.append(f"expected one customer contact for all signals, got {sorted(contacts)}")
+    return (f"ent:{min(contacts)}" if contacts else ""), f
+
+
+def server_model() -> dict:
+    """The model the server was started with (its own startup log line) and
+    the request body setup.sh configured; nothing secret is read."""
+    log = (HH / "server.log").read_text(encoding="utf-8", errors="replace")
+    line = next((ln for ln in log.splitlines() if "LLM: provider=" in ln), "")
+    env = (HH / "businesses" / BIZ / ".env").read_text(encoding="utf-8")
+    body = next((ln.split("=", 1)[1] for ln in env.splitlines()
+                 if ln.startswith("HINDSIGHT_API_LLM_EXTRA_BODY=")), "")
+    overrides = [ln[ln.find("LLM ("):][:120].strip() for ln in log.splitlines()
+                 if "LLM (" in ln and "provider=" in ln]
+    verified = f"Connection verified: deepseek/{EXPECTED_MODEL}"
+    llm_errors = [ln[ln.find(" - ERROR - "):][:160] for ln in log.splitlines()
+                  if " - ERROR - " in ln and "llm" in ln.lower()]
+    return {"log": line[line.find("LLM: provider="):][:120].strip(), "extra_body": body.strip(),
+            "per_operation_overrides": overrides,
+            "connection_verified": any(verified in ln for ln in log.splitlines()),
+            "llm_errors": llm_errors}
 
 
 def recall(q: str, types=None) -> list:
     r = client.recall(q, bank_id=BANK, types=types)
-    return [{"type": x.get("type") or x.get("fact_type"), "text": str(x.get("text"))[:200],
+    return [{"type": x.get("type") or x.get("fact_type"), "text": str(x.get("text"))[:400],
              "document_id": x.get("document_id")} for x in (r.get("results") or [])[:8]]
 
 
@@ -221,17 +314,21 @@ def preflight():
             refused[label] = f"refused: {getattr(exc, 'status_code', type(exc).__name__)}"
     banks = client.list_banks()
     return {"port": hcfg.port, "llm_trace": (version.get("features") or {}).get("llm_trace"),
+            "server_model": server_model(),
             "version": version.get("api_version") or version.get("version"), "auth": refused,
             "banks_before": [b.get("bank_id") or b.get("id") for b in (banks.get("banks") or [])]}
 
 
 pre = step("0_preflight", preflight)
 r = pre.get("result") or {}
+sm = r.get("server_model") or {}
 if not (pre["ok"] and r.get("llm_trace") is True and not r.get("banks_before")
-        and all(str(v).startswith("refused: 401") for v in (r.get("auth") or {"x": ""}).values())):
-    ev["stopped"] = "isolation or spend controls could not be established"
-    save()
-    sys.exit(2)
+        and all(str(v).startswith("refused: 401") for v in (r.get("auth") or {"x": ""}).values())
+        and sm.get("log") == f"LLM: provider=deepseek, model={EXPECTED_MODEL}"
+        and not sm.get("per_operation_overrides")
+        and sm.get("connection_verified") is True and not sm.get("llm_errors")
+        and json.loads(sm.get("extra_body", "").strip("'") or "null") == {"thinking": {"type": "disabled"}}):
+    abort("isolation, model or spend controls could not be established", 2)
 
 
 def provision():
@@ -244,10 +341,8 @@ def provision():
 prov = step("1_prepare_bank", provision)
 pr = prov.get("result") or {}
 if not (prov["ok"] and pr.get("enable_auto_consolidation") is False and pr.get("structured_strategy")):
-    ev["stopped"] = "bank could not be prepared"
-    save()
-    sys.exit(3)
-state["base_in"], state["base_out"] = hs_tokens()
+    abort("bank could not be prepared", 3)
+state["base_in"], state["base_out"], state["base_thoughts"] = hs_tokens()
 
 DB.parent.mkdir(mode=0o700, exist_ok=True)
 conn = connect(DB)
@@ -271,10 +366,9 @@ def do_activate():
 
 act = step("2_activate", do_activate)
 conn.close()
-if not act["ok"]:
-    ev["stopped"] = "activation refused"
-    save()
-    sys.exit(4)
+model_id = (act.get("result") or {}).get("model_id") or ""
+if not (act["ok"] and model_id.startswith(f"deepseek:{EXPECTED_MODEL}@") and ":thinking=disabled:" in model_id):
+    abort("activation refused or extractor not on the expected non-thinking model", 4)
 
 adapter = Adapter()
 
@@ -289,48 +383,106 @@ def run(*signals):
             "projection": {k: v for k, v in res.projection.items() if v}, "error": res.error}
 
 
-_BUSY = ("consolidation_in_flight", "consolidation_deferred", "consolidation_submitted")
-
-
-def settle(name: str, max_runs: int = 12, pause_s: int = 10) -> list:
-    """Re-run the worker with no new mail until retains and consolidation settle."""
-    runs = []
+def settle(name: str, max_runs: int = 36, pause_s: int = 10):
+    """Re-run the worker with no new mail until retains and consolidation
+    settle.  Not settling within *max_runs* (a timeout), a spend stop, an
+    unfinished operation, pending prose consolidation or a signal held back
+    by a failed extraction is reported as incomplete."""
+    runs, stopped = [], False
     for _ in range(max_runs):
         if not guard(f"{name}_{len(runs)}"):
+            stopped = True
             break
         time.sleep(pause_s)
         out = run()
-        runs.append(out["projection"])
-        p = out["projection"]
-        submitted = any(o["status"] == "submitted" for o in outbox()["operations"])
-        if not submitted and not any(p.get(k) for k in _BUSY):
+        runs.append(out)
+        busy = any(out["projection"].get(k) for k in checks.BUSY_FLAGS)
+        if not busy and not any(o["status"] == "submitted" for o in outbox()["operations"]):
             break
-    return runs
+    pending = prose_pending()
+    f = checks.settle_findings(runs=runs, outbox=outbox(), prose_pending=pending,
+                               resolution=resolution(), stopped_by_spend=stopped, max_runs=max_runs)
+    return {"settled": f.ok, "worker_runs": len(runs), "max_runs": max_runs, "prose_pending": pending,
+            "projections": [r["projection"] for r in runs]}, f
+
+
+DELIVERY_Q, MEETING_Q = "When is the ORD-501 delivery scheduled?", "When is the planning meeting?"
+#: The customer's proposal in M2; checked even if the ledger missed it.
+PROPOSED = "2026-06-15"
+
+
+def before_confirmation():
+    """After the customer's request, before the business confirms: the ledger
+    holds the proposal as pending and no memory presents it as agreed."""
+    led, mem, obs = ledger_state(), memory(), observations()
+    rec = {"delivery": recall(DELIVERY_Q),
+           "delivery_observations": recall("ORD-501 delivery date", types=["observation"])}
+    tag, f = alice_tag()
+    f.add(checks.ledger_after_request(led))
+    f.add(checks.ledger_documents(mem, led))
+    f.add(checks.customer_scope(mem, obs, tag))
+    texts = ([("observation", o["text"]) for o in obs]
+             + [(f"recall {k}", x["text"]) for k, v in rec.items() for x in v])
+    f.add(checks.no_proposal_as_fact(texts, sorted(set(checks.unconfirmed_proposals(led)) | {PROPOSED})))
+    f.add(checks.recall_states(rec["delivery"], "2026-06-10", "delivery recall before confirmation"))
+    return {"ledger": led, "resolution": resolution(), "outbox": outbox(), "memory": mem,
+            "observations": obs, "recall": rec, "spend": spend()}, f
+
+
+def after_confirmation():
+    led, mem, obs = ledger_state(), memory(), observations()
+    tag, f = alice_tag()
+    f.add(checks.ledger_after_confirmation(led))
+    f.add(checks.ledger_documents(mem, led))
+    f.add(checks.customer_scope(mem, obs, tag))
+    return {"ledger": led, "resolution": resolution(), "outbox": outbox(), "memory": mem,
+            "observations": obs, "spend": spend()}, f
+
+
+def final_recall():
+    rec = {"delivery": recall(DELIVERY_Q),
+           "delivery_observations": recall("ORD-501 delivery date", types=["observation"]),
+           "meeting": recall(MEETING_Q)}
+    f = checks.recall_states(rec["delivery"], "2026-06-15", "delivery recall")
+    f.add(checks.recall_states(rec["meeting"], "2026-06-05", "meeting recall"))
+    return rec, f
+
+
+def counts() -> dict:
+    return {"versions": sum(len(c["versions"]) for c in ledger_state().values()),
+            "operations": len(outbox()["operations"]), "documents": len(memory())}
 
 
 # ── Scenario ──────────────────────────────────────────────────────────────────
+# Paid steps continue only while processing settles and its state is
+# complete (observations present); a failed ledger or Hindsight check is
+# recorded and the run goes on.
+processing_ok = False
 if guard("run1"):
-    step("3_run1_commit_request_meeting", lambda: run(M1, M2, M3))
-    step("3_settle", lambda: settle("settle1"))
-    step("3_state", lambda: {"ledger": ledger_state(), "resolution": resolution(),
-                             "outbox": outbox(), "spend": spend()})
-if guard("run2"):
-    step("4_run2_business_confirms", lambda: run(M4))
-    step("4_settle", lambda: settle("settle2"))
-    step("4_state", lambda: {"ledger": ledger_state(), "resolution": resolution(), "outbox": outbox(),
-                             "memory": memory(), "observations": observations(), "spend": spend()})
-if guard("recall"):
-    step("5_recall", lambda: {
-        "delivery": recall("When is the ORD-501 delivery scheduled?"),
-        "delivery_observations": recall("ORD-501 delivery date", types=["observation"]),
-        "meeting": recall("When is the planning meeting?")})
-if guard("run3"):
-    ev["restart_before"] = {"versions": sum(len(c["versions"]) for c in ledger_state().values()),
-                            "operations": len(outbox()["operations"]), "documents": len(memory())}
-    step("6_run3_restart_replay", lambda: run(M1, M2, M3, M4))
-    step("6_state", lambda: {"versions": sum(len(c["versions"]) for c in ledger_state().values()),
-                             "operations": len(outbox()["operations"]), "documents": len(memory()),
-                             "spend": spend()})
+    step("3_run1_commit_request_meeting", lambda: run(M1, M2, M3),
+         lambda r: checks.run_ok(r, inserted=3, resolved=3))
+    processing_ok = step("3_settle", lambda: settle("settle1"))["ok"]
+    st = step("3_state_before_confirmation", before_confirmation)
+    processing_ok = processing_ok and not st["findings"]["incomplete"]
+else:
+    skipped("3_run1_commit_request_meeting", ev.get("stopped", "spend stop"))
+if processing_ok and guard("run2"):
+    step("4_run2_business_confirms", lambda: run(M4), lambda r: checks.run_ok(r, inserted=1, resolved=1))
+    processing_ok = step("4_settle", lambda: settle("settle2"))["ok"]
+    st = step("4_state", after_confirmation)
+    processing_ok = processing_ok and not st["findings"]["incomplete"]
+else:
+    processing_ok = False
+    skipped("4_run2_business_confirms", ev.get("stopped") or "run 1 processing incomplete")
+if processing_ok and guard("recall"):
+    step("5_recall", final_recall)
+    ev["restart_before"] = counts()
+    step("6_run3_restart_replay", lambda: run(M1, M2, M3, M4),
+         lambda r: checks.run_ok(r, inserted=0, duplicates=4))
+    step("6_state", lambda: (counts(), checks.replay_unchanged(ev["restart_before"], counts())))
+elif processing_ok:
+    processing_ok = False
+    skipped("5_recall", ev.get("stopped", "spend stop"))
 
 # ── Prose replacement under one document id (same request shapes as the stage)
 PROBE, PROBE_ENT = "sig:probe-prose-1", "ent:cid_probe_bob"
@@ -367,14 +519,18 @@ def probe_snapshot():
             "observations": [o for o in observations() if PROBE_ENT in o["tags"]], "spend": spend()}
 
 
-if guard("probe_v1"):
-    step("7_probe_v1", lambda: retain_and_consolidate(prose_item(
-        "Customer Bob confirmed that his order ORD-777 will be delivered on 2026-07-01.", "1")))
-    step("7_probe_v1_snapshot", probe_snapshot)
-if guard("probe_v2"):
+if processing_ok and guard("probe_v1"):
+    processing_ok = step("7_probe_v1", lambda: retain_and_consolidate(prose_item(
+        "Customer Bob confirmed that his order ORD-777 will be delivered on 2026-07-01.", "1")),
+        checks.probe_operation)["ok"]
+    step("7_probe_v1_snapshot", probe_snapshot,
+         lambda r: checks.recall_states(r["recall"], "2026-07-01", "probe v1 recall"))
+if processing_ok and guard("probe_v2"):
     step("8_probe_v2_same_id", lambda: retain_and_consolidate(prose_item(
-        "Customer Bob's order ORD-777 is scheduled for delivery on 2026-07-09.", "2")))
-    step("8_probe_v2_snapshot", probe_snapshot)
+        "Customer Bob's order ORD-777 is scheduled for delivery on 2026-07-09.", "2")),
+        checks.probe_operation)
+    step("8_probe_v2_snapshot", probe_snapshot,
+         lambda r: checks.probe_replacement(r, new_iso="2026-07-09", old_iso="2026-07-01"))
 
 
 def cancel_probe():
@@ -396,13 +552,19 @@ def cancel_probe():
             "status_after": {k: status.get(k) for k in ("status", "error_message")}, "document": doc_state}
 
 
-if guard("cancel_probe"):
-    step("9_cancellation", cancel_probe)
+if processing_ok and guard("cancel_probe"):
+    step("9_cancellation", cancel_probe, checks.cancellation)
+if not processing_ok:
+    ev["probes_skipped"] = ev.get("stopped") or "processing did not settle"
 
 step("10_final", lambda: {"ledger": ledger_state(), "memory": memory(), "observations": observations(),
                           "outbox": outbox(), "spend": spend(),
                           "llm_stats": client.get_llm_stats(bank_id=BANK),
-                          "bank_stats": client.get_bank_stats(bank_id=BANK)})
+                          "bank_stats": client.get_bank_stats(bank_id=BANK)},
+     lambda r: checks.spend(r["spend"], STOP_USD))
 ev["finished"] = format_utc(datetime.now(UTC))
 save()
-print("done; evidence:", EVIDENCE)
+v = ev["verdict"]
+print("verdict:", "PASS" if v.get("pass") else "FAIL",
+      {c: len(v[c]) for c in checks.CATEGORIES}, "; evidence:", EVIDENCE)
+sys.exit(0 if v.get("pass") else 1)

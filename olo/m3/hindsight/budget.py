@@ -1,12 +1,20 @@
 """Olo M3 — DeepSeek budget guard: $8 hard stop.
 
 Polls ``GET /banks/{id}/llm-requests/stats`` before and after each batch.
-Uses ``buckets[].tokens.input`` / ``buckets[].tokens.output`` for cost.
+Uses ``buckets[].tokens.input`` for input and ``buckets[].tokens.output``
+plus ``buckets[].tokens.thoughts`` (reasoning, which Hindsight reports apart
+from visible output) for output.
 Fails closed: missing or malformed stats raise ``StatsUnavailableError``.
 
-Pricing (DeepSeek V3, peak list price):
-    Input:   $0.14 / 1 M tokens
-    Output:  $0.28 / 1 M tokens
+Pricing (deepseek-flash, peak list price, cache miss; DeepSeek pricing page,
+checked 2026-11-26; off-peak is half):
+    Input:   $0.30 / 1 M tokens
+    Output:  $1.20 / 1 M tokens
+Earlier gate and S4 figures used DeepSeek V3 prices ($0.14 / $0.28) for the
+retired deepseek-chat model; those recorded results are left as they were.
+
+Client-side only: work the server has already accepted can finish after a
+stop, so a stop bounds what is started, not a guaranteed monetary maximum.
 
 Audit correction D1 (fix 1): real financial hard stop.
 """
@@ -18,10 +26,10 @@ from typing import Optional
 
 # ── Pricing ──────────────────────────────────────────────────────────────────
 
-#: Input token cost in USD per 1 M tokens (DeepSeek V3 peak list price).
-COST_INPUT_PER_M: float = 0.14
-#: Output token cost in USD per 1 M tokens (DeepSeek V3 peak list price).
-COST_OUTPUT_PER_M: float = 0.28
+#: Input token cost in USD per 1 M tokens (deepseek-flash peak, cache miss).
+COST_INPUT_PER_M: float = 0.30
+#: Output token cost in USD per 1 M tokens (deepseek-flash peak).
+COST_OUTPUT_PER_M: float = 1.20
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -131,7 +139,7 @@ def parse_stats(stats: object) -> TokenSnapshot:
                 f"bucket[{i}].tokens is not a dict: {type(tokens).__name__}"
             )
         total_in += int(tokens.get("input", 0))
-        total_out += int(tokens.get("output", 0))
+        total_out += int(tokens.get("output", 0)) + int(tokens.get("thoughts", 0) or 0)
 
     return TokenSnapshot(input_tokens=total_in, output_tokens=total_out)
 

@@ -162,9 +162,7 @@ class TestUsageGuard:
 
     def test_raises_when_budget_exceeded(self) -> None:
         """Spend > $8 raises BudgetExceededError with correct amounts."""
-        # 50M input tokens costs 50 Ã— $0.14 = $7.00 at input rate
-        # but $8 budget â†’ need more than 57M input tokens or some output
-        # Use: 50M input ($7.00) + 4M output ($1.12) = $8.12 â†’ exceeds $8
+        # 50M input + 4M output exceeds $8 at the guard's prices
         before = {"buckets": [{"total": 0, "tokens": {"input": 0, "output": 0}}]}
         after = {
             "buckets": [

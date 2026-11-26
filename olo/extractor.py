@@ -6,8 +6,8 @@ business signals using a budget-limited, cached LLM call.
 Design pillars
 --------------
 Budget-limited  — a Budget object caps total calls and tokens; extraction
-                  returns None when exhausted.  Pricing uses DeepSeek V3 rates
-                  ($0.14/1M input, $0.28/1M output) from olo/m3/hindsight/budget.py.
+                  returns None when exhausted.  Pricing uses the DeepSeek peak list
+                  prices defined once in olo/m3/hindsight/budget.py.
 Cached          — an optional SQLite cache connection stores
                   prompt_hash → response so identical prompts are free.
 Verifiable      — supporting_passage must appear verbatim in the FULL original
@@ -60,6 +60,9 @@ from olo.ledger import (
     cancellation_field_error,
     is_valid_iso_date,
 )
+# DeepSeek pricing: one definition, shared with the Hindsight usage guard.
+from olo.m3.hindsight.budget import COST_INPUT_PER_M as _DEEPSEEK_INPUT_PER_M
+from olo.m3.hindsight.budget import COST_OUTPUT_PER_M as _DEEPSEEK_OUTPUT_PER_M
 from olo.signal_content import (
     PREP_CONTENT_ERROR,
     PREP_MISSING_CONTENT,
@@ -79,15 +82,12 @@ __all__ = [
     "extract_commitment_outcome",
     "extract_prepared",
     "extract_commitment_update",
+    "DEFAULT_DEEPSEEK_MODEL",
     "make_deepseek_model_fn",
     "migrate_extraction_cache",
 ]
 
 _CONFIDENCE_THRESHOLD: float = 0.7
-
-# DeepSeek V3 pricing (from olo/m3/hindsight/budget.py)
-_DEEPSEEK_INPUT_PER_M:  float = 0.14   # USD per 1M input  tokens
-_DEEPSEEK_OUTPUT_PER_M: float = 0.28   # USD per 1M output tokens
 
 # Keyword-density window for long signals
 _MAX_SIGNAL_CHARS: int = 4_000
@@ -394,14 +394,26 @@ EXTRACTION_VERSION: str = "2"
 DEFAULT_MAX_OUTPUT_TOKENS: int = 400
 
 
+#: DeepSeek chat model used for extraction.  ``deepseek-chat`` (DeepSeek V3,
+#: used for the S4 results and the gate) was discontinued on 2026-07-24;
+#: ``deepseek-flash`` is the supported model (GET /models, 2026-11-26).  It
+#: thinks by default, so every request disables thinking explicitly.
+DEFAULT_DEEPSEEK_MODEL: str = "deepseek-flash"
+DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
+#: Request field selecting non-thinking mode (DeepSeek thinking-mode guide:
+#: ``thinking.type`` takes precedence over ``reasoning_effort``).
+DEEPSEEK_NON_THINKING: dict = {"thinking": {"type": "disabled"}}
+
+
 def _deepseek_model_id(model: str, base_url: str, temperature: float, max_tokens: int) -> str:
-    return f"deepseek:{model}@{base_url}:temperature={temperature}:max_tokens={max_tokens}"
+    return (f"deepseek:{model}@{base_url}:thinking=disabled"
+            f":temperature={temperature}:max_tokens={max_tokens}")
 
 
 def make_deepseek_model_fn(
-    model: str = "deepseek-chat",
+    model: str = DEFAULT_DEEPSEEK_MODEL,
     api_key: Optional[str] = None,
-    base_url: str = "https://api.deepseek.com/v1",
+    base_url: str = DEEPSEEK_BASE_URL,
     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: float = 0,
 ) -> Callable[[str], tuple]:
@@ -413,9 +425,13 @@ def make_deepseek_model_fn(
     (used by the per-call budget check).
 
     Args:
-        model:       DeepSeek model name (default: deepseek-chat / DeepSeek V3).
+        model:       DeepSeek model name (default: deepseek-flash, non-thinking).
         api_key:     Explicit API key; falls back to DEEPSEEK_API_KEY env var.
         base_url:    API base URL (default: https://api.deepseek.com/v1).
+
+    Reasoning tokens, should a reply report any, are charged as output on
+    top of ``completion_tokens``: an upper bound whichever way the API counts
+    them.
         max_tokens:  Maximum output tokens per call.
         temperature: Sampling temperature (0 = deterministic).
 
@@ -447,10 +463,15 @@ def make_deepseek_model_fn(
             temperature=temperature,
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
+            extra_body=DEEPSEEK_NON_THINKING,
         )
         text = resp.choices[0].message.content or ""
-        if resp.usage:
-            return text, int(resp.usage.prompt_tokens or 0), int(resp.usage.completion_tokens or 0)
+        usage = resp.usage
+        if usage:
+            details = getattr(usage, "completion_tokens_details", None)
+            reasoning = int(getattr(details, "reasoning_tokens", 0) or 0)
+            return (text, int(usage.prompt_tokens or 0),
+                    int(usage.completion_tokens or 0) + reasoning)
         return text, max(len(text) // 4, 1)
 
     fn.model_id = _deepseek_model_id(model, base_url, temperature, max_tokens)  # type: ignore[attr-defined]
@@ -468,7 +489,7 @@ def _default_model_fn(prompt: str) -> tuple:
 
 
 _default_model_fn.model_id = _deepseek_model_id(  # type: ignore[attr-defined]
-    "deepseek-chat", "https://api.deepseek.com/v1", 0, DEFAULT_MAX_OUTPUT_TOKENS)
+    DEFAULT_DEEPSEEK_MODEL, DEEPSEEK_BASE_URL, 0, DEFAULT_MAX_OUTPUT_TOKENS)
 _default_model_fn.max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS  # type: ignore[attr-defined]
 
 

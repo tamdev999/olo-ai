@@ -163,7 +163,8 @@ class TestCacheKey:
 
     def test_deepseek_fn_declares_identity_and_output_cap(self) -> None:
         fn = make_deepseek_model_fn(api_key="sk-test-not-real", max_tokens=321, temperature=0)
-        assert "deepseek-chat" in fn.model_id and "max_tokens=321" in fn.model_id
+        assert fn.model_id.startswith("deepseek:deepseek-flash@")
+        assert ":thinking=disabled:" in fn.model_id and "max_tokens=321" in fn.model_id
         assert fn.max_output_tokens == 321
         other = make_deepseek_model_fn(api_key="sk-test-not-real", model="deepseek-reasoner")
         assert other.model_id != fn.model_id
