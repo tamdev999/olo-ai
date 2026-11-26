@@ -1338,151 +1338,6 @@ def resolve_identifier_conflict(
         "Conflicts are recorded and preserved for future resolution."
     )
 
-    now = clock().isoformat() if clock else datetime.now(timezone.utc).isoformat()
-
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        # Find all unresolved conflicts for this identifier
-        unresolved = conn.execute(
-            "SELECT existing_contact_id, new_contact_id"
-            " FROM identifier_conflicts"
-            " WHERE identifier_type = ? AND identifier_value = ?"
-            "   AND resolved_contact_id IS NULL",
-            (identifier_type, identifier_value),
-        ).fetchall()
-
-        if not unresolved:
-            conn.execute("COMMIT")
-            return 0  # Idempotent: nothing to resolve
-
-        # P3 check 2: resolved_contact_id must be a legitimate claimant
-        claimants: set[str] = set()
-        for row in unresolved:
-            claimants.add(row[0])
-            claimants.add(row[1])
-
-        if resolved_contact_id not in claimants:
-            conn.execute("ROLLBACK")
-            raise IdentityResolutionError(
-                f"resolve_identifier_conflict: resolved_contact_id="
-                f"{resolved_contact_id!r} is not a claimant in any unresolved "
-                f"dispute for ({identifier_type}, {identifier_value!r}). "
-                f"Valid claimants: {sorted(claimants)}."
-            )
-
-        # Mark conflicts as resolved
-        updated = conn.execute(
-            "UPDATE identifier_conflicts"
-            "  SET resolved_contact_id = ?,"
-            "      resolved_at = ?,"
-            "      resolved_by = ?"
-            " WHERE identifier_type = ?"
-            "   AND identifier_value = ?"
-            "   AND resolved_contact_id IS NULL",
-            (resolved_contact_id, now, resolved_by, identifier_type, identifier_value),
-        ).rowcount
-
-        if updated > 0:
-            # Fix 2: revoke losers' identifiers instead of hard-deleting them.
-            # Preserves original source and provenance; revocation_source records
-            # who authorized the transfer.
-            loser_rows = conn.execute(
-                "SELECT contact_id, source FROM contact_identifiers"
-                " WHERE identifier_type = ? AND identifier_value = ?"
-                "   AND contact_id != ? AND revoked_at IS NULL",
-                (identifier_type, identifier_value, resolved_contact_id),
-            ).fetchall()
-            for loser_cid, loser_source in loser_rows:
-                conn.execute(
-                    "UPDATE contact_identifiers"
-                    "  SET revoked_at = ?, revocation_source = ?"
-                    " WHERE identifier_type = ? AND identifier_value = ?"
-                    "   AND contact_id = ? AND revoked_at IS NULL",
-                    (now, resolved_by, identifier_type, identifier_value, loser_cid),
-                )
-                # Record 'transferred_out' with original source preserved.
-                _record_ownership_event(
-                    conn, identifier_type, identifier_value, loser_cid,
-                    "transferred_out", loser_source, resolved_by, now,
-                )
-
-            # Assign the identifier to the winner.
-            # Fix 2: use the winner's ORIGINAL CRM source, not resolved_by,
-            # so the ownership provenance reflects the authentic registration.
-            winner_active = conn.execute(
-                "SELECT source FROM contact_identifiers"
-                " WHERE identifier_type = ? AND identifier_value = ?"
-                "   AND contact_id = ? AND revoked_at IS NULL",
-                (identifier_type, identifier_value, resolved_contact_id),
-            ).fetchone()
-            if winner_active:
-                # Winner already has an active entry — just refresh timestamp.
-                winner_source = winner_active[0]
-                conn.execute(
-                    "UPDATE contact_identifiers SET verified_at = ?"
-                    " WHERE identifier_type = ? AND identifier_value = ?"
-                    "   AND contact_id = ? AND revoked_at IS NULL",
-                    (now, identifier_type, identifier_value, resolved_contact_id),
-                )
-            else:
-                # Winner's entry was revoked or never existed.
-                # Find their original source from contact_identifiers (revoked)
-                # or from the conflict record.
-                revoked_row = conn.execute(
-                    "SELECT source FROM contact_identifiers"
-                    " WHERE identifier_type = ? AND identifier_value = ?"
-                    "   AND contact_id = ? AND revoked_at IS NOT NULL"
-                    " ORDER BY revoked_at DESC LIMIT 1",
-                    (identifier_type, identifier_value, resolved_contact_id),
-                ).fetchone()
-                conflict_row = conn.execute(
-                    "SELECT source FROM identifier_conflicts"
-                    " WHERE identifier_type = ? AND identifier_value = ?"
-                    "   AND new_contact_id = ? LIMIT 1",
-                    (identifier_type, identifier_value, resolved_contact_id),
-                ).fetchone()
-                winner_source = (
-                    (revoked_row[0] if revoked_row else None)
-                    or (conflict_row[0] if conflict_row else None)
-                    or resolved_by  # last resort
-                )
-                conn.execute(
-                    "INSERT INTO contact_identifiers"
-                    " (identifier_type, identifier_value, contact_id,"
-                    "  source, verified_at,"
-                    "  revoked_at, revocation_source)"
-                    " VALUES (?, ?, ?, ?, ?, NULL, NULL)"
-                    " ON CONFLICT(identifier_type, identifier_value, source)"
-                    " DO UPDATE SET"
-                    "  contact_id = excluded.contact_id,"
-                    "  verified_at = excluded.verified_at,"
-                    "  revoked_at = NULL,"
-                    "  revocation_source = NULL",
-                    (identifier_type, identifier_value, resolved_contact_id,
-                     winner_source, now),
-                )
-
-            # Record 'transferred_in' for the winner.
-            # No idempotency check here: each resolution is a distinct event.
-            # The old "already_in" guard incorrectly suppressed events on
-            # repeated A→B→A→B transfers; replay safety is provided by the
-            # "if not unresolved: return 0" guard earlier in this function.
-            _record_ownership_event(
-                conn, identifier_type, identifier_value, resolved_contact_id,
-                "transferred_in", winner_source, resolved_by, now,
-            )
-
-        conn.execute("COMMIT")
-        return updated
-    except IdentityResolutionError:
-        raise
-    except Exception:
-        try:
-            conn.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise
-
 
 # ---------------------------------------------------------------------------
 # Contact cache for fast per-build lookup
@@ -1991,6 +1846,28 @@ def resolve_signal_identity(
         return SignalIdentity(IDENTITY_RESOLVED, contact_id=next(iter(known)))
     email, name = unknown[0]
     return SignalIdentity(IDENTITY_NEW, counterparty=("email", email, name))
+
+
+def plausible_customer_emails(
+    kind: str,
+    payload: dict,
+    own_identifiers: Iterable[tuple[str, str]] = (),
+) -> list[str]:
+    """The addresses resolve_signal_identity weighs as plausible customers.
+
+    Used to check an operator's identity decision: the chosen contact must
+    own one of them.  Empty for kinds without email counterparties.
+    """
+    own = {(t, v.strip().lower()) for t, v in own_identifiers}
+    own |= {("email", e) for e in _signal_own_emails(kind, payload)}
+    if kind in _EMAIL_SIGNAL_KINDS:
+        raw = _email_counterparties(kind, payload)
+    elif kind in _CALENDAR_SIGNAL_KINDS:
+        raw = _calendar_counterparties(payload)
+    else:
+        return []
+    return sorted({email for email, _ in raw
+                   if ("email", email) not in own and not is_automated_sender(email)})
 
 
 def load_own_identifiers(conn: sqlite3.Connection) -> frozenset[tuple[str, str]]:

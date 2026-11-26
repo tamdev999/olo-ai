@@ -174,6 +174,13 @@ def _event_to_signal(
         ],
         "recurring_event_id": event.get("recurringEventId"),
         "recurrence": recurrence_raw,
+        # Identity and ordering of this revision (post-audit batch 3): the
+        # original slot of a moved or cancelled occurrence, Google's change
+        # counter and the iCalendar UID shared by a series and its instances.
+        "original_start": (event.get("originalStartTime") or {}).get("dateTime")
+                          or (event.get("originalStartTime") or {}).get("date") or "",
+        "sequence": event.get("sequence", 0),
+        "ical_uid": event.get("iCalUID", ""),
         "html_link": None,  # §6.3: excluded
     }
     if content_refs_entry:

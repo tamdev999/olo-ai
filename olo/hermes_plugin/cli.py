@@ -139,6 +139,9 @@ def _print_health(conn) -> None:
           f" in_flight={b['operations_in_flight']} ledger_unprojected={b['ledger_unprojected']}")
     if b["mailbox_states"]:
         print(f"    mailbox={_json.dumps(b['mailbox_states'], sort_keys=True)}")
+    if b["unresolved_ledger"]["open"]:
+        print(f"    unresolved_ledger={_json.dumps(b['unresolved_ledger'], sort_keys=True)}"
+              f" operators={b['operators']} (review: hermes olo review)")
     conditions = assess(conn, datetime.now(UTC))
     if conditions:
         print("  Attention:")
@@ -1171,6 +1174,10 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
     )
     purge_p.set_defaults(func=_cmd_purge_content)
 
+    # operator workflow: operator / review / resolve (post-audit batch 3)
+    from olo.hermes_plugin.cli_operator import register as _register_operator
+    _register_operator(subs)
+
 
 def handler(args: argparse.Namespace) -> None:
     """Dispatch to the chosen sub-command."""
@@ -1191,6 +1198,7 @@ def handler(args: argparse.Namespace) -> None:
         return
     func = getattr(args, "func", None)
     if func is None:
-        print("usage: hermes olo {status,setup,google,checkpoint,backfill,purge-content}", file=sys.stderr)
+        print("usage: hermes olo {status,setup,google,checkpoint,backfill,purge-content,"
+              "operator,review,resolve}", file=sys.stderr)
         sys.exit(1)
     func(args)

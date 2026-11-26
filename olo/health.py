@@ -161,6 +161,9 @@ def _operator_items(conn: sqlite3.Connection, max_attempts: int) -> dict[str, in
                   " AND commitment_attempts >= ?", (max_attempts,)),
         "ledger_unresolved": _scalar(
             conn, "SELECT COUNT(*) FROM signal_resolution WHERE commitment_status='unresolved'"),
+        "identifier_conflicts": _scalar(
+            conn, "SELECT COUNT(DISTINCT identifier_type || ':' || identifier_value)"
+                  " FROM identifier_conflicts WHERE resolved_contact_id IS NULL"),
         "projection_retries_exhausted": _scalar(
             conn, "SELECT COUNT(*) FROM (SELECT d.document_id FROM hindsight_operation_docs d"
                   " JOIN hindsight_operations o ON o.operation_id=d.operation_id"
@@ -197,6 +200,16 @@ def backlog(conn: sqlite3.Connection, *, max_attempts: int = 5) -> dict[str, Any
         "operator": _operator_items(conn, max_attempts),
         "mailbox_states": {r[0]: int(r[1]) for r in _rows(
             conn, "SELECT state, COUNT(*) FROM gmail_message_state GROUP BY state")},
+        # Open unresolved ledger events (olo.ledger): those waiting behind
+        # another unresolved commitment are retried when it is decided.
+        "unresolved_ledger": {
+            "open": _scalar(conn, "SELECT COUNT(*) FROM unresolved_matches WHERE resolved_at IS NULL"),
+            "waiting_behind_another": _scalar(
+                conn, "SELECT COUNT(*) FROM unresolved_matches"
+                      " WHERE resolved_at IS NULL AND blocked_by != '[]'"),
+        },
+        "operators": _scalar(
+            conn, "SELECT COUNT(*) FROM operator_credentials WHERE revoked_at IS NULL"),
     }
 
 

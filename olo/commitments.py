@@ -19,6 +19,9 @@ Outcomes (``commitment_outcome``) and their ``commitment_status``:
                                   its full content was fetched
   (awaiting_content)  pending     metadata copy while full content is enabled
                                   but the content copy has not arrived yet
+  no_change           resolved    calendar revision leaves the meeting date as is
+  stale_revision      skipped     calendar revision older than the one applied
+  recurring_series    skipped     calendar series master (no single date)
   rejected            unresolved  evidence failed verification (never written)
   ledger_unresolved   unresolved  no unique, evidenced commitment to update
   ledger_invalid      unresolved  event failed ledger validation
@@ -29,6 +32,10 @@ Outcomes (``commitment_outcome``) and their ``commitment_status``:
 Only signals with ``identity_status='resolved'`` are processed: the ledger
 key is the canonical Rolodex contact, never a guess.  Ambiguous or unresolved
 identities keep the commitment pending until the identity is resolved.
+
+Calendar events (calendar.event.changed / .cancelled) take the deterministic
+path in olo.calendar_commitments — no model call, no budget — keyed by the
+event itself.
 """
 from __future__ import annotations
 
@@ -39,6 +46,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from olo.calendar_commitments import CALENDAR_EVENT_KINDS, process_calendar_signal
 from olo.extractor import (
     Budget,
     ExtractionStatus,
@@ -134,8 +142,25 @@ def _has_content_copy(conn: sqlite3.Connection, message_id: object) -> bool:
     ).fetchone() is not None
 
 
+def reopen_calendar_signals(conn: sqlite3.Connection, source: str, now: str) -> int:
+    """Queue calendar events ingested before they had a commitment path.
+
+    Until post-audit batch 3 calendar signals were tracked as 'skipped' and
+    never processed; those rows (no outcome recorded) become pending once.
+    """
+    marks = ",".join("?" * len(CALENDAR_EVENT_KINDS))
+    conn.execute("BEGIN IMMEDIATE")
+    n = conn.execute(
+        "UPDATE signal_resolution SET commitment_status='pending', updated_at=?"
+        " WHERE source=? AND commitment_status='skipped' AND commitment_outcome IS NULL"
+        f"   AND signal_id IN (SELECT external_id FROM signals WHERE source=? AND kind IN ({marks}))",
+        (now, source, source, *sorted(CALENDAR_EVENT_KINDS))).rowcount
+    conn.execute("COMMIT")
+    return n
+
+
 def _candidates(conn: sqlite3.Connection, source: str, max_attempts: int) -> list[sqlite3.Row]:
-    kinds = sorted(PROSE_KINDS)
+    kinds = sorted(PROSE_KINDS | CALENDAR_EVENT_KINDS)
     marks = ",".join("?" * len(kinds))
     return conn.execute(
         "SELECT sr.signal_id, sr.contact_id, sr.commitment_attempts,"
@@ -196,6 +221,7 @@ def run_commitment_stage(
     migrate_extraction_cache(conn)
     content_enabled = _full_content_enabled(conn)
     counts: dict[str, int] = {}
+    reopen_calendar_signals(conn, source, format_utc(clock()))
 
     for row in _candidates(conn, source, cfg.max_attempts):
         if renew is not None:
@@ -204,6 +230,12 @@ def run_commitment_stage(
         raw = row["payload"]
         payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
         now = format_utc(clock())
+
+        if kind in CALENDAR_EVENT_KINDS:
+            label = process_calendar_signal(conn, source, sid, row["contact_id"], kind,
+                                            payload, now, _record)
+            counts[label] = counts.get(label, 0) + 1
+            continue
 
         if kind in _METADATA_EMAIL_KINDS and content_enabled:
             # Full content is the authoritative representation of a Gmail

@@ -210,11 +210,13 @@ def _run_identity_stage(
     from olo.adapters.contacts import (
         IDENTITY_AMBIGUOUS,
         IDENTITY_NEW,
+        IDENTITY_NONE,
         IDENTITY_RESOLVED,
         IdentityResolutionError,
         create_verified_contact,
         resolve_signal_identity,
     )
+    from olo.calendar_commitments import CALENDAR_EVENT_KINDS, inherited_contact
     from olo.signals import format_utc
     resolved = unresolved = failed = 0
     now_str = format_utc(clock())
@@ -250,6 +252,13 @@ def _run_identity_stage(
             # Several distinct plausible customers: never pick one.
             ambiguous = True
             error_reason = identity.reason
+        elif (identity is not None and identity.status == IDENTITY_NONE
+              and sig.kind in CALENDAR_EVENT_KINDS):
+            # A deleted event's stub names nobody; it belongs to the customer
+            # its earlier revisions were verified for (same provider record).
+            contact_id, why = inherited_contact(conn, source, sig.payload)
+            if why:
+                ambiguous, error_reason = True, why
 
         # Step 2 (S3): create contact for the single genuine counterparty
         if identity is not None and identity.status == IDENTITY_NEW and error_reason is None:

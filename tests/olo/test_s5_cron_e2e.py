@@ -282,16 +282,18 @@ def test_spam_rescue_reaches_sqlite_ledger_and_hindsight_through_the_shim(home: 
 
 
 def test_subprocesses_import_this_repository(tmp_path: Path) -> None:
-    """The cron/CLI subprocess environment resolves `olo` and `hermes_cli` to
-    the code under test (the WSL test venv's editable install points at a
-    stale copy elsewhere)."""
+    """A script run by path, the way cron runs a shim, resolves `olo` and
+    `hermes_cli` to the code under test with the environment every Olo test
+    inherits (the WSL test venv's editable install points at a stale copy)."""
     import subprocess
     repo = _repo_root().resolve()
-    env = {**os.environ, "HERMES_HOME": str(tmp_path)}
-    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(repo), os.environ.get("PYTHONPATH", "")) if p)
-    out = subprocess.run([sys.executable, "-c",
-                          "import olo.runner, hermes_cli; print(olo.runner.__file__); "
-                          "print(hermes_cli.__file__)"],
-                         capture_output=True, text=True, env=env, cwd=str(tmp_path), check=True)
-    for line in out.stdout.splitlines():
+    script = tmp_path / "which_code.py"
+    script.write_text("import olo.runner, hermes_cli\n"
+                      "print(olo.runner.__file__)\nprint(hermes_cli.__file__)\n", encoding="utf-8")
+    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                         env={**os.environ, "HERMES_HOME": str(tmp_path)},
+                         cwd=str(tmp_path), check=True)
+    lines = out.stdout.splitlines()
+    assert len(lines) == 2, out.stdout
+    for line in lines:
         assert Path(line).resolve().is_relative_to(repo), line

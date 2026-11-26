@@ -932,6 +932,8 @@ def get_lease(source: str, conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
 #: All others get commitment_status='skipped' immediately.
 _COMMITMENT_SIGNAL_KINDS: frozenset[str] = frozenset({
     "email.received", "email.sent", "email.content", "call.transcript",
+    # Calendar events: deterministic meeting commitments (olo.calendar_commitments).
+    "calendar.event.changed", "calendar.event.cancelled",
 })
 
 
@@ -945,8 +947,8 @@ def ensure_signal_resolution(
 
     Idempotent: INSERT OR IGNORE is a no-op for signals already tracked.
     Commitment status is 'pending' for prose/LLM-eligible signal kinds and
-    'skipped' for structured kinds (invoices, calendar, etc.) that do not
-    require commitment event extraction.
+    calendar events, and 'skipped' for other structured kinds (invoices,
+    calendar list changes, label changes) that carry no commitment.
     """
     for sig in signals:
         commitment_status = (

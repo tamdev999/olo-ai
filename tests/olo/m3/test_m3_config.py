@@ -16,7 +16,9 @@ Opus audit correction P1-6: host validation at construction time.
 from __future__ import annotations
 
 import ast
+import json
 import re
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -80,6 +82,59 @@ def _extract_hindsight_vars_from_file(path: Path) -> list[tuple[str, int]]:
     return result
 
 
+#: The pinned Hindsight venv the gate tests run (see test_m3_gate).
+_HINDSIGHT_PYTHON = Path("/root/olo_m3_hindsight_venv/bin/python")
+
+_TENANT_PROBE = """
+import asyncio, json, os, sys
+from importlib.metadata import version
+from hindsight_api.extensions.loader import load_extension
+from hindsight_api.extensions.tenant import AuthenticationError, TenantExtension
+from hindsight_api.models import RequestContext
+
+os.environ.update(json.loads(sys.argv[1]))
+ext = load_extension("TENANT", TenantExtension)
+
+async def outcome(key):
+    try:
+        await ext.authenticate(RequestContext(api_key=key))
+        return "accepted"
+    except AuthenticationError:
+        return "rejected"
+
+print(json.dumps({
+    "version": version("hindsight-api-slim"),
+    "loaded": f"{type(ext).__module__}:{type(ext).__name__}" if ext else None,
+    "right": asyncio.run(outcome(os.environ["HINDSIGHT_API_TENANT_API_KEY"])),
+    "wrong": asyncio.run(outcome("another-business-key")),
+}))
+"""
+
+
+def _proven_tenant_extension_vars() -> frozenset[str]:
+    """The tenant-extension variables setup.sh sets, proven live in pinned 1.2.1.
+
+    Hindsight's extension loader reads ``HINDSIGHT_API_<PREFIX>_EXTENSION`` and
+    hands every ``HINDSIGHT_API_<PREFIX>_*`` to that extension as its config, so
+    these names never appear in config.py. Instead of trusting the names, run
+    the pinned server's loader with setup.sh's extension: it must load, accept
+    the configured key and reject another business's key (C4).
+    """
+    if not _HINDSIGHT_PYTHON.exists():
+        pytest.skip(f"pinned Hindsight venv not present: {_HINDSIGHT_PYTHON}")
+    m = re.search(r'^TENANT_EXTENSION="([^"]+)"', _SETUP_SH.read_text(encoding="utf-8"), re.M)
+    assert m, "setup.sh no longer names its tenant extension"
+    env = {"HINDSIGHT_API_TENANT_EXTENSION": m.group(1),
+           "HINDSIGHT_API_TENANT_API_KEY": "probe-business-key"}
+    proc = subprocess.run([str(_HINDSIGHT_PYTHON), "-c", _TENANT_PROBE, json.dumps(env)],
+                          capture_output=True, text=True, timeout=120,
+                          env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"}, cwd="/tmp")
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == {
+        "version": "1.2.1", "loaded": m.group(1), "right": "accepted", "wrong": "rejected"}
+    return frozenset(env)
+
+
 # ── Config file validity tests ────────────────────────────────────────────────
 
 @pytest.mark.integration
@@ -87,8 +142,9 @@ class TestConfigValidity:
     """Every HINDSIGHT_API_* var in committed files must exist in v1.2.1."""
 
     def test_setup_sh_vars_are_valid(self) -> None:
-        """setup.sh must only use variables that exist in v1.2.1 config.py."""
-        valid = _fetch_hindsight_config_vars()
+        """setup.sh must only use variables that v1.2.1 reads: config.py's, plus
+        the tenant extension's, proven against the pinned server's loader."""
+        valid = _fetch_hindsight_config_vars() | _proven_tenant_extension_vars()
         found = _extract_hindsight_vars_from_file(_SETUP_SH)
         unknown = [(v, ln) for v, ln in found if v not in valid]
         assert not unknown, (

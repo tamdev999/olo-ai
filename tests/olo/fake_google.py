@@ -205,6 +205,9 @@ class FakeCalendarEvent:
     start: str = ""
     end: str = ""
     organizer: str = "organizer@example.com"
+    #: A full Calendar API event resource, served as-is when set (attendees,
+    #: organizer.self, recurrence, recurringEventId, originalStartTime ...).
+    resource: Optional[dict] = None
 
 
 @dataclass
@@ -220,6 +223,26 @@ class FakeCalendarState:
     _extra_calendars: dict[str, dict] = field(default_factory=dict)
     # B4: incremental calendarList items (returned on next calendarList sync)
     _incr_cal_items: list[dict] = field(default_factory=list)
+    #: The next incremental events request answers 410 (sync token expired).
+    expire_next_sync: bool = False
+
+    def put_event(self, resource: dict) -> FakeCalendarEvent:
+        """Create or replace an event from a Calendar API resource.
+
+        Each call is one revision: it is queued for the next incremental
+        sync and replaces the event in full syncs.
+        """
+        res = json.loads(json.dumps(resource))
+        start = (res.get("start") or {})
+        ev = FakeCalendarEvent(
+            id=res["id"], summary=res.get("summary", ""), status=res.get("status", "confirmed"),
+            updated=res.get("updated", ""),
+            start=start.get("dateTime") or start.get("date") or "",
+            resource=res,
+        )
+        self.events[ev.id] = ev
+        self._incr_events.append(ev)
+        return ev
 
     def add_event(
         self,
@@ -257,6 +280,18 @@ class FakeCalendarState:
 
     def all_events_full(self, time_min: Optional[str] = None) -> list[FakeCalendarEvent]:
         evs = list(self.events.values())
+        if time_min and any(e.resource is not None for e in evs):
+            # Resource events: Google filters on the end time; a cancelled
+            # event without times is returned (showDeleted=true).
+            tm = datetime.fromisoformat(time_min)
+            def keep(e: FakeCalendarEvent) -> bool:
+                end = ((e.resource or {}).get("end") or {})
+                raw = end.get("dateTime") or end.get("date")
+                if not raw:
+                    return True
+                when = datetime.fromisoformat(raw if "T" in raw else raw + "T00:00:00+00:00")
+                return when >= tm
+            return [e for e in evs if e.resource is None or keep(e)]
         if time_min:
             try:
                 tm = datetime.fromisoformat(time_min)
@@ -350,6 +385,9 @@ class FakeTokenStore:
 
 def _ev_dict_local(ev: "FakeCalendarEvent") -> dict:
     """Serialise a FakeCalendarEvent to the shape Google Calendar returns."""
+    if ev.resource is not None:
+        return {**ev.resource, "etag": f'"{ev.updated}"',
+                "htmlLink": f"https://calendar.google.com/event?eid={ev.id}"}
     return {
         "id": ev.id,
         "status": ev.status,
@@ -787,6 +825,10 @@ class _FakeGoogleHandler(http.server.BaseHTTPRequestHandler):
             max_results = 2500
 
         # ── 410 / 400 error paths ─────────────────────────────────────────────
+        if sync_token and cal.expire_next_sync:
+            cal.expire_next_sync = False
+            self._send_json({"error": {"code": 410, "message": "sync token expired"}}, 410)
+            return
         if sync_token == "EXPIRED_SYNC_TOKEN":
             self._send_json({"error": {"code": 410, "message": "sync token expired"}}, 410)
             return

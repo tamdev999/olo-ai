@@ -5,6 +5,7 @@ No autouse fixtures that leak outside tests/olo/.
 """
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone, timedelta, UTC
@@ -24,6 +25,21 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "not_integration: Olo unit test that needs no external service",
     )
+
+
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+
+
+@pytest.fixture(autouse=True)
+def _subprocesses_import_this_repository(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every child Python (cron shims, CLI runs, helper scripts) imports this
+    checkout. A script run by path gets only its own directory on sys.path,
+    so imports fall through to the venv's editable install, which can point
+    at another copy (in WSL, /root/olo_linux_venv maps to a stale
+    /root/olo-linux) and silently test that code instead."""
+    current = os.environ.get("PYTHONPATH", "")
+    if _REPO_ROOT not in current.split(os.pathsep):
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(p for p in (_REPO_ROOT, current) if p))
 
 
 # ── FakeClock ─────────────────────────────────────────────────────────────────

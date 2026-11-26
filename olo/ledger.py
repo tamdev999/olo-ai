@@ -104,9 +104,25 @@ DATED_ACTIONS: frozenset[str] = frozenset({"commit", "reaffirm", "confirm_change
 #: Date fields carried by a LedgerEvent; each must be None or a valid date.
 DATE_FIELDS: tuple[str, ...] = ("confirmed_date", "proposed_date", "prior_confirmed_date")
 
+#: Business keys minted from a provider's own record identity (a Google
+#: Calendar event id: ``gcal:<calendar_id>:<event_id>``), never from model
+#: output.  Such a commitment IS that record: it is matched by its exact key
+#: only and never claimed through dates or threads, so two calendar events
+#: on the same day stay two commitments.
+PROVIDER_KEY_PREFIX: str = "gcal:"
+#: The only source kinds that may carry (and must carry) a provider key.
+PROVIDER_SOURCE_KINDS: frozenset[str] = frozenset({
+    "calendar.event.changed", "calendar.event.cancelled",
+})
+
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 _CID_PREFIX = "cid_"
+
+
+def is_provider_key(key: str) -> bool:
+    """True when *key* names a provider record (see PROVIDER_KEY_PREFIX)."""
+    return key.startswith(PROVIDER_KEY_PREFIX)
 
 
 def is_valid_iso_date(value: object) -> bool:
@@ -228,7 +244,12 @@ CREATE TABLE IF NOT EXISTS unresolved_matches (
     recorded_at     TEXT NOT NULL,
     resolved_at     TEXT,           -- NULL until resolved
     resolved_by     TEXT,           -- authorized_by token when resolved
-    resolved_to     TEXT            -- commitment_id the event was applied to
+    resolved_to     TEXT,           -- commitment_id the event was applied to
+    reason          TEXT NOT NULL DEFAULT '',   -- why it could not be applied
+    -- JSON array: source_doc_ids of open unresolved commitments this event may
+    -- belong to; it is retried when each of them is resolved.
+    blocked_by      TEXT NOT NULL DEFAULT '[]',
+    decision_id     INTEGER         -- operator_decisions.id that settled it
 );
 
 -- Idempotency: each source_doc_id appears at most once in the unresolved table
@@ -237,10 +258,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_unresolved_source
     WHERE resolved_at IS NULL;
 """
 
+#: Columns added to unresolved_matches after S5 (post-audit batch 3).
+_UNRESOLVED_ADDED = (
+    ("reason", "TEXT NOT NULL DEFAULT ''"),
+    ("blocked_by", "TEXT NOT NULL DEFAULT '[]'"),
+    ("decision_id", "INTEGER"),
+)
+
 
 def migrate(conn: sqlite3.Connection) -> None:
     """Create ledger tables if they do not exist.  Idempotent."""
     conn.executescript(_SCHEMA_DDL)
+    have = {r[1] for r in conn.execute("PRAGMA table_info(unresolved_matches)")}
+    for name, decl in _UNRESOLVED_ADDED:
+        if name not in have:
+            conn.execute(f"ALTER TABLE unresolved_matches ADD COLUMN {name} {decl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_unresolved_open"
+        " ON unresolved_matches (contact_id, event_type) WHERE resolved_at IS NULL")
     conn.commit()
 
 
@@ -340,6 +375,12 @@ def _validate(event: LedgerEvent) -> Optional[str]:
         return "source_doc_id must not be empty"
     if not event.source_kind:
         return "source_kind must not be empty"
+    if is_provider_key(event.business_key) != (event.source_kind in PROVIDER_SOURCE_KINDS):
+        return (
+            f"a provider key ({PROVIDER_KEY_PREFIX}...) is carried by calendar events "
+            f"only, and every calendar event carries one (got business_key="
+            f"{event.business_key!r} from {event.source_kind!r})"
+        )
     if not event.occurred_at:
         return "occurred_at must not be empty"
     if utc_instant(event.occurred_at) is None:
@@ -449,10 +490,18 @@ def _commitment_has_date_in_columns(
     return row is not None
 
 
+#: What linked an event to its candidates (_find_matches); key and thread
+#: anchors are decisive, date evidence only suggests.
+EVIDENCE_KEY, EVIDENCE_THREAD, EVIDENCE_DATE, EVIDENCE_NONE = "key", "thread", "date", "none"
+
+
 def _find_matches(
     conn: sqlite3.Connection, event: LedgerEvent,
-) -> tuple[list[str], Optional[str]]:
-    """Return ``(candidate_ids, unresolved_reason)`` for this event.
+) -> tuple[list[str], Optional[str], str]:
+    """Return ``(candidate_ids, unresolved_reason, evidence)`` for this event.
+
+    A provider-keyed event (a calendar event) matches its own commitment by
+    exact key or nothing: dates and threads never link a provider record.
 
     Fail-safe matching (S1–S4 hardening).  A candidate needs independent
     evidence; absence of evidence never selects a commitment:
@@ -482,7 +531,14 @@ def _find_matches(
             (event.contact_id, event.event_type, event.business_key),
         ).fetchall()
         if exact:
-            return [r[0] for r in exact], None
+            return [r[0] for r in exact], None, EVIDENCE_KEY
+        if is_provider_key(event.business_key):
+            if event.action == "commit":
+                return [], None, EVIDENCE_NONE
+            return [], (
+                f"action={event.action!r} for {event.business_key} has no commitment "
+                "recorded for that calendar event"
+            ), EVIDENCE_NONE
         pool = [
             cid for cid in all_cids
             if conn.execute(
@@ -503,15 +559,15 @@ def _find_matches(
                     if _commitment_has_date_in_history(conn, c, match_date)
                 ]
                 if refined:
-                    return refined, None
-            return thread_match, None
+                    return refined, None, EVIDENCE_THREAD
+            return thread_match, None, EVIDENCE_THREAD
 
     # 3. Historical date evidence
     if event.prior_confirmed_date:
         return [
             c for c in pool
             if _commitment_has_date_in_history(conn, c, event.prior_confirmed_date)
-        ], None
+        ], None, EVIDENCE_DATE
 
     if event.confirmed_date:
         if event.action == "commit":
@@ -521,31 +577,84 @@ def _find_matches(
                     conn, c, event.confirmed_date, ("prior_confirmed_date",))
             ]
             if superseded:
-                return superseded, None
+                return superseded, None, EVIDENCE_DATE
             same_date = [
                 c for c in pool
                 if _commitment_has_date_in_columns(
                     conn, c, event.confirmed_date, ("confirmed_date", "proposed_date"))
             ]
             if same_date:
-                return [], (
+                return sorted(same_date), (
                     f"commit date {event.confirmed_date} matches {len(same_date)} "
                     "existing commitment(s) with no business_key or thread to tell a "
                     "restatement from a second commitment"
-                )
-            return [], None
+                ), EVIDENCE_DATE
+            return [], None, EVIDENCE_NONE
         return [
             c for c in pool
             if _commitment_has_date_in_history(conn, c, event.confirmed_date)
-        ], None
+        ], None, EVIDENCE_DATE
 
     # 4. No key, thread or date evidence: never select by default.
     if event.action == "commit":
-        return [], None
+        return [], None, EVIDENCE_NONE
     return [], (
         f"action={event.action!r} has no business_key, thread or historical date "
         "evidence identifying a commitment"
-    )
+    ), EVIDENCE_NONE
+
+
+def _open_commits(conn: sqlite3.Connection, event: LedgerEvent) -> list[tuple[str, dict]]:
+    """Open unresolved 'commit' events of this customer and type (not *event*).
+
+    Each is a commitment whose identity an operator has not settled yet; it
+    has no commitments row, so the matcher cannot see it on its own.
+    """
+    rows = conn.execute(
+        "SELECT source_doc_id, event_json FROM unresolved_matches"
+        " WHERE contact_id=? AND event_type=? AND resolved_at IS NULL AND source_doc_id != ?"
+        " ORDER BY id",
+        (event.contact_id, event.event_type, event.source_doc_id),
+    ).fetchall()
+    out = []
+    for doc, raw in rows:
+        stored = json.loads(raw)
+        if stored.get("action") == "commit":
+            out.append((doc, stored))
+    return out
+
+
+def _blocking_commits(conn: sqlite3.Connection, event: LedgerEvent, evidence: str) -> list[str]:
+    """Open unresolved commitments *event* may belong to (their source_doc_ids).
+
+    Before this, a second keyless commitment on an already-booked date was
+    left unresolved, and a later request in that commitment's own thread
+    matched the first commitment by date.  Now:
+
+    * an event anchored to an open commitment (same verified thread, or same
+      business or provider key) belongs to it and waits for its resolution;
+    * an event matched only by date (or by nothing) also competes with open
+      commitments carrying that date, so it is never applied to one of two
+      equally plausible commitments;
+    * an exact key or thread match to a recorded commitment is decisive and
+      is not blocked by date coincidences.
+    """
+    if evidence in (EVIDENCE_KEY, EVIDENCE_THREAD):
+        return []
+    provider = is_provider_key(event.business_key)
+    dates = {d for d in (event.prior_confirmed_date, event.confirmed_date) if d}
+    blockers = []
+    for doc, other in _open_commits(conn, event):
+        anchored = (
+            (event.thread_id and other.get("thread_id") == event.thread_id)
+            or (event.business_key and other.get("business_key") == event.business_key)
+        )
+        same_date = not provider and bool(dates & {
+            other.get("confirmed_date"), other.get("prior_confirmed_date"),
+            other.get("proposed_date")})
+        if anchored or same_date:
+            blockers.append(doc)
+    return blockers
 
 
 def _applied_anywhere(
@@ -682,11 +791,18 @@ def _write_version(
     )
 
 
-def _record_unresolved(
+def event_from_json(raw: str) -> LedgerEvent:
+    """The LedgerEvent stored in ``unresolved_matches.event_json``."""
+    return LedgerEvent(**json.loads(raw))
+
+
+def record_unresolved(
     conn: sqlite3.Connection,
     event: LedgerEvent,
     candidate_ids: list[str],
     recorded_at: str,
+    reason: str,
+    blocked_by: tuple[str, ...] | list[str] = (),
 ) -> None:
     event_json = json.dumps({
         "event_type":           event.event_type,
@@ -703,12 +819,16 @@ def _record_unresolved(
         "thread_id":            event.thread_id,
         "notes":                event.notes,
     }, default=str)
-    # Use INSERT OR IGNORE so a retry of the same source_doc_id is idempotent
+    # One open row per source_doc_id: a retry keeps the original event and
+    # recorded_at, and refreshes only why it is still unresolved.
     conn.execute(
-        "INSERT OR IGNORE INTO unresolved_matches"
+        "INSERT INTO unresolved_matches"
         " (source_doc_id, contact_id, event_type, candidate_ids,"
-        "  event_json, recorded_at)"
-        " VALUES (?,?,?,?,?,?)",
+        "  event_json, recorded_at, reason, blocked_by)"
+        " VALUES (?,?,?,?,?,?,?,?)"
+        " ON CONFLICT(source_doc_id) WHERE resolved_at IS NULL DO UPDATE SET"
+        "  candidate_ids=excluded.candidate_ids, reason=excluded.reason,"
+        "  blocked_by=excluded.blocked_by",
         (
             event.source_doc_id,
             event.contact_id,
@@ -716,6 +836,8 @@ def _record_unresolved(
             json.dumps(sorted(candidate_ids)),
             event_json,
             recorded_at,
+            reason[:500],
+            json.dumps(sorted(blocked_by)),
         ),
     )
 
@@ -762,18 +884,29 @@ def apply_event(
             "source_doc_id already applied to this commitment",
         )
 
-    matches, unresolved_reason = _find_matches(conn, event)
+    matches, unresolved_reason, evidence = _find_matches(conn, event)
+    blockers = _blocking_commits(conn, event, evidence)
+
+    def unresolved(reason: str) -> ApplyResult:
+        if blockers:
+            reason = (f"{reason}; may belong to {len(blockers)} commitment(s) awaiting "
+                      f"an operator ({', '.join(blockers)})")
+        record_unresolved(conn, event, matches, recorded_at, reason, blockers)
+        return ApplyResult(OutcomeKind.UNRESOLVED, None, None, reason)
 
     if unresolved_reason is not None:
-        _record_unresolved(conn, event, matches, recorded_at)
-        return ApplyResult(OutcomeKind.UNRESOLVED, None, None, unresolved_reason)
+        return unresolved(unresolved_reason)
+
+    if blockers:
+        # An open (unresolved) commitment is as plausible a target as any
+        # recorded one: never apply the event, or create beside it, by guess.
+        return unresolved(
+            "an earlier commitment this event may refer to is still unresolved"
+            if not matches else
+            f"{len(matches)} recorded and {len(blockers)} unresolved candidate commitments")
 
     if len(matches) > 1:
-        _record_unresolved(conn, event, matches, recorded_at)
-        return ApplyResult(
-            OutcomeKind.UNRESOLVED,
-            None,
-            None,
+        return unresolved(
             f"{len(matches)} candidate commitments; supply prior_confirmed_date, "
             "business_key or thread_id to disambiguate",
         )
@@ -782,11 +915,7 @@ def apply_event(
         if event.action not in CREATE_ACTIONS:
             # D2 fix: a change/update/request with no match stays unresolved.
             # Never fork a second commitment just because evidence is missing.
-            _record_unresolved(conn, event, [], recorded_at)
-            return ApplyResult(
-                OutcomeKind.UNRESOLVED,
-                None,
-                None,
+            return unresolved(
                 f"action={event.action!r} requires an existing commitment "
                 f"(prior_confirmed_date={event.prior_confirmed_date!r}, "
                 f"thread_id={event.thread_id!r}, business_key={event.business_key!r}); "
@@ -811,13 +940,21 @@ def apply_event(
     if event.action == "reaffirm":
         current = _current_scheduled_date(conn, commitment_id)
         if current != event.confirmed_date:
-            _record_unresolved(conn, event, [commitment_id], recorded_at)
+            record_unresolved(
+                conn, event, [commitment_id], recorded_at,
+                f"reaffirm date {event.confirmed_date} does not equal the current "
+                f"confirmed date {current!r}; a reaffirm cannot change the date")
             return ApplyResult(
                 OutcomeKind.UNRESOLVED, None, None,
                 f"reaffirm date {event.confirmed_date} does not equal the current "
                 f"confirmed date {current!r}; a reaffirm cannot change the date",
             )
-    # Cross-channel claim: assign business_key when claiming an unnamed commitment
+    return _append(conn, commitment_id, event, recorded_at)
+
+
+def _append(conn: sqlite3.Connection, commitment_id: str, event: LedgerEvent,
+            recorded_at: str) -> ApplyResult:
+    """Append *event* as the next version; an unnamed commitment takes its key."""
     matched_key_row = conn.execute(
         "SELECT business_key FROM commitments WHERE id=?", (commitment_id,)
     ).fetchone()
@@ -833,6 +970,74 @@ def apply_event(
     version = _next_version(conn, commitment_id)
     _write_version(conn, commitment_id, version, event, recorded_at)
     return ApplyResult(OutcomeKind.UPDATED, commitment_id, version, outcome_msg)
+
+
+def apply_operator_resolution(
+    conn: sqlite3.Connection,
+    event: LedgerEvent,
+    target_commitment_id: Optional[str],
+    *,
+    recorded_at: str,
+) -> ApplyResult:
+    """Apply an unresolved event as an authorized operator decided.
+
+    Called only by olo.operator after it has verified an operator grant;
+    this function is the ledger half (validation and write), not the
+    authorization.  ``target_commitment_id`` None means "a distinct new
+    commitment" and is allowed for 'commit' events only.  The ledger rules
+    still hold: the event must validate, the target must be the same
+    customer and type with a compatible key, and a reaffirm cannot change the
+    date.  Does not commit the connection.
+    """
+    err = _validate(event)
+    if err:
+        return ApplyResult(OutcomeKind.INVALID, None, None, err)
+    applied = _applied_anywhere(conn, event)
+    if applied is not None:
+        return ApplyResult(OutcomeKind.UNCHANGED, applied[0], applied[1],
+                           "source_doc_id already applied to this commitment")
+    if target_commitment_id is None:
+        if event.action not in CREATE_ACTIONS:
+            return ApplyResult(OutcomeKind.INVALID, None, None,
+                               f"only a 'commit' can become a new commitment (got {event.action!r})")
+        if event.business_key and conn.execute(
+                "SELECT 1 FROM commitments WHERE contact_id=? AND event_type=? AND business_key=?",
+                (event.contact_id, event.event_type, event.business_key)).fetchone():
+            return ApplyResult(OutcomeKind.INVALID, None, None,
+                               f"a commitment with key {event.business_key!r} already exists")
+        commitment_id = _create_commitment(conn, event, recorded_at)
+        _write_version(conn, commitment_id, 1, event, recorded_at)
+        return ApplyResult(OutcomeKind.CREATED, commitment_id, 1, "distinct commitment created")
+    row = conn.execute(
+        "SELECT contact_id, event_type, business_key FROM commitments WHERE id=?",
+        (target_commitment_id,)).fetchone()
+    if row is None:
+        return ApplyResult(OutcomeKind.INVALID, None, None,
+                           f"commitment {target_commitment_id!r} not found")
+    if (row[0], row[1]) != (event.contact_id, event.event_type):
+        return ApplyResult(OutcomeKind.INVALID, None, None,
+                           "the target commitment belongs to another customer or event type")
+    if event.business_key and row[2] and row[2] != event.business_key:
+        return ApplyResult(OutcomeKind.INVALID, None, None,
+                           f"the target is commitment {row[2]!r}; the event names {event.business_key!r}")
+    if event.action == "reaffirm" and _current_scheduled_date(conn, target_commitment_id) != event.confirmed_date:
+        return ApplyResult(OutcomeKind.INVALID, None, None,
+                           "a reaffirm cannot change the target's confirmed date")
+    return _append(conn, target_commitment_id, event, recorded_at)
+
+
+def open_unresolved(conn: sqlite3.Connection) -> list[dict]:
+    """Every open unresolved event, oldest first, for review and status."""
+    rows = conn.execute(
+        "SELECT id, source_doc_id, contact_id, event_type, candidate_ids, event_json,"
+        "       recorded_at, reason, blocked_by"
+        " FROM unresolved_matches WHERE resolved_at IS NULL ORDER BY id").fetchall()
+    return [
+        {"id": r[0], "source_doc_id": r[1], "contact_id": r[2], "event_type": r[3],
+         "candidate_ids": json.loads(r[4]), "event": json.loads(r[5]),
+         "recorded_at": r[6], "reason": r[7], "blocked_by": json.loads(r[8] or "[]")}
+        for r in rows
+    ]
 
 
 # ── Authorized resolution of unresolved matches ───────────────────────────────

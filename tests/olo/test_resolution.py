@@ -168,8 +168,11 @@ class TestEnsureSignalResolution:
     def test_structured_signals_skipped_commitment(
         self, db: sqlite3.Connection
     ) -> None:
-        """invoice.created and calendar events get commitment_status='skipped'."""
-        for kind in ("invoice.created", "calendar.event.created", "calendar.event.changed"):
+        """Structured kinds without a commitment path get commitment_status='skipped'.
+
+        calendar.event.changed / .cancelled have one (olo.calendar_commitments)
+        and are pending; see test_calendar_events_pending_commitment."""
+        for kind in ("invoice.created", "calendar.event.created", "calendar.calendar.added"):
             sig = _sig(f"s-{kind}", kind=kind)
             db.execute("BEGIN")
             ensure_signal_resolution(db, [sig], SOURCE, _now_str())
@@ -179,6 +182,19 @@ class TestEnsureSignalResolution:
                 (f"s-{kind}",),
             ).fetchone()
             assert row["commitment_status"] == "skipped", f"{kind} should be skipped"
+
+    def test_calendar_events_pending_commitment(self, db: sqlite3.Connection) -> None:
+        """Calendar event revisions wait for the deterministic meeting stage."""
+        for kind in ("calendar.event.changed", "calendar.event.cancelled"):
+            sig = _sig(f"s-{kind}", kind=kind)
+            db.execute("BEGIN")
+            ensure_signal_resolution(db, [sig], SOURCE, _now_str())
+            db.execute("COMMIT")
+            row = db.execute(
+                "SELECT commitment_status FROM signal_resolution WHERE signal_id=?",
+                (f"s-{kind}",),
+            ).fetchone()
+            assert row["commitment_status"] == "pending", f"{kind} should be pending"
 
     def test_initial_identity_status_is_pending(
         self, db: sqlite3.Connection

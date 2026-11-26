@@ -104,6 +104,7 @@ from olo.signal_content import (
     load_content,
     prepare_signal,
 )
+from olo.ledger import PROVIDER_SOURCE_KINDS
 from olo.signals import format_utc
 
 __all__ = [
@@ -122,6 +123,8 @@ __all__ = [
 ]
 
 _IDENTITY_SETTLED = ("resolved", "unresolved", "ambiguous", "skipped")
+#: Kinds the commitment stage processes; a verified one waits for its outcome.
+_AWAITS_COMMITMENT = PROSE_KINDS | PROVIDER_SOURCE_KINDS
 _COMMITMENT_UNSETTLED = ("pending", "failed")
 _OP_DONE = "completed"
 #: Operation states that mean "still running": keep polling, never resubmit.
@@ -210,7 +213,7 @@ def _signal_documents(
             continue
         # Only verified identities reach the commitment stage, so only they
         # wait for its outcome; others are projected without a customer link.
-        if (await_commitment and row["kind"] in PROSE_KINDS
+        if (await_commitment and row["kind"] in _AWAITS_COMMITMENT
                 and row["identity_status"] == "resolved"
                 and row["commitment_status"] in _COMMITMENT_UNSETTLED):
             continue
