@@ -15,6 +15,7 @@ import json
 import threading
 import urllib.parse
 import uuid
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
@@ -131,11 +132,14 @@ class _HindsightHandler(_Handler):
                    ("POST", "memories"): fake.retain, ("GET", "operations"): fake.operation,
                    ("DELETE", "operations"): fake.cancel, ("POST", "consolidate"): fake.consolidate,
                    ("GET", "memories"): fake.memories_list, ("GET", "llm-requests"): fake.stats,
-                   ("GET", "documents"): fake.document}.get((method, rest[0] if rest else ""))
+                   ("GET", "documents"): fake.document,
+                   ("POST", "memories/recall"): fake.recall}.get(
+            (method, "/".join(rest[:2]) if rest[:2] == ["memories", "recall"] else (rest[0] if rest else "")))
         if handler is None:
             self._send({"detail": f"unsupported {method} {path}"}, 404)
             return
-        status, obj = handler(bank, rest[1:], query, self._body() if method in ("POST", "PATCH") else {})
+        args = rest[2:] if rest[:2] == ["memories", "recall"] else rest[1:]
+        status, obj = handler(bank, args, query, self._body() if method in ("POST", "PATCH") else {})
         self._send(obj, status)
 
     def _safe(self, method: str) -> None:
@@ -183,6 +187,9 @@ class FakeHindsight(_Server):
         self.requests: list[tuple[str, str]] = []
         self.unknown_strategies: list[str] = []
         self.errors: list[str] = []
+        self.doc_bank: dict[str, str] = {}        # document id -> bank holding it
+        self.recall_extra: list[dict] = []        # extra results every recall returns
+        self.written: dict[str, str] = {}          # document id -> updated_at
 
     def get_config(self, bank, rest, query, body):
         resolved = {"retain_extraction_mode": "concise", "enable_auto_consolidation": True,
@@ -199,6 +206,8 @@ class FakeHindsight(_Server):
             if item.get("strategy") and item["strategy"] not in strategies:
                 self.unknown_strategies.append(item["strategy"])
             self.docs[item["document_id"]] = item
+            self.doc_bank[item["document_id"]] = bank
+            self.written[item["document_id"]] = datetime.now(UTC).isoformat()
             if "olo:prose" in (item.get("tags") or []):
                 self.pending += 1
         op = body.get("operation_id") or str(uuid.uuid4())
@@ -234,7 +243,31 @@ class FakeHindsight(_Server):
         return 200, {"bank_id": bank, "buckets": buckets}
 
     def document(self, bank, rest, query, body):
-        doc = urllib.parse.unquote(rest[0]) if rest else ""
-        if doc not in self.docs:
+        if not rest:                                  # listing (DocumentListItem rows)
+            held = sorted(d for d, b in self.doc_bank.items() if b == bank and d in self.docs)
+            limit = int((query.get("limit") or ["100"])[0])
+            offset = int((query.get("offset") or ["0"])[0])
+            return 200, {"items": [{"id": d, "bank_id": bank, "tags": self.docs[d].get("tags", []),
+                                    "updated_at": self.written.get(d, ""),
+                                    "memory_unit_count": 1} for d in held[offset:offset + limit]],
+                         "total": len(held), "limit": limit, "offset": offset}
+        doc = urllib.parse.unquote(rest[0])
+        if doc not in self.docs or self.doc_bank.get(doc) != bank:
             return 404, {"detail": "not found"}
         return 200, {"id": doc, "memory_unit_count": 1}
+
+    def recall(self, bank, rest, query, body):
+        """Documents of the bank holding every requested tag (all_strict)."""
+        wanted = set(body.get("tags") or [])
+        results = [{"type": "world", "text": str(item.get("content", ""))[:400],
+                    "document_id": d, "tags": item.get("tags", [])}
+                   for d, item in sorted(self.docs.items())
+                   if self.doc_bank.get(d) == bank and wanted <= set(item.get("tags") or [])]
+        return 200, {"results": results + list(self.recall_extra), "source_facts": {}}
+
+    def drop_bank(self, bank: str) -> None:
+        """The bank and its documents are gone."""
+        self.banks.pop(bank, None)
+        for d in [d for d, b in self.doc_bank.items() if b == bank]:
+            self.docs.pop(d, None)
+            self.doc_bank.pop(d, None)

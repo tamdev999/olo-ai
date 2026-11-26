@@ -239,6 +239,14 @@ _DDL_STATEMENTS = [
     PRIMARY KEY (signal_id, bank_id)
 )""",
     "CREATE INDEX IF NOT EXISTS idx_proj_bank_status ON hindsight_projection(bank_id, status)",
+    # Post-audit batch 4: an operator re-queue of a document out of retain
+    # attempts (olo.requeue); failures before it no longer count.
+    """CREATE TABLE IF NOT EXISTS hindsight_requeues (
+    document_id  TEXT NOT NULL,
+    bank_id      TEXT NOT NULL,
+    requeued_at  TEXT NOT NULL,
+    PRIMARY KEY (document_id, bank_id, requeued_at)
+)""",
     # M3.0 P3 (fourth remediation): authoritative entity registry.
     # Scoped to (source, entity_id) — one row per entity per connector source.
     # Populated during connector ingestion from signal metadata (Gmail contacts,

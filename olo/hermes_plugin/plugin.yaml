@@ -1,4 +1,6 @@
 name: olo
-version: 0.1.0
-description: "Olo AI business signal pipeline (M1: CLI only; no tools or hooks)."
+version: 0.2.0
+description: "Olo AI business signal pipeline: `hermes olo` CLI and the read-only olo_customer_context tool (commitment ledger first; memories labelled, never authoritative)."
 author: "Olo AI"
+provides_tools:
+  - olo_customer_context

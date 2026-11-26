@@ -30,9 +30,20 @@ One revision against the commitment's current ledger state:
   tentative, or not accepted            no_commitment
   bound, no commitment yet              commit
   bound, commitment cancelled           commit (restored)
-  bound, same date                      no_change
+  bound, same date and start time       no_change
+  bound, new start time, same day       confirm_change (confirmed_start changes)
   bound, new date                       confirm_change (prior = old date)
   ====================================  =========================================
+
+Email and calendar.  A Gmail invitation carries the event's iCalendar UID,
+the one authoritative link between an email and a calendar event
+(olo.commitments.apply_invitation_aware).  Whichever arrives first records
+the commitment; the UID (``ical:<uid>``) and the event's key become aliases
+of it, so the other source's events apply to the same commitment in any
+order.  With no UID, a calendar event on a day that already holds a meeting
+recorded from email for the same customer is left unresolved for an
+operator: the same date alone neither links them nor justifies a second
+commitment.
 
 Recurring series.  A series master has no single date, so it is not a dated
 commitment.  Google returns each moved or cancelled occurrence as its own
@@ -66,10 +77,13 @@ from olo.ledger import (
     STATUS_SCHEDULED,
     LedgerEvent,
     OutcomeKind,
-    record_unresolved,
+    add_alias,
+    alias_target,
     apply_event,
     get_current_state,
+    record_unresolved,
     utc_instant,
+    waiting_on,
 )
 from olo.signals import format_utc
 
@@ -131,6 +145,8 @@ class Revision:
     bound: bool                     # business organises or has accepted
     declined: bool                  # business declined the invitation
     series: bool                    # recurring series master
+    start: Optional[str] = None     # start dateTime with offset (None: all-day)
+    ical_uid: str = ""              # iCalUID shared with its invitation emails
 
     @property
     def doc_id(self) -> str:
@@ -144,6 +160,7 @@ class Current:
     status: Optional[str]
     date: Optional[str]
     latest: Optional[datetime]      # last applied calendar revision
+    start: Optional[str] = None     # confirmed start time, when known
 
 
 @dataclass(frozen=True)
@@ -153,6 +170,13 @@ class Step:
     action: Optional[str] = None
     confirmed_date: Optional[str] = None
     prior_confirmed_date: Optional[str] = None
+    confirmed_start: Optional[str] = None
+
+
+def _same_instant(a: Optional[str], b: Optional[str]) -> bool:
+    if a is None or b is None:
+        return a == b
+    return utc_instant(a) == utc_instant(b)
 
 
 def _local_date(when: object) -> Optional[str]:
@@ -164,7 +188,7 @@ def _local_date(when: object) -> Optional[str]:
         return None
     try:
         if "T" in raw:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).date().isoformat()
+            return datetime.fromisoformat(raw).date().isoformat()
         return date.fromisoformat(raw).isoformat()
     except ValueError:
         return None
@@ -187,7 +211,21 @@ def read_revision(doc: dict, calendar_id: str) -> Revision:
         bound=organiser_self or response == "accepted",
         declined=not organiser_self and response == "declined",
         series=bool(doc.get("recurrence")) and not doc.get("recurringEventId"),
+        start=_start_time(doc.get("start")),
+        ical_uid=str(doc.get("iCalUID") or ""),
     )
+
+
+def _start_time(when: object) -> Optional[str]:
+    """A timed start as ISO 8601 with its own offset; None for all-day."""
+    raw = when.get("dateTime") if isinstance(when, dict) else None
+    if not isinstance(raw, str) or "T" not in raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed.isoformat() if parsed.utcoffset() is not None else None
 
 
 def decide(rev: Revision, cur: Optional[Current]) -> Step:
@@ -220,12 +258,16 @@ def decide(rev: Revision, cur: Optional[Current]) -> Step:
     if cur is None or cur.status == STATUS_CANCELLED:
         moved = rev.original_date if rev.original_date and rev.original_date != rev.date else None
         return Step(OUTCOME_APPLIED, "event scheduled" if cur is None else "event restored",
-                    action="commit", confirmed_date=rev.date, prior_confirmed_date=moved)
-    if cur.date == rev.date:
+                    action="commit", confirmed_date=rev.date, prior_confirmed_date=moved,
+                    confirmed_start=rev.start)
+    if cur.date == rev.date and _same_instant(cur.start, rev.start):
         return Step(OUTCOME_NO_CHANGE,
-                    "revision does not change the meeting date (attendees, title or notes only)")
-    return Step(OUTCOME_APPLIED, "event rescheduled", action="confirm_change",
-                confirmed_date=rev.date, prior_confirmed_date=cur.date)
+                    "revision does not change the meeting's date or time "
+                    "(attendees, title or notes only)")
+    what = "moved to another time the same day" if cur.date == rev.date else "rescheduled"
+    return Step(OUTCOME_APPLIED, f"event {what}", action="confirm_change",
+                confirmed_date=rev.date, prior_confirmed_date=cur.date,
+                confirmed_start=rev.start)
 
 
 def _current(conn: sqlite3.Connection, commitment_id: str) -> Current:
@@ -236,7 +278,46 @@ def _current(conn: sqlite3.Connection, commitment_id: str) -> Current:
         (commitment_id, *sorted(CALENDAR_EVENT_KINDS)))]
     instants = [i for i in instants if i is not None]
     return Current(commitment_id, state.get("status"), state.get("scheduled_date"),
-                   max(instants) if instants else None)
+                   max(instants) if instants else None, state.get("scheduled_start"))
+
+
+def _owners(conn: sqlite3.Connection, rev: Revision) -> list[tuple[str, str, str]]:
+    """(commitment, customer, basis) of every commitment holding this event's
+    identity: its provider key as name or alias, or its iCalendar UID."""
+    out = [(r[0], r[1], "provider_key") for r in conn.execute(
+        "SELECT id, contact_id FROM commitments WHERE event_type='meeting' AND business_key=?",
+        (rev.key,))]
+    for alias, basis in ((rev.key, "provider_key"),
+                         (f"ical:{rev.ical_uid}" if rev.ical_uid else "", "ical_uid")):
+        target = alias_target(conn, alias) if alias else None
+        if target and all(target != o[0] for o in out):
+            row = conn.execute("SELECT contact_id FROM commitments WHERE id=?", (target,)).fetchone()
+            if row:
+                out.append((target, row[0], basis))
+    return out
+
+
+def _named(conn: sqlite3.Connection, commitment_id: str) -> str:
+    row = conn.execute("SELECT business_key FROM commitments WHERE id=?", (commitment_id,)).fetchone()
+    return row[0] if row else ""
+
+
+def _same_day_from_another_source(conn: sqlite3.Connection, contact_id: str,
+                                  day: str) -> list[str]:
+    """This customer's meeting commitments on *day* that no calendar event
+    identifies (recorded from email or calls)."""
+    clash = []
+    for (cid, key) in conn.execute(
+            "SELECT id, business_key FROM commitments WHERE contact_id=? AND event_type='meeting'",
+            (contact_id,)).fetchall():
+        if key.startswith(PROVIDER_KEY_PREFIX) or conn.execute(
+                "SELECT 1 FROM commitment_aliases WHERE commitment_id=? AND alias LIKE ?",
+                (cid, f"{PROVIDER_KEY_PREFIX}%")).fetchone():
+            continue
+        st = get_current_state(conn, cid) or {}
+        if day in (st.get("scheduled_date"), st.get("pending_proposed_date")):
+            clash.append(cid)
+    return sorted(clash)
 
 
 def inherited_contact(conn: sqlite3.Connection, source: str, payload: dict) -> tuple[str, str]:
@@ -325,11 +406,15 @@ def process_calendar_signal(
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        owners = conn.execute(
-            "SELECT id, contact_id FROM commitments WHERE event_type='meeting' AND business_key=?",
-            (rev.key,)).fetchall()
-        mine = next((r[0] for r in owners if r[1] == contact_id), None)
-        others = sorted({r[1] for r in owners if r[1] != contact_id})
+        owners = _owners(conn, rev)
+        mine = next((o[0] for o in owners if o[1] == contact_id), None)
+        others = sorted({o[1] for o in owners if o[1] != contact_id})
+        # The commitment holds this event only through an alias (it was
+        # recorded from an invitation email first): apply to it directly, and
+        # let the event's own key name it too (a deletion stub carries no UID).
+        linked = mine is not None and _named(conn, mine) != rev.key
+        if linked:
+            add_alias(conn, rev.key, mine, "provider_key", rev.doc_id, now)
         step = decide(rev, _current(conn, mine) if mine else None)
         commitment_id: Optional[str] = mine if step.outcome == OUTCOME_NO_CHANGE else None
         version: Optional[int] = None
@@ -343,19 +428,44 @@ def process_calendar_signal(
                 confirmed_date=step.confirmed_date,
                 prior_confirmed_date=step.prior_confirmed_date,
                 thread_id=rev.key, notes=f"sig:{signal_id}",
+                confirmed_start=step.confirmed_start,
             )
-            if others and mine is None:
+            waits = waiting_on(conn, event) if mine is None else []
+            clash = (_same_day_from_another_source(conn, contact_id, step.confirmed_date)
+                     if mine is None and step.action == "commit" and not waits else [])
+            if waits:
+                # An earlier revision of this event is still undecided.
+                reason = (f"an earlier revision of {rev.key} awaits an operator "
+                          f"({', '.join(waits)})")
+                record_unresolved(conn, event, [], now, reason, waits)
+                outcome = OUTCOME_LEDGER_UNRESOLVED
+            elif others and mine is None:
                 # The event's customer changed: an operator decides whether it
                 # is a new commitment for this customer; never a silent fork.
                 reason = (f"calendar event {rev.key} is recorded for another customer "
                           f"({', '.join(others)}); its customer changed")
                 record_unresolved(conn, event, [], now, reason)
                 outcome = OUTCOME_LEDGER_UNRESOLVED
+            elif clash:
+                # A meeting recorded from email is on the same day and nothing
+                # authoritative (an invitation UID) ties it to this event: a
+                # second commitment could duplicate it, a link would be a guess.
+                reason = (f"{len(clash)} meeting commitment(s) recorded from email are on "
+                          f"{step.confirmed_date} with no invitation UID linking them to "
+                          f"{rev.key}; an operator links or separates them")
+                record_unresolved(conn, event, clash, now, reason)
+                outcome = OUTCOME_LEDGER_UNRESOLVED
             else:
+                # A linked commitment now holds the key as an alias, which
+                # the matcher resolves exactly like a name.
                 applied = apply_event(conn, event, recorded_at=now)
                 outcome = _LEDGER_OUTCOME[applied.outcome]
                 reason = f"{step.reason}; {applied.outcome.value}: {applied.message}"
                 commitment_id, version = applied.commitment_id, applied.version
+                if commitment_id and rev.ical_uid and outcome == OUTCOME_APPLIED:
+                    if not add_alias(conn, f"ical:{rev.ical_uid}", commitment_id, "ical_uid",
+                                     rev.doc_id, now):
+                        reason += "; invitation UID already names another commitment"
         record(conn, source, signal_id, STATUS_OF[outcome], outcome, reason, now,
                commitment_id=commitment_id, version=version, attempted=False)
         conn.execute("COMMIT")

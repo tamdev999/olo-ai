@@ -139,6 +139,10 @@ def _print_health(conn) -> None:
           f" in_flight={b['operations_in_flight']} ledger_unprojected={b['ledger_unprojected']}")
     if b["mailbox_states"]:
         print(f"    mailbox={_json.dumps(b['mailbox_states'], sort_keys=True)}")
+    proc = b["processing"]
+    print(f"    incomplete={_json.dumps({k: v for k, v in proc['incomplete'].items() if v}, sort_keys=True)}"
+          f" permanent={_json.dumps({k: v for k, v in proc['permanent'].items() if v}, sort_keys=True)}"
+          + (" (hermes olo retry)" if any(proc["permanent"].values()) else ""))
     if b["unresolved_ledger"]["open"]:
         print(f"    unresolved_ledger={_json.dumps(b['unresolved_ledger'], sort_keys=True)}"
               f" operators={b['operators']} (review: hermes olo review)")
@@ -1177,6 +1181,9 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
     # operator workflow: operator / review / resolve (post-audit batch 3)
     from olo.hermes_plugin.cli_operator import register as _register_operator
     _register_operator(subs)
+    # Hindsight lifecycle and recovery: hindsight / retry (post-audit batch 4)
+    from olo.hermes_plugin.cli_hindsight import register as _register_hindsight
+    _register_hindsight(subs)
 
 
 def handler(args: argparse.Namespace) -> None:
@@ -1199,6 +1206,6 @@ def handler(args: argparse.Namespace) -> None:
     func = getattr(args, "func", None)
     if func is None:
         print("usage: hermes olo {status,setup,google,checkpoint,backfill,purge-content,"
-              "operator,review,resolve}", file=sys.stderr)
+              "operator,review,resolve,hindsight,retry}", file=sys.stderr)
         sys.exit(1)
     func(args)

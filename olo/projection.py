@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -106,6 +107,8 @@ from olo.signal_content import (
 )
 from olo.ledger import PROVIDER_SOURCE_KINDS
 from olo.signals import format_utc
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "LEDGER_CURRENT_TAG",
@@ -159,6 +162,9 @@ class ProjectionLimits:
     operation_timeout_minutes: int = 60
     max_consolidation_attempts: int = 3
     max_consolidations_per_window: int = 24
+    #: Full bank reconciliation (olo.hindsight_reconcile) at least this often,
+    #: and after every Hindsight restart the supervisor records.
+    reconcile_every_hours: int = 24
 
 
 @dataclass(frozen=True)
@@ -300,7 +306,7 @@ def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
         cid, contact, event_type, key = c[0], c[1], c[2], c[3]
         versions = conn.execute(
             "SELECT version, action, actor_role, confirmed_date, prior_confirmed_date,"
-            "       occurred_at, source_doc_id, notes"
+            "       occurred_at, source_doc_id, notes, confirmed_start"
             " FROM commitment_versions WHERE commitment_id=? AND is_confirmed=1",
             (cid,),
         ).fetchall()
@@ -314,11 +320,12 @@ def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
             f"{current.get('status')}"
             + (f", date {current['scheduled_date']}" if current.get("scheduled_date")
                else ", no scheduled date")
+            + (f" at {current['scheduled_start']}" if current.get("scheduled_start") else "")
         )
         ordered = sorted(versions, key=lambda v: (utc_instant(v[5]) or _EARLIEST, v[0]))
         previous = None
         for v in ordered:
-            version, action, actor, confirmed, prior, occurred, doc, notes = tuple(v)
+            version, action, actor, confirmed, prior, occurred, doc, notes, start = tuple(v)
             cancelled = action == CANCEL_ACTION
             status = STATUS_CANCELLED if cancelled else STATUS_SCHEDULED
             date = None if cancelled else confirmed
@@ -340,6 +347,7 @@ def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
                 f"Commitment {cid} · {event_type} · key {key or 'none'} · customer {contact}.\n"
                 f"Status as of version {version}: {status}"
                 + (f", date {date}" if date else ", no scheduled date")
+                + (f" at {start}" if date and start else "")
                 + (f" (cancelled date {prior})" if cancelled and prior else "")
                 + f".\nVersion {version}: {action} by {actor} at {occurred}; {supersedes}.\n"
                 f"Supporting documents: {', '.join(supporting) or 'none'}."
@@ -360,6 +368,9 @@ def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
                     "version": str(version),
                     "status": status,
                     "scheduled_date": date or "",
+                    # Only timed versions carry it: untimed documents keep
+                    # their fingerprints (no re-projection on upgrade).
+                    **({"scheduled_start": start} if date and start else {}),
                     "superseded_version": str(previous[0]) if previous is not None else "",
                     "ledger_role": "current" if is_current else "superseded",
                     "current_version": str(current_version or ""),
@@ -875,13 +886,26 @@ def _consolidate(conn, cfg: ProjectionConfig, source: str, window_start: str,
     counts["consolidation_submitted"] = 1
 
 
+#: Failed retains of a document since its last operator re-queue (olo.requeue).
+_FAILED_SINCE_REQUEUE = (
+    "SELECT COUNT(*) FROM hindsight_operation_docs d"
+    " JOIN hindsight_operations o ON o.operation_id = d.operation_id"
+    " WHERE o.bank_id=? AND d.document_id=?"
+    "   AND o.status IN ('failed','cancelled','lost')"
+    "   AND COALESCE(o.settled_at, o.submitted_at) > COALESCE((SELECT MAX(r.requeued_at)"
+    "       FROM hindsight_requeues r WHERE r.document_id=d.document_id AND r.bank_id=o.bank_id), '')")
+
+
 def _failed_attempts(conn, bank_id: str, document_id: str) -> int:
-    return conn.execute(
-        "SELECT COUNT(*) FROM hindsight_operation_docs d"
-        " JOIN hindsight_operations o ON o.operation_id = d.operation_id"
-        " WHERE o.bank_id=? AND d.document_id=?"
-        "   AND o.status IN ('failed','cancelled','lost')",
-        (bank_id, document_id)).fetchone()[0]
+    return conn.execute(_FAILED_SINCE_REQUEUE, (bank_id, document_id)).fetchone()[0]
+
+
+def exhausted_documents(conn, bank_id: str, max_attempts: int) -> list[str]:
+    """Not-confirmed documents out of retain attempts (permanent until re-queued)."""
+    docs = [r[0] for r in conn.execute(
+        "SELECT signal_id FROM hindsight_projection WHERE bank_id=? AND status='failed'",
+        (bank_id,))]
+    return sorted(d for d in docs if _failed_attempts(conn, bank_id, d) >= max_attempts)
 
 
 def _is_prose(item: dict) -> bool:
@@ -944,6 +968,7 @@ def run_projection_stage(
         counts["bank_unprepared"] = 1        # fail closed: nothing submitted
         counts["bank_unprepared_reason"] = str(exc)[:200]
         return counts
+    _reconcile(conn, cfg, now_dt, now, counts)
 
     try:
         window_start = _window(conn, cfg, now_dt, now)
@@ -968,6 +993,59 @@ def run_projection_stage(
             # Completed is not proof: re-read what the server still has pending.
             _prose_pending(cfg, counts, "consolidation_pending_after")
     return counts
+
+
+def _reconcile(conn, cfg: ProjectionConfig, now_dt: datetime, now: str, counts: dict) -> None:
+    """Notice a lost bank or a restarted server and correct the outbox.
+
+    A bank the preparation just had to create while olo.db holds confirmed
+    documents for it was lost: every one is marked missing and resubmitted
+    (within the usual caps).  Otherwise the bank is reconciled in full when
+    one is due (``reconcile_every_hours``, or a restart recorded by the
+    supervisor since the last reconciliation).  Reconciliation reads only.
+    """
+    from olo.hindsight_reconcile import last_reconciliation, mark_bank_lost, reconcile_bank
+    confirmed = conn.execute(
+        "SELECT COUNT(*) FROM hindsight_projection WHERE bank_id=? AND status='confirmed'",
+        (cfg.bank_id,)).fetchone()[0]
+    if counts.get("bank_prepared") == "created" and confirmed:
+        counts["bank_recreated"] = mark_bank_lost(conn, cfg.bank_id, now, "bank_recreated",
+                                                  await_commitment=cfg.await_commitment)
+        return
+    last = last_reconciliation(conn, cfg.bank_id)
+    restarted = _restart_since(conn, cfg.bank_id, last["at"] if last else None)
+    due = (last is None or now_dt - datetime.fromisoformat(last["at"])
+           >= timedelta(hours=cfg.limits.reconcile_every_hours))
+    tracked = conn.execute("SELECT COUNT(*) FROM hindsight_projection WHERE bank_id=?",
+                           (cfg.bank_id,)).fetchone()[0]
+    if not (tracked and (due or restarted)):
+        return
+    try:
+        report = reconcile_bank(conn, cfg.client, cfg.bank_id, now,
+                                trigger="restart" if restarted else "scheduled",
+                                await_commitment=cfg.await_commitment)
+    except Exception as exc:  # health: allow BLE001 -- reported in health; projection continues; logged with traceback
+        _log.warning("bank %s reconciliation failed", cfg.bank_id, exc_info=True)
+        counts["reconcile_failed"] = 1
+        counts["reconcile_failed_reason"] = f"{type(exc).__name__}: {exc}"[:200]
+        return
+    if report.bank_missing:
+        counts["bank_recreated"] = mark_bank_lost(conn, cfg.bank_id, now, "bank_missing",
+                                                  await_commitment=cfg.await_commitment)
+        return
+    for key in ("missing", "drifted", "present_unconfirmed", "unexpected"):
+        counts[f"reconcile_{key}"] = len(getattr(report, key))
+
+
+def _restart_since(conn, bank_id: str, since: Optional[str]) -> bool:
+    """A Hindsight restart (olo.hindsight_service) after *since*."""
+    try:
+        row = conn.execute(
+            "SELECT MAX(at) FROM hindsight_service_events WHERE event IN ('started','restarted')"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row and row[0] and (since is None or row[0] > since))
 
 
 def _changed_documents(conn, cfg: ProjectionConfig, source: str,

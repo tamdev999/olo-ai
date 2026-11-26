@@ -258,6 +258,38 @@ def _html_to_text(markup: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
+_ICS_TYPES = ("text/calendar", "application/ics")
+_ICS_FOLD_RE = re.compile(r"\r?\n[ \t]")
+_ICS_UID_RE = re.compile(r"^UID(?:;[^:\r\n]*)?:(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+
+
+def calendar_uids(doc: dict) -> tuple[str, ...]:
+    """iCalendar UIDs in a Gmail message's calendar parts.
+
+    A calendar invitation (or its update or cancellation) carries the event
+    as a ``text/calendar`` part (or an ``.ics`` attachment whose bytes are
+    inline); its ``UID`` is the event's iCalendar identity — Google
+    Calendar's ``iCalUID``.  This is the authoritative link between an email
+    and a calendar event.  Parts whose bytes were not fetched carry none.
+    """
+    found: set[str] = set()
+
+    def walk(part: dict) -> None:
+        mime = (part.get("mimeType") or "").lower()
+        if mime.startswith("multipart/"):
+            for child in part.get("parts") or []:
+                if isinstance(child, dict):
+                    walk(child)
+            return
+        is_ics = mime in _ICS_TYPES or (part.get("filename") or "").lower().endswith(".ics")
+        if is_ics and (part.get("body") or {}).get("data"):
+            text = _ICS_FOLD_RE.sub("", _part_text(part))
+            found.update(m.group(1).strip() for m in _ICS_UID_RE.finditer(text))
+
+    walk(doc.get("payload") or {})
+    return tuple(sorted(u for u in found if u))
+
+
 def _render_gmail_doc(doc: dict) -> tuple[str, str, bool]:
     """(subject, body, truncated) from a canonical Gmail message document."""
     payload = doc.get("payload") or {}
@@ -379,6 +411,8 @@ class PreparedSignal:
     occurred_at: Optional[str] = None
     content_sha256: Optional[str] = None
     reason: str = ""
+    #: iCalendar UIDs of calendar invitations the message carries (email).
+    ical_uids: tuple[str, ...] = ()
 
     @property
     def ready(self) -> bool:
@@ -469,12 +503,15 @@ def prepare_signal(
 
     role = trusted_actor_role(kind, payload)
     authored = authored_text(kind, text)
+    uids: tuple[str, ...] = ()
+    if content.status == "ok" and content.media_type == GMAIL_MSG_MEDIA_TYPE:
+        uids = calendar_uids(json.loads(content.raw.decode("utf-8")))
     if role is None:
         return PreparedSignal(status=PREP_NO_DIRECTION, full_text=text,
                               authored_text=authored, content_sha256=sha,
-                              reason="no trusted direction for actor", **base)
+                              reason="no trusted direction for actor", ical_uids=uids, **base)
     return PreparedSignal(status=PREP_READY, full_text=text, authored_text=authored,
-                          actor_role=role, content_sha256=sha, **base)
+                          actor_role=role, content_sha256=sha, ical_uids=uids, **base)
 
 
 def load_prepared_signal(

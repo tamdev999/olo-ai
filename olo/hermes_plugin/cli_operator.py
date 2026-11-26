@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 
 __all__ = ["register"]
@@ -96,7 +97,7 @@ def _cmd_review(args: argparse.Namespace) -> None:
             "SELECT identifier_type, identifier_value, GROUP_CONCAT(DISTINCT existing_contact_id),"
             " GROUP_CONCAT(DISTINCT new_contact_id) FROM identifier_conflicts"
             " WHERE resolved_contact_id IS NULL GROUP BY identifier_type, identifier_value").fetchall()
-    except Exception:
+    except sqlite3.OperationalError:     # contacts tables not created yet
         conflicts = []
     print(f"Identifier conflicts: {len(conflicts)}")
     for r in conflicts:

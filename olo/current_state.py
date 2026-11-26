@@ -88,6 +88,7 @@ class CommitmentState:
     pending_action: Optional[str] = None
     pending_date: Optional[str] = None       # customer proposal, NOT confirmed
     history: tuple[dict, ...] = field(default_factory=tuple)
+    current_start: Optional[str] = None      # confirmed start time (calendar), if known
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -181,9 +182,11 @@ def customer_state(conn: sqlite3.Connection, contact_id: str) -> list[Commitment
             superseded_dates=tuple(sorted(earlier)),
             pending_action=st.get("pending_action"),
             pending_date=st.get("pending_proposed_date"),
+            current_start=st.get("scheduled_start"),
             history=tuple({**{k: v[k] for k in ("version", "actor_role", "action",
-                                                 "confirmed_date", "proposed_date",
-                                                 "is_confirmed", "occurred_at", "source_doc_id")},
+                                                 "confirmed_date", "confirmed_start",
+                                                 "proposed_date", "is_confirmed",
+                                                 "occurred_at", "source_doc_id")},
                            # A version stays in force when its source email is
                            # deleted; the state is shown, nothing is cancelled.
                            "evidence_state": _evidence_state(v["source_doc_id"], mailbox)}

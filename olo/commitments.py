@@ -53,7 +53,16 @@ from olo.extractor import (
     extract_prepared,
     migrate_extraction_cache,
 )
-from olo.ledger import LedgerEvent, OutcomeKind, apply_event
+from olo.ledger import (
+    ApplyResult,
+    LedgerEvent,
+    OutcomeKind,
+    add_alias,
+    alias_target,
+    apply_event,
+    apply_to_commitment,
+    record_unresolved,
+)
 from olo.ledger import migrate as migrate_ledger
 from olo.signal_content import EMAIL_KINDS, PROSE_KINDS, load_prepared_signal
 from olo.signals import format_utc
@@ -122,6 +131,40 @@ def message_doc_id(kind: str, payload: dict, source: str, signal_id: str) -> str
     if kind in EMAIL_KINDS and isinstance(mid, str) and mid.strip():
         return f"gmail:{mid.strip()}"
     return f"{source}:{signal_id}"
+
+
+def apply_invitation_aware(conn: sqlite3.Connection, event: LedgerEvent,
+                           ical_uids: tuple[str, ...], now: str) -> ApplyResult:
+    """Apply an email's ledger event, honouring calendar invitation UIDs.
+
+    A calendar invitation (or its update or cancellation) carries the
+    event's iCalendar UID — the authoritative link to that calendar event.
+    When the UID already names one of this customer's commitments (the
+    calendar event's, or an earlier invitation's), the event belongs to it
+    and bypasses date matching.  UIDs naming several commitments stay
+    unresolved.  Without a known UID the normal matcher decides, and a
+    commitment the email creates or updates takes the UID as an alias so the
+    calendar event arriving later finds it.  Similar dates alone never link.
+    """
+    targets = sorted({t for t in (alias_target(conn, f"ical:{u}") for u in ical_uids) if t})
+    if len(targets) > 1:
+        reason = (f"invitation UIDs {', '.join(ical_uids)} name {len(targets)} commitments; "
+                  "an operator decides")
+        record_unresolved(conn, event, targets, now, reason)
+        return ApplyResult(OutcomeKind.UNRESOLVED, None, None, reason)
+    if targets:
+        applied = apply_to_commitment(conn, event, targets[0], recorded_at=now)
+        if applied.outcome == OutcomeKind.INVALID:
+            record_unresolved(conn, event, targets, now, f"invitation link refused: {applied.message}")
+            return ApplyResult(OutcomeKind.UNRESOLVED, None, None, applied.message)
+        return ApplyResult(applied.outcome, applied.commitment_id, applied.version,
+                           f"linked by calendar invitation UID; {applied.message}")
+    applied = apply_event(conn, event, recorded_at=now)
+    if applied.commitment_id and applied.outcome in (OutcomeKind.CREATED, OutcomeKind.UPDATED):
+        for uid in ical_uids:
+            add_alias(conn, f"ical:{uid}", applied.commitment_id, "ical_uid",
+                      event.source_doc_id, now)
+    return applied
 
 
 def _full_content_enabled(conn: sqlite3.Connection) -> bool:
@@ -292,7 +335,7 @@ def run_commitment_stage(
                     thread_id=res.thread_id or "",
                     notes=f"sig:{sid}",
                 )
-                applied = apply_event(conn, event, recorded_at=now)
+                applied = apply_invitation_aware(conn, event, prepared.ical_uids, now)
                 status, label = _LEDGER_MAP[applied.outcome]
                 _record(conn, source, sid, status, label,
                         f"{applied.outcome.value}: {applied.message}", now,

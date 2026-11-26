@@ -73,3 +73,20 @@ def raw_message(msg_id: str, payload: dict, *, labels: list[str], thread: str = 
     return {"id": msg_id, "threadId": thread, "labelIds": labels, "snippet": "",
             "historyId": "1", "internalDate": internal_ms, "sizeEstimate": 2048,
             "payload": payload}
+
+
+def invitation(text: str, uid: str, *, method: str = "REQUEST", start: str = "20270115T200000Z",
+               summary: str = "Site visit") -> dict:
+    """A calendar invitation as Gmail delivers it: the readable text and an
+    iCalendar ``text/calendar`` alternative carrying the event's UID, plus
+    the same calendar as an ``invite.ics`` attachment."""
+    ics = ("BEGIN:VCALENDAR\r\nPRODID:-//Google Inc//Google Calendar 70.9054//EN\r\n"
+           f"VERSION:2.0\r\nMETHOD:{method}\r\nBEGIN:VEVENT\r\nDTSTART:{start}\r\n"
+           f"UID:{uid}\r\nSUMMARY:{summary}\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    cal = text_part(ics, mime="text/calendar", part_id="2", transfer="7bit")
+    cal["headers"][0]["value"] = f'text/calendar; charset="UTF-8"; method={method}'
+    return multipart("multipart/mixed", [
+        multipart("multipart/alternative", [
+            text_part(text, part_id="0.0"),
+            text_part(f"<p>{text}</p>", mime="text/html", part_id="0.1"), cal], part_id="0"),
+        attachment_part("invite.ics", mime="application/ics", part_id="1", inline_text=ics)])

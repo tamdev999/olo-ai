@@ -266,17 +266,60 @@ _UNRESOLVED_ADDED = (
 )
 
 
+#: Other identities of one commitment (post-audit batch 4).  A provider key
+#: (``gcal:<calendar>:<event>``) or an iCalendar UID (``ical:<uid>``, carried
+#: by the calendar event and by the invitation emails Gmail delivers for it)
+#: names the commitment it was first recorded on; an event bearing that
+#: identity belongs to it.  One alias names one commitment, forever.
+_ALIASES_DDL = """\
+CREATE TABLE IF NOT EXISTS commitment_aliases (
+    alias          TEXT NOT NULL PRIMARY KEY,
+    commitment_id  TEXT NOT NULL,
+    basis          TEXT NOT NULL,       -- provider_key | ical_uid | operator
+    source_doc_id  TEXT NOT NULL,
+    recorded_at    TEXT NOT NULL,
+    FOREIGN KEY (commitment_id) REFERENCES commitments (id)
+);
+"""
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Create ledger tables if they do not exist.  Idempotent."""
     conn.executescript(_SCHEMA_DDL)
+    conn.executescript(_ALIASES_DDL)
     have = {r[1] for r in conn.execute("PRAGMA table_info(unresolved_matches)")}
     for name, decl in _UNRESOLVED_ADDED:
         if name not in have:
             conn.execute(f"ALTER TABLE unresolved_matches ADD COLUMN {name} {decl}")
+    if "confirmed_start" not in {r[1] for r in conn.execute("PRAGMA table_info(commitment_versions)")}:
+        # Batch 4: the confirmed start time of a dated version (calendar).
+        conn.execute("ALTER TABLE commitment_versions ADD COLUMN confirmed_start TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_unresolved_open"
         " ON unresolved_matches (contact_id, event_type) WHERE resolved_at IS NULL")
     conn.commit()
+
+
+def alias_target(conn: sqlite3.Connection, alias: str) -> Optional[str]:
+    """The commitment *alias* names, if any."""
+    row = conn.execute("SELECT commitment_id FROM commitment_aliases WHERE alias=?",
+                       (alias,)).fetchone()
+    return row[0] if row else None
+
+
+def add_alias(conn: sqlite3.Connection, alias: str, commitment_id: str, basis: str,
+              source_doc_id: str, recorded_at: str) -> bool:
+    """Record *alias* for *commitment_id*; False when it names another one.
+
+    Does not commit the connection.
+    """
+    current = alias_target(conn, alias)
+    if current is not None:
+        return current == commitment_id
+    conn.execute(
+        "INSERT INTO commitment_aliases (alias, commitment_id, basis, source_doc_id, recorded_at)"
+        " VALUES (?,?,?,?,?)", (alias, commitment_id, basis, source_doc_id, recorded_at))
+    return True
 
 
 # ── Event dataclass ───────────────────────────────────────────────────────────
@@ -307,6 +350,10 @@ class LedgerEvent:
         thread_id:            Email thread or call-session identifier.
                               Linking anchor when business_key is unavailable.
         notes:                Optional annotation.
+        confirmed_start:      ISO 8601 start time (with offset) on confirmed_date,
+                              when the source states one (calendar events);
+                              None otherwise.  A changed start on the same
+                              date is a change of the commitment.
     """
     event_type:           str
     contact_id:           str
@@ -321,6 +368,7 @@ class LedgerEvent:
     prior_confirmed_date: Optional[str] = None
     thread_id:            str = ""
     notes:                str = ""
+    confirmed_start:      Optional[str] = None
 
 
 # ── Result types ──────────────────────────────────────────────────────────────
@@ -418,6 +466,24 @@ def _validate(event: LedgerEvent) -> Optional[str]:
         )
         if cancel_err:
             return cancel_err
+    return _start_error(event)
+
+
+def _start_error(event: LedgerEvent) -> Optional[str]:
+    """confirmed_start, when given, is an offset timestamp on confirmed_date."""
+    if event.confirmed_start is None:
+        return None
+    if event.confirmed_date is None:
+        return "confirmed_start needs the confirmed_date it falls on"
+    try:
+        start = _dt.datetime.fromisoformat(event.confirmed_start)
+    except (TypeError, ValueError):
+        start = None
+    if start is None or start.utcoffset() is None:
+        return f"confirmed_start must be ISO 8601 with an offset (got {event.confirmed_start!r})"
+    if start.date().isoformat() != event.confirmed_date:
+        return (f"confirmed_start {event.confirmed_start} is not on confirmed_date "
+                f"{event.confirmed_date}")
     return None
 
 
@@ -533,6 +599,11 @@ def _find_matches(
         if exact:
             return [r[0] for r in exact], None, EVIDENCE_KEY
         if is_provider_key(event.business_key):
+            aliased = alias_target(conn, event.business_key)
+            if aliased and conn.execute(
+                    "SELECT 1 FROM commitments WHERE id=? AND contact_id=? AND event_type=?",
+                    (aliased, event.contact_id, event.event_type)).fetchone():
+                return [aliased], None, EVIDENCE_KEY
             if event.action == "commit":
                 return [], None, EVIDENCE_NONE
             return [], (
@@ -545,6 +616,18 @@ def _find_matches(
                 "SELECT business_key FROM commitments WHERE id=?", (cid,)
             ).fetchone()[0] == ""
         ]
+        # A business key cannot tell this commit apart from a calendar event
+        # on the same day (the event has no key of its own): never a second
+        # commitment beside it, never a link by date.
+        if event.action == "commit" and event.confirmed_date:
+            same_day = [c for c in all_cids
+                        if _calendar_identified(conn, c) and _commitment_has_date_in_columns(
+                            conn, c, event.confirmed_date, ("confirmed_date", "proposed_date"))]
+            if same_day:
+                return sorted(same_day), (
+                    f"commit {event.business_key} on {event.confirmed_date} falls on the same "
+                    f"day as {len(same_day)} calendar meeting(s) with no invitation UID linking "
+                    "them; an operator links or separates them"), EVIDENCE_DATE
     else:
         pool = all_cids
 
@@ -604,6 +687,15 @@ def _find_matches(
     ), EVIDENCE_NONE
 
 
+def _calendar_identified(conn: sqlite3.Connection, commitment_id: str) -> bool:
+    """The commitment is (or is linked to) a calendar event."""
+    row = conn.execute("SELECT business_key FROM commitments WHERE id=?", (commitment_id,)).fetchone()
+    if row and is_provider_key(row[0]):
+        return True
+    return conn.execute("SELECT 1 FROM commitment_aliases WHERE commitment_id=? AND alias LIKE ?",
+                        (commitment_id, f"{PROVIDER_KEY_PREFIX}%")).fetchone() is not None
+
+
 def _open_commits(conn: sqlite3.Connection, event: LedgerEvent) -> list[tuple[str, dict]]:
     """Open unresolved 'commit' events of this customer and type (not *event*).
 
@@ -622,6 +714,12 @@ def _open_commits(conn: sqlite3.Connection, event: LedgerEvent) -> list[tuple[st
         if stored.get("action") == "commit":
             out.append((doc, stored))
     return out
+
+
+def waiting_on(conn: sqlite3.Connection, event: LedgerEvent) -> list[str]:
+    """Open unresolved commitments *event* belongs to or competes with (no
+    recorded commitment matched it): it must wait for their decision."""
+    return _blocking_commits(conn, event, EVIDENCE_NONE)
 
 
 def _blocking_commits(conn: sqlite3.Connection, event: LedgerEvent, evidence: str) -> list[str]:
@@ -671,7 +769,9 @@ def _applied_anywhere(
         " WHERE cv.source_doc_id=? AND c.contact_id=? AND c.event_type=?"
     )
     params: list = [event.source_doc_id, event.contact_id, event.event_type]
-    if event.business_key:
+    # A provider revision's source doc is unique to it, and it may live on a
+    # commitment it names only through an alias.
+    if event.business_key and not is_provider_key(event.business_key):
         sql += " AND c.business_key=?"
         params.append(event.business_key)
     row = conn.execute(sql + " ORDER BY cv.commitment_id LIMIT 1", params).fetchone()
@@ -690,7 +790,7 @@ _VERSION_COLUMNS = (
     "version, actor_role, action, confirmed_date,"
     " prior_confirmed_date, proposed_date, is_confirmed,"
     " thread_id, source_doc_id, source_kind,"
-    " occurred_at, recorded_at, notes"
+    " occurred_at, recorded_at, notes, confirmed_start"
 )
 
 
@@ -772,8 +872,8 @@ def _write_version(
         " (commitment_id, version, actor_role, action,"
         "  confirmed_date, prior_confirmed_date, proposed_date,"
         "  is_confirmed, thread_id, source_doc_id, source_kind,"
-        "  occurred_at, recorded_at, notes)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "  occurred_at, recorded_at, notes, confirmed_start)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             commitment_id, version,
             event.actor_role, event.action,
@@ -787,6 +887,7 @@ def _write_version(
             event.occurred_at,
             recorded_at,
             event.notes,
+            event.confirmed_start,
         ),
     )
 
@@ -818,6 +919,7 @@ def record_unresolved(
         "prior_confirmed_date": event.prior_confirmed_date,
         "thread_id":            event.thread_id,
         "notes":                event.notes,
+        "confirmed_start":      event.confirmed_start,
     }, default=str)
     # One open row per source_doc_id: a retry keeps the original event and
     # recorded_at, and refreshes only why it is still unresolved.
@@ -959,7 +1061,9 @@ def _append(conn: sqlite3.Connection, commitment_id: str, event: LedgerEvent,
         "SELECT business_key FROM commitments WHERE id=?", (commitment_id,)
     ).fetchone()
     matched_key = matched_key_row[0] if matched_key_row else ""
-    if event.business_key and matched_key == "":
+    # A provider key reaching another commitment is held as an alias, never
+    # as that commitment's name.
+    if event.business_key and matched_key == "" and not is_provider_key(event.business_key):
         conn.execute(
             "UPDATE commitments SET business_key=? WHERE id=?",
             (event.business_key, commitment_id),
@@ -972,22 +1076,23 @@ def _append(conn: sqlite3.Connection, commitment_id: str, event: LedgerEvent,
     return ApplyResult(OutcomeKind.UPDATED, commitment_id, version, outcome_msg)
 
 
-def apply_operator_resolution(
+def apply_to_commitment(
     conn: sqlite3.Connection,
     event: LedgerEvent,
     target_commitment_id: Optional[str],
     *,
     recorded_at: str,
 ) -> ApplyResult:
-    """Apply an unresolved event as an authorized operator decided.
+    """Apply *event* to a commitment chosen by authority, not by the matcher.
 
-    Called only by olo.operator after it has verified an operator grant;
-    this function is the ledger half (validation and write), not the
-    authorization.  ``target_commitment_id`` None means "a distinct new
-    commitment" and is allowed for 'commit' events only.  The ledger rules
-    still hold: the event must validate, the target must be the same
-    customer and type with a compatible key, and a reaffirm cannot change the
-    date.  Does not commit the connection.
+    Two callers: olo.operator, after it has verified an operator grant (this
+    function is the ledger half, not the authorization), and the alias path,
+    when the event carries an identifier the commitment already holds (a
+    calendar event's provider key or iCalendar UID).  ``target_commitment_id``
+    None means "a distinct new commitment" and is allowed for 'commit'
+    events only.  The ledger rules still hold: the event must validate, the
+    target must be the same customer and type with a compatible key, and a
+    reaffirm cannot change the date.  Does not commit the connection.
     """
     err = _validate(event)
     if err:
@@ -1017,7 +1122,8 @@ def apply_operator_resolution(
     if (row[0], row[1]) != (event.contact_id, event.event_type):
         return ApplyResult(OutcomeKind.INVALID, None, None,
                            "the target commitment belongs to another customer or event type")
-    if event.business_key and row[2] and row[2] != event.business_key:
+    if (event.business_key and row[2] and row[2] != event.business_key
+            and not is_provider_key(event.business_key) and not is_provider_key(row[2])):
         return ApplyResult(OutcomeKind.INVALID, None, None,
                            f"the target is commitment {row[2]!r}; the event names {event.business_key!r}")
     if event.action == "reaffirm" and _current_scheduled_date(conn, target_commitment_id) != event.confirmed_date:
@@ -1228,6 +1334,7 @@ def get_current_state(
 
     # Status from the latest confirmed version: a confirmed (business) cancel
     # leaves no current scheduled date; any other confirmed action schedules.
+    scheduled_start: Optional[str] = None
     if confirmed is None:
         status: Optional[str] = None
         scheduled_date: Optional[str] = None
@@ -1235,6 +1342,7 @@ def get_current_state(
         status, scheduled_date = STATUS_CANCELLED, None
     else:
         status, scheduled_date = STATUS_SCHEDULED, confirmed[3]
+        scheduled_start = confirmed[13]
 
     return {
         "id":             row[0],
@@ -1246,6 +1354,8 @@ def get_current_state(
         "status":         status,
         # Current scheduled date; None when cancelled
         "scheduled_date": scheduled_date,
+        # Its start time when the source states one (calendar); else None
+        "scheduled_start": scheduled_start,
         # Latest confirmed version fields
         "version":              confirmed[0]  if confirmed else None,
         "actor_role":           confirmed[1]  if confirmed else None,
@@ -1302,7 +1412,7 @@ def get_all_versions(
         "SELECT version, actor_role, action, confirmed_date,"
         "       prior_confirmed_date, proposed_date, is_confirmed,"
         "       thread_id, source_doc_id, source_kind,"
-        "       occurred_at, recorded_at, notes"
+        "       occurred_at, recorded_at, notes, confirmed_start"
         " FROM commitment_versions"
         " WHERE commitment_id=?"
         " ORDER BY version ASC",
@@ -1323,6 +1433,7 @@ def get_all_versions(
             "occurred_at":          r[10],
             "recorded_at":          r[11],
             "notes":                r[12],
+            "confirmed_start":      r[13],
         }
         for r in rows
     ]

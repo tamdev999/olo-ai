@@ -30,7 +30,7 @@ Decisions on an unresolved ledger event (``resolve_commitment``):
   link      apply it to an existing commitment of the same customer and type
   distinct  record it as a new commitment ('commit' events only)
   dismiss   settle it with no ledger change (the evidence stays)
-The ledger's own rules still apply (olo.ledger.apply_operator_resolution).
+The ledger's own rules still apply (olo.ledger.apply_to_commitment).
 Events that waited behind the decided one (``blocked_by``) are then
 re-applied through the normal matcher; whatever is still ambiguous stays
 unresolved.
@@ -49,9 +49,11 @@ from typing import Optional
 from olo.ledger import (
     AuthorizationError,
     OutcomeKind,
+    add_alias,
     apply_event,
-    apply_operator_resolution,
+    apply_to_commitment,
     event_from_json,
+    is_provider_key,
     utc_instant,
 )
 from olo.ledger import migrate as migrate_ledger
@@ -333,7 +335,7 @@ def resolve_commitment(conn: sqlite3.Connection, grant: OperatorGrant, source_do
         if decision == "dismiss":
             outcome, message = "dismissed", "dismissed; no ledger change"
         else:
-            applied = apply_operator_resolution(conn, event, target, recorded_at=now)
+            applied = apply_to_commitment(conn, event, target, recorded_at=now)
             if applied.outcome not in _SETTLED:
                 did = _audit(conn, now, g.actor, g.grant_id, "commitment_match", source_doc_id,
                              decision, target or "", reason, f"refused: {applied.message}")
@@ -341,6 +343,9 @@ def resolve_commitment(conn: sqlite3.Connection, grant: OperatorGrant, source_do
                 return Resolution(did, "refused", None, applied.message)
             outcome, message = "applied", applied.message
             commitment_id, version = applied.commitment_id, applied.version
+            if decision == "link" and is_provider_key(event.business_key):
+                # The linked calendar event's later revisions find it by key.
+                add_alias(conn, event.business_key, commitment_id, "operator", source_doc_id, now)
         did = _audit(conn, now, g.actor, g.grant_id, "commitment_match", source_doc_id,
                      decision, target or commitment_id or "", reason, f"{outcome}: {message}")
         conn.execute(

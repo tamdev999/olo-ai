@@ -152,6 +152,7 @@ class Hindsight:
         self.trigger_error = False
         self.drop_strategies: set[str] = set()   # PATCHed strategies the server ignores
         self.unknown_strategy_retains: list[tuple[str, str]] = []   # (bank, strategy)
+        self.written: dict[str, dict[str, str]] = {}   # bank → document → updated_at
 
     # Bank configuration
     def get_bank_config(self, bank_id=None):
@@ -199,6 +200,9 @@ class Hindsight:
             if strategy and strategy not in strategies:
                 self.unknown_strategy_retains.append((bank_id, strategy))
         self.retained.setdefault(bank_id, []).extend(items)
+        written = datetime.now(UTC).isoformat()
+        for item in items:
+            self.written.setdefault(bank_id, {})[item["document_id"]] = written
         self.ops[operation_id] = self.next_status
         self.submits.append((bank_id, len(items)))
         if self.next_status == "completed":
@@ -248,6 +252,42 @@ class Hindsight:
         for item in self.retained.get(bank, []):
             latest[item["document_id"]] = item
         return latest
+
+    # Document listing (Hindsight 1.2.1 DocumentListItem: id, tags, ...)
+    def list_documents(self, limit=100, offset=0, bank_id=None):
+        from olo.m3.hindsight.client import HindsightAPIError
+        if bank_id not in self.banks:
+            raise HindsightAPIError("bank not found", status_code=404)
+        docs = [d for _, d in sorted(self.docs(bank_id).items())]
+        written = self.written.get(bank_id, {})
+        return {"items": [{"id": d["document_id"], "bank_id": bank_id, "tags": d.get("tags", []),
+                           "updated_at": written.get(d["document_id"], ""),
+                           "memory_unit_count": 1} for d in docs[offset:offset + limit]],
+                "total": len(docs), "limit": limit, "offset": offset}
+
+    def recall(self, query, *, bank_id=None, tags=None, tags_match="all_strict", **_kw):
+        """Documents holding every requested tag, plus ``recall_extra``."""
+        wanted = set(tags or [])
+        results = [{"type": "world", "text": d["content"][:400], "document_id": d["document_id"],
+                    "tags": d.get("tags", []), "source_fact_ids": []}
+                   for d in self.docs(bank_id).values() if wanted <= set(d.get("tags", []))]
+        return {"results": results + list(getattr(self, "recall_extra", [])), "source_facts": {}}
+
+    # Disposable failure scenarios
+    def drop_bank(self, bank: str) -> None:
+        """The bank and everything in it is gone (e.g. its database was lost)."""
+        self.banks.pop(bank, None)
+        self.retained.pop(bank, None)
+        self.pending.pop(bank, None)
+
+    def lose(self, bank: str, document_id: str) -> None:
+        """One document never persisted (a partial retain)."""
+        self.retained[bank] = [i for i in self.retained.get(bank, [])
+                               if i["document_id"] != document_id]
+
+    def forget_operations(self) -> None:
+        """A restarted server knows no earlier operation."""
+        self.ops.clear()
 
 
 class Guard:

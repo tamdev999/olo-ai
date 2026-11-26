@@ -36,6 +36,8 @@ PROJECTION_DEGRADED = (
     "failed", "lost", "cancelled", "cancelled_persisted", "consolidation_failed",
     "consolidation_lost", "consolidation_cancelled", "consolidation_retries_exhausted",
     "consolidation_capped", "consolidation_unknown", "consolidation_failed_memories",
+    # Batch 4: the bank was lost and is being re-projected; a reconciliation failed.
+    "bank_recreated", "reconcile_failed",
 )
 #: Commitment counters that mean extraction did not complete.
 COMMITMENT_DEGRADED = ("budget_exhausted", "model_error", "content_error")
@@ -169,6 +171,9 @@ def _operator_items(conn: sqlite3.Connection, max_attempts: int) -> dict[str, in
                   " JOIN hindsight_operations o ON o.operation_id=d.operation_id"
                   " JOIN hindsight_projection p ON p.signal_id=d.document_id AND p.bank_id=o.bank_id"
                   " WHERE o.status IN ('failed','lost','cancelled') AND p.status='failed'"
+                  "   AND COALESCE(o.settled_at, o.submitted_at) > COALESCE((SELECT MAX(r.requeued_at)"
+                  "       FROM hindsight_requeues r WHERE r.document_id=d.document_id"
+                  "       AND r.bank_id=o.bank_id), '')"
                   " GROUP BY d.document_id HAVING COUNT(*) >= 3)"),
     }
 
@@ -210,6 +215,37 @@ def backlog(conn: sqlite3.Connection, *, max_attempts: int = 5) -> dict[str, Any
         },
         "operators": _scalar(
             conn, "SELECT COUNT(*) FROM operator_credentials WHERE revoked_at IS NULL"),
+        "processing": processing(conn, max_attempts=max_attempts),
+    }
+
+
+def processing(conn: sqlite3.Connection, *, max_attempts: int = 5) -> dict[str, dict[str, int]]:
+    """Every unfinished item, by what it waits for.
+
+    ``incomplete`` settles on later runs by itself (pending, retrying, in
+    flight); ``permanent`` never does until re-queued (``hermes olo retry``);
+    ``awaiting_operator`` needs a decision (``hermes olo review`` / ``resolve``).
+    """
+    op = _operator_items(conn, max_attempts)
+    return {
+        "incomplete": {
+            "identity_pending": _scalar(
+                conn, "SELECT COUNT(*) FROM signal_resolution WHERE identity_status='pending'"),
+            "commitment_pending": _scalar(
+                conn, "SELECT COUNT(*) FROM signal_resolution WHERE commitment_status='pending'"),
+            "commitment_retrying": _scalar(
+                conn, "SELECT COUNT(*) FROM signal_resolution WHERE commitment_status='failed'"
+                      " AND commitment_attempts < ?", (max_attempts,)),
+            "projection_unconfirmed": _scalar(
+                conn, "SELECT COUNT(*) FROM hindsight_projection WHERE status != 'confirmed'")
+            - op["projection_retries_exhausted"],
+            "operations_in_flight": _scalar(
+                conn, "SELECT COUNT(*) FROM hindsight_operations WHERE status='submitted'"),
+        },
+        "permanent": {"extraction_exhausted": op["extraction_exhausted"],
+                      "projection_retries_exhausted": op["projection_retries_exhausted"]},
+        "awaiting_operator": {k: op[k] for k in ("ledger_unresolved", "identity_ambiguous",
+                                                  "identifier_conflicts")},
     }
 
 

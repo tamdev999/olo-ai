@@ -143,8 +143,9 @@ def test_setup_force_rewrites(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 # ── No tools or hooks registered ─────────────────────────────────────────────
 
-def test_plugin_adds_no_tools_or_hooks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The olo plugin must not register any tools or hook callbacks in M1."""
+def test_plugin_adds_only_the_read_only_context_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The olo plugin registers exactly one tool — the read-only
+    olo_customer_context (post-audit batch 4) — and no hook callbacks."""
     home = tmp_path / "hermes_home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -156,9 +157,9 @@ def test_plugin_adds_no_tools_or_hooks(tmp_path: Path, monkeypatch: pytest.Monke
     mgr = pmod.PluginManager()
     mgr.discover_and_load()
 
-    # No tool names belonging to olo
-    olo_tools = [t for t in mgr._plugin_tool_names if "olo" in t.lower()]
-    assert olo_tools == [], f"olo plugin registered tools: {olo_tools}"
+    # Exactly the context tool, nothing else
+    olo_tools = sorted(t for t in mgr._plugin_tool_names if "olo" in t.lower())
+    assert olo_tools == ["olo_customer_context"], f"olo plugin registered tools: {olo_tools}"
 
     # No hook callbacks from olo
     for hook_name in list(pmod.VALID_HOOKS):
