@@ -41,9 +41,10 @@ def _signals(n: int) -> list:
                     body=f"Note {i}: thanks for the call today.") for i in range(n)]
 
 
-def _ops(p: Pipeline) -> dict[str, str]:
+def _ops(p: Pipeline, kind: str = "retain") -> dict[str, str]:
     conn = connect(p.db)
-    rows = conn.execute("SELECT operation_id, status FROM hindsight_operations").fetchall()
+    rows = conn.execute("SELECT operation_id, status FROM hindsight_operations WHERE kind=?",
+                        (kind,)).fetchall()
     conn.close()
     return {r[0]: r[1] for r in rows}
 

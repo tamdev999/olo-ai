@@ -34,6 +34,32 @@ operations.  These are client-side controls, not a server-enforced monetary
 cap: work already accepted by Hindsight runs until it completes or is
 cancelled.  Without readable usage statistics nothing is submitted.
 
+Bank preparation (S5 preflight): before anything is retained the bank is
+created if missing and Olo's ``structured-no-llm`` retain strategy (chunks
+extraction, observations off) is merged into its ``retain_strategies``.
+Hindsight's config PATCH replaces a top-level key wholesale, so the current
+strategies are read and only Olo's entry is added or corrected; every other
+bank setting is left alone.  Repeating it is a read and no write.  A bank that
+cannot be prepared receives nothing: ledger-state documents would otherwise
+fall back to LLM extraction.
+
+Consolidation: server auto-consolidation is off (setup.sh), so observations
+form only when the stage asks for them.  Prose documents carry the
+``olo:prose`` tag and consolidation is scoped to it: Hindsight 1.2.1 counts
+and consolidates structured memories too (a retain strategy's
+``enable_observations`` is not applied per memory — verified live), so a
+bank-wide run would send ledger-state and structured signal memories to the
+LLM and the bank-wide pending count never drains.  Once no retain of the
+bank is in flight and the server reports prose memories pending
+consolidation, one consolidation is triggered and tracked like a retain:
+polled to completed / failed / cancelled / lost, cancelled when stale or when
+the usage guard stops.  A completed retain is never taken as consolidated,
+and neither is a completed consolidation (the server reports a skipped job
+as completed): work is done only when the server reports no prose memory
+pending (``consolidation_pending`` == 0).  At most
+``max_consolidation_attempts`` consolidations run without new prose in
+between, and at most ``max_consolidations_per_window`` per window.
+
 Scope configuration is unchanged: items carry the same observation scopes as
 the benchmark feed.  Isolation: one olo.db and one bank per business; the
 database is bound to its bank on first projection and refuses any other.
@@ -53,11 +79,13 @@ from olo.signal_content import PROSE_KINDS, load_content
 from olo.signals import format_utc
 
 __all__ = [
+    "BankNotPrepared",
     "ProjectionConfig",
     "ProjectionLimits",
     "ProjectionRefused",
     "bind_bank",
     "desired_documents",
+    "prepare_bank",
     "run_projection_stage",
 ]
 
@@ -71,6 +99,10 @@ _EARLIEST = datetime.min.replace(tzinfo=UTC)
 
 class ProjectionRefused(Exception):
     """Projection must not run (wrong bank for this business, bad config)."""
+
+
+class BankNotPrepared(Exception):
+    """The bank's required configuration could not be applied or verified."""
 
 
 @dataclass(frozen=True)
@@ -90,6 +122,8 @@ class ProjectionLimits:
     window_hours: int = 24
     max_attempts_per_doc: int = 3
     operation_timeout_minutes: int = 60
+    max_consolidation_attempts: int = 3
+    max_consolidations_per_window: int = 24
 
 
 @dataclass(frozen=True)
@@ -163,11 +197,14 @@ def _signal_documents(
         if row["commitment_id"]:
             extra = {"commitment_id": row["commitment_id"],
                      "commitment_version": str(row["commitment_version"] or "")}
-        items.append(build_signal_item(
+        item = build_signal_item(
             row, payload, content, sha,
             source=source, contact_id=contact or "", contact_info=contact_info,
             entity_cache=entity_cache, production=True, extra_metadata=extra,
-        ))
+        )
+        if _is_prose(item):
+            item["tags"] = [*item["tags"], PROSE_SCOPE_TAG]
+        items.append(item)
     return items
 
 
@@ -271,6 +308,56 @@ def bind_bank(conn: sqlite3.Connection, bank_id: str, now: str) -> None:
             f"not {bank_id!r}; refusing to project")
 
 
+# ── Bank preparation ──────────────────────────────────────────────────────────
+
+def _strategies(state: dict) -> dict:
+    return dict((state.get("config") or {}).get("retain_strategies") or {})
+
+
+def _has(strategies: dict, name: str, wanted: dict) -> bool:
+    got = strategies.get(name)
+    return isinstance(got, dict) and all(got.get(k) == v for k, v in wanted.items())
+
+
+def prepare_bank(client: Any, bank_id: str) -> str:
+    """Make *bank_id* ready for Olo documents; returns created/updated/unchanged.
+
+    Creates the bank when the server does not know it, then ensures the
+    resolved ``retain_strategies`` contain Olo's structured strategy with the
+    required settings.  The PATCH carries the current resolved strategies
+    plus Olo's entry, because Hindsight replaces a top-level config key
+    wholesale; no other key is sent.  Raises BankNotPrepared when the server
+    refuses or the result cannot be verified.
+    """
+    from olo.m3.feeder import _BANK_CONFIG_OVERRIDES, STRUCTURED_STRATEGY
+    from olo.m3.hindsight.client import HindsightAPIError, HindsightError
+
+    wanted = _BANK_CONFIG_OVERRIDES["retain_strategies"][STRUCTURED_STRATEGY]
+    created = False
+    try:
+        try:
+            state = client.get_bank_config(bank_id=bank_id)
+        except HindsightAPIError as exc:
+            if exc.status_code != 404:
+                raise
+            client.ensure_bank(bank_id)
+            created = True
+            state = client.get_bank_config(bank_id=bank_id)
+        strategies = _strategies(state)
+        if _has(strategies, STRUCTURED_STRATEGY, wanted):
+            return "created" if created else "unchanged"
+        strategies[STRUCTURED_STRATEGY] = {**(strategies.get(STRUCTURED_STRATEGY) or {}), **wanted}
+        state = client.patch_bank_config({"retain_strategies": strategies}, bank_id=bank_id)
+    except HindsightError as exc:
+        raise BankNotPrepared(
+            f"bank {bank_id!r}: {type(exc).__name__} "
+            f"(HTTP {getattr(exc, 'status_code', None)})") from exc
+    if not _has(_strategies(state), STRUCTURED_STRATEGY, wanted):
+        raise BankNotPrepared(
+            f"bank {bank_id!r}: {STRUCTURED_STRATEGY!r} strategy not in effect after update")
+    return "created" if created else "updated"
+
+
 # ── Budget window (persisted) ─────────────────────────────────────────────────
 
 def _window_baseline(conn, cfg: ProjectionConfig, now_dt: datetime, now: str):
@@ -333,19 +420,44 @@ def _settle(conn, bank_id: str, op: str, status: str, now: str, detail: str = ""
     return n
 
 
+#: Retain outcomes count settled documents; consolidation outcomes count
+#: operations (a consolidation has no documents of its own).
+_RETAIN_OUTCOME = {"completed": "confirmed", "failed": "failed",
+                   "cancelled": "cancelled", "lost": "lost"}
+_CONSOLIDATION_OUTCOME = {"completed": "consolidation_completed",
+                          "failed": "consolidation_failed",
+                          "cancelled": "consolidation_cancelled",
+                          "lost": "consolidation_lost"}
+
+
+def _record(out: dict[str, int], conn, bank_id: str, op: str, kind: str,
+            status: str, now: str, detail: str = "") -> None:
+    docs = _settle(conn, bank_id, op, status, now, detail)
+    if kind == "consolidation":
+        out[_CONSOLIDATION_OUTCOME[status]] += 1
+    else:
+        out[_RETAIN_OUTCOME[status]] += docs
+
+
+def _outcome_counts() -> dict[str, int]:
+    return {k: 0 for k in (*_RETAIN_OUTCOME.values(), *_CONSOLIDATION_OUTCOME.values())}
+
+
 def _poll_in_flight(conn, cfg: ProjectionConfig, now_dt: datetime, now: str) -> dict[str, int]:
-    """Drive every submitted operation of this bank towards a terminal state.
+    """Drive every submitted operation of this bank (retain or consolidation)
+    towards a terminal state.
 
     completed → documents confirmed; failed/partial → failed (retried within
-    max_attempts_per_doc); unknown to the server (404/not_found) → lost and
-    retried; still running past operation_timeout_minutes → cancelled through
-    the client's cancellation API.  A transient polling error leaves it be.
+    max_attempts_per_doc / max_consolidation_attempts); unknown to the server
+    (404/not_found) → lost and retried; still running past
+    operation_timeout_minutes → cancelled through the client's cancellation
+    API.  A transient polling error leaves it be.
     """
-    out = {"confirmed": 0, "failed": 0, "cancelled": 0, "lost": 0}
+    out = _outcome_counts()
     rows = conn.execute(
-        "SELECT operation_id, submitted_at FROM hindsight_operations"
+        "SELECT operation_id, submitted_at, kind FROM hindsight_operations"
         " WHERE bank_id=? AND status='submitted'", (cfg.bank_id,)).fetchall()
-    for op, submitted_at in rows:
+    for op, submitted_at, kind in rows:
         try:
             state = (cfg.client.get_operation_status(op, bank_id=cfg.bank_id) or {}).get("status")
         except Exception as exc:
@@ -360,28 +472,176 @@ def _poll_in_flight(conn, cfg: ProjectionConfig, now_dt: datetime, now: str) -> 
                 cfg.client.cancel_operation(op, bank_id=cfg.bank_id)
             except Exception:
                 continue                     # cancel failed: try again next run
-            out["cancelled"] += _settle(conn, cfg.bank_id, op, "cancelled", now, "timed out")
+            _record(out, conn, cfg.bank_id, op, kind, "cancelled", now, "timed out")
         elif state == _OP_DONE:
-            out["confirmed"] += _settle(conn, cfg.bank_id, op, "completed", now)
+            _record(out, conn, cfg.bank_id, op, kind, "completed", now)
         elif state == "not_found":
-            out["lost"] += _settle(conn, cfg.bank_id, op, "lost", now, "unknown to server")
+            _record(out, conn, cfg.bank_id, op, kind, "lost", now, "unknown to server")
         else:
-            out["failed"] += _settle(conn, cfg.bank_id, op, "failed", now, str(state))
+            _record(out, conn, cfg.bank_id, op, kind, "failed", now, str(state))
     return out
 
 
-def _cancel_in_flight(conn, cfg: ProjectionConfig, now: str, why: str) -> int:
+def _cancel_in_flight(conn, cfg: ProjectionConfig, now: str, why: str) -> dict[str, int]:
     """Cancel this bank's submitted operations (budget exhausted)."""
-    n = 0
-    for (op,) in conn.execute(
-            "SELECT operation_id FROM hindsight_operations WHERE bank_id=? AND status='submitted'",
-            (cfg.bank_id,)).fetchall():
+    out = _outcome_counts()
+    for op, kind in conn.execute(
+            "SELECT operation_id, kind FROM hindsight_operations"
+            " WHERE bank_id=? AND status='submitted'", (cfg.bank_id,)).fetchall():
         try:
             cfg.client.cancel_operation(op, bank_id=cfg.bank_id)
         except Exception:
             continue
-        n += _settle(conn, cfg.bank_id, op, "cancelled", now, why)
-    return n
+        _record(out, conn, cfg.bank_id, op, kind, "cancelled", now, why)
+    return out
+
+
+def _add(counts: dict[str, int], more: dict[str, int]) -> None:
+    for k, v in more.items():
+        counts[k] = counts.get(k, 0) + v
+
+
+def _guard_stops(conn, cfg: ProjectionConfig, baseline, now: str, counts: dict) -> bool:
+    """True when the usage guard forbids more work; on overspend this bank's
+    in-flight operations (retains and consolidations) are cancelled."""
+    from olo.m3.hindsight.budget import BudgetExceededError, StatsUnavailableError
+    try:
+        cfg.usage_guard.check(baseline)
+    except BudgetExceededError:
+        counts["budget_exceeded"] = 1
+        _add(counts, _cancel_in_flight(conn, cfg, now, "usage budget exceeded"))
+        return True
+    except StatsUnavailableError:
+        counts["stats_unavailable"] = 1
+        return True
+    return False
+
+
+# ── Consolidation ─────────────────────────────────────────────────────────────
+
+#: Tag carried by every prose document the stage projects, and the only scope
+#: consolidation is asked to cover.  Ledger-state and structured signal
+#: documents share entity tags with prose, so an entity scope would hand them
+#: to the consolidation LLM; this tag never matches them.
+PROSE_SCOPE_TAG = "olo:prose"
+_CONSOLIDATION_SCOPES = [[PROSE_SCOPE_TAG]]
+
+
+def _submitted(conn, bank_id: str, kind: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM hindsight_operations"
+        " WHERE bank_id=? AND kind=? AND status='submitted'", (bank_id, kind)).fetchone()[0]
+
+
+def _attempts_since_new_prose(conn, bank_id: str) -> int:
+    """Consolidations triggered since the newest completed prose retain.
+
+    Reaching the trigger again means prose memories are still pending, so each
+    of these attempts — failed, cancelled, lost, or completed without draining
+    them (the server reports a skipped job as completed) — was unproductive.
+    New prose resets the count.  rowid is insertion order.
+    """
+    return conn.execute(
+        "SELECT COUNT(*) FROM hindsight_operations"
+        " WHERE bank_id=? AND kind='consolidation' AND rowid > COALESCE("
+        "   (SELECT MAX(rowid) FROM hindsight_operations WHERE bank_id=? AND kind='retain'"
+        "      AND status='completed' AND prose_count > 0), 0)",
+        (bank_id, bank_id)).fetchone()[0]
+
+
+def _consolidations_in_window(conn, bank_id: str, window_start: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM hindsight_operations"
+        " WHERE bank_id=? AND kind='consolidation' AND submitted_at >= ?",
+        (bank_id, window_start)).fetchone()[0]
+
+
+def _server_consolidation(client: Any, bank_id: str) -> Optional[str]:
+    """A consolidation of this bank the server is still running, if any."""
+    for status in ("pending", "processing"):
+        for o in client.list_operations(limit=50, status=status, bank_id=bank_id).get("operations") or []:
+            if (o.get("task_type") or o.get("operation_type")) == "consolidation":
+                return str(o.get("id") or o.get("operation_id"))
+    return None
+
+
+def _prose_pending(cfg: ProjectionConfig, counts: dict, key: str = "consolidation_pending") -> Optional[int]:
+    """Prose memories the server still has to consolidate (None: unknown)."""
+    try:
+        pending = cfg.client.count_memories(
+            consolidation_state="pending", tags=[PROSE_SCOPE_TAG], bank_id=cfg.bank_id)
+        failed = cfg.client.count_memories(
+            consolidation_state="failed", tags=[PROSE_SCOPE_TAG], bank_id=cfg.bank_id)
+    except Exception:
+        counts["consolidation_unknown"] = 1
+        return None
+    counts[key] = pending
+    counts["consolidation_failed_memories"] = failed
+    return pending
+
+
+def _record_consolidation(conn, cfg: ProjectionConfig, source: str, op: str, now: str,
+                          status: str = "submitted", detail: str = "") -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "INSERT OR IGNORE INTO hindsight_operations (operation_id, bank_id, source,"
+        " submitted_at, doc_count, prose_count, status, settled_at, detail, kind)"
+        " VALUES (?,?,?,?,0,0,?,?,?,'consolidation')",
+        (op, cfg.bank_id, source, now, status,
+         now if status != "submitted" else None, detail or None))
+    conn.execute("COMMIT")
+
+
+def _consolidate(conn, cfg: ProjectionConfig, source: str, baseline, window_start: str,
+                 now: str, counts: dict) -> None:
+    """Trigger one prose-scoped consolidation when the server reports prose
+    memories pending consolidation.
+
+    Waits while any retain of the bank is in flight (its facts are not there
+    yet) or a consolidation is running — one this database recorded, or one
+    the server is running that a crash left unrecorded (adopted, not
+    duplicated).  The server's pending count, not a completed retain or a
+    completed consolidation operation, decides whether work remains.
+    """
+    if _submitted(conn, cfg.bank_id, "retain"):
+        counts["consolidation_deferred"] = 1
+        return
+    if _submitted(conn, cfg.bank_id, "consolidation"):
+        counts["consolidation_in_flight"] = 1
+        return
+    pending = _prose_pending(cfg, counts)
+    if not pending:
+        return
+    lim = cfg.limits
+    if _attempts_since_new_prose(conn, cfg.bank_id) >= lim.max_consolidation_attempts:
+        counts["consolidation_retries_exhausted"] = 1
+        return
+    if _consolidations_in_window(conn, cfg.bank_id, window_start) >= lim.max_consolidations_per_window:
+        counts["consolidation_capped"] = 1
+        return
+    try:
+        running = _server_consolidation(cfg.client, cfg.bank_id)
+    except Exception:
+        counts["consolidation_unknown"] = 1
+        return
+    if running is not None:
+        _record_consolidation(conn, cfg, source, running, now, detail="adopted")
+        counts["consolidation_in_flight"] = 1
+        return
+    if _guard_stops(conn, cfg, baseline, now, counts):
+        return
+    try:
+        reply = cfg.client.trigger_consolidation(
+            observation_scopes=_CONSOLIDATION_SCOPES, bank_id=cfg.bank_id) or {}
+        op = str(reply["operation_id"])
+    except Exception as exc:
+        # Recorded as a failed attempt so it counts towards the retry bound.
+        _record_consolidation(conn, cfg, source, f"consolidation-not-submitted:{uuid.uuid4()}",
+                              now, "failed", f"submit failed: {type(exc).__name__}")
+        counts["consolidation_failed"] += 1
+        return
+    _record_consolidation(conn, cfg, source, op, now)
+    counts["consolidation_submitted"] = 1
 
 
 def _failed_attempts(conn, bank_id: str, document_id: str) -> int:
@@ -430,19 +690,28 @@ def run_projection_stage(
 ) -> dict[str, int]:
     """Bring Hindsight in line with olo.db for *source*, within budget.
 
-    Order: bank binding check → settle submitted operations → persisted
+    Order: bank binding check → bank preparation (nothing is submitted to a
+    bank that is not prepared) → settle submitted operations → persisted
     budget window → diff desired documents against the outbox → submit in
-    batches while the run/window document caps and the usage guard allow.
+    batches while the run/window document caps and the usage guard allow →
+    settle → consolidation when the server reports pending memories.
     Idempotent and resumable; never resubmits an in-flight document.
     """
-    from olo.m3.hindsight.budget import BudgetExceededError, StatsUnavailableError
+    from olo.m3.hindsight.budget import StatsUnavailableError
 
     now_dt = clock()
     now = format_utc(now_dt)
     bind_bank(conn, cfg.bank_id, now)
-    counts = {"submitted": 0, "unchanged": 0, "deferred": 0, "retries_exhausted": 0,
-              "budget_exceeded": 0, "stats_unavailable": 0}
-    counts.update(_poll_in_flight(conn, cfg, now_dt, now))
+    counts: dict[str, Any] = {
+        "submitted": 0, "unchanged": 0, "deferred": 0, "retries_exhausted": 0,
+        "budget_exceeded": 0, "stats_unavailable": 0, "bank_unprepared": 0,
+        "consolidation_submitted": 0, **_outcome_counts()}
+    _add(counts, _poll_in_flight(conn, cfg, now_dt, now))
+    try:
+        counts["bank_prepared"] = prepare_bank(cfg.client, cfg.bank_id)
+    except BankNotPrepared:
+        counts["bank_unprepared"] = 1        # fail closed: nothing submitted
+        return counts
 
     try:
         window_start, baseline = _window_baseline(conn, cfg, now_dt, now)
@@ -450,6 +719,29 @@ def run_projection_stage(
         counts["stats_unavailable"] = 1      # fail closed: nothing submitted
         return counts
 
+    todo = _changed_documents(conn, cfg, source, counts)
+    stopped = _submit(conn, cfg, source, todo, baseline, window_start, now, counts, _fault)
+    _add(counts, _poll_in_flight(conn, cfg, now_dt, now))
+    if stopped:
+        return counts
+    # Work still running server-side is cancelled if spend went over.
+    in_flight = _submitted(conn, cfg.bank_id, "retain") + _submitted(conn, cfg.bank_id, "consolidation")
+    if in_flight and _guard_stops(conn, cfg, baseline, now, counts):
+        return counts
+    _consolidate(conn, cfg, source, baseline, window_start, now, counts)
+    if counts["consolidation_submitted"]:
+        settled = _poll_in_flight(conn, cfg, now_dt, now)
+        _add(counts, settled)
+        if settled["consolidation_completed"]:
+            # Completed is not proof: re-read what the server still has pending.
+            _prose_pending(cfg, counts, "consolidation_pending_after")
+    return counts
+
+
+def _changed_documents(conn, cfg: ProjectionConfig, source: str,
+                       counts: dict) -> list[tuple[dict, str]]:
+    """Desired documents that are neither in flight, confirmed unchanged,
+    nor out of retry attempts."""
     in_flight = {r[0] for r in conn.execute(
         "SELECT d.document_id FROM hindsight_operation_docs d"
         " JOIN hindsight_operations o ON o.operation_id = d.operation_id"
@@ -468,33 +760,40 @@ def run_projection_stage(
             counts["retries_exhausted"] += 1
             continue
         todo.append((item, fp))
+    return todo
 
+
+def _next_batch(queue, cfg: ProjectionConfig, used: list[int]):
+    """Split *queue* into (batch, rest) within batch size and run/window caps.
+    ``used`` = [run_docs, run_prose, win_docs, win_prose]."""
     lim = cfg.limits
-    run_docs = run_prose = 0
+    run_docs, run_prose, win_docs, win_prose = used
+    batch: list[tuple[dict, str]] = []
+    rest: list[tuple[dict, str]] = []
+    for item, fp in queue:
+        fits = (len(batch) < cfg.batch_size
+                and run_docs + len(batch) < lim.max_docs_per_run
+                and win_docs + len(batch) < lim.max_docs_per_window)
+        if fits and _is_prose(item):
+            p = sum(1 for i, _ in batch if _is_prose(i))
+            fits = (run_prose + p < lim.max_prose_docs_per_run
+                    and win_prose + p < lim.max_prose_docs_per_window)
+        (batch if fits else rest).append((item, fp))
+    return batch, rest
+
+
+def _submit(conn, cfg: ProjectionConfig, source: str, todo, baseline, window_start: str,
+            now: str, counts: dict, _fault) -> bool:
+    """Submit *todo* in batches; True when the usage guard stopped the run."""
     win_docs, win_prose = _window_usage(conn, cfg.bank_id, window_start)
+    used = [0, 0, win_docs, win_prose]
     queue = list(todo)
+    stopped = False
     while queue:
-        try:
-            cfg.usage_guard.check(baseline)
-        except BudgetExceededError:
-            counts["budget_exceeded"] = 1
-            counts["cancelled"] += _cancel_in_flight(conn, cfg, now, "usage budget exceeded")
+        if _guard_stops(conn, cfg, baseline, now, counts):
+            stopped = True
             break
-        except StatsUnavailableError:
-            counts["stats_unavailable"] = 1
-            break
-        batch: list[tuple[dict, str]] = []
-        rest: list[tuple[dict, str]] = []
-        for item, fp in queue:
-            prose = _is_prose(item)
-            fits = (len(batch) < cfg.batch_size
-                    and run_docs + len(batch) < lim.max_docs_per_run
-                    and win_docs + len(batch) < lim.max_docs_per_window)
-            if fits and prose:
-                p = sum(1 for i, _ in batch if _is_prose(i))
-                fits = (run_prose + p < lim.max_prose_docs_per_run
-                        and win_prose + p < lim.max_prose_docs_per_window)
-            (batch if fits else rest).append((item, fp))
+        batch, rest = _next_batch(queue, cfg, used)
         if not batch:
             break
         prose_n = sum(1 for i, _ in batch if _is_prose(i))
@@ -509,10 +808,8 @@ def run_projection_stage(
         except BaseException:
             conn.execute("ROLLBACK")
             raise
-        run_docs += len(batch)
-        run_prose += prose_n
-        win_docs += len(batch)
-        win_prose += prose_n
+        used = [used[0] + len(batch), used[1] + prose_n,
+                used[2] + len(batch), used[3] + prose_n]
         if _fault:
             _fault("after_projection_enqueue")
         try:
@@ -524,7 +821,4 @@ def run_projection_stage(
                                         f"submit failed: {type(exc).__name__}")
         queue = rest
     counts["deferred"] = len(queue)
-    settled = _poll_in_flight(conn, cfg, now_dt, now)
-    for k, v in settled.items():
-        counts[k] += v
-    return counts
+    return stopped

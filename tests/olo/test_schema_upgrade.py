@@ -114,3 +114,45 @@ def test_upgraded_database_runs_the_pipeline(tmp_path) -> None:
     row = conn.execute("SELECT commitment_status, commitment_attempts FROM signal_resolution"
                        " WHERE signal_id='m1'").fetchone()
     assert (row[0], row[1]) == ("failed", 1)
+
+
+_PART3_OPERATIONS = """CREATE TABLE hindsight_operations (
+    operation_id  TEXT NOT NULL PRIMARY KEY,
+    bank_id       TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    submitted_at  TEXT NOT NULL,
+    doc_count     INTEGER NOT NULL,
+    prose_count   INTEGER NOT NULL,
+    status        TEXT NOT NULL
+        CHECK (status IN ('submitted','completed','failed','cancelled','lost')),
+    settled_at    TEXT,
+    detail        TEXT
+)"""
+
+
+def test_part3_operations_gain_kind_and_keep_rows(tmp_path) -> None:
+    """A database written by S5 part 3 (operations without ``kind``) keeps its
+    operations, which are all retains, and accepts consolidation rows."""
+    db = tmp_path / "olo.db"
+    _pre_s5_db(db)
+    raw = sqlite3.connect(str(db))
+    raw.execute(_PART3_OPERATIONS)
+    raw.execute("INSERT INTO hindsight_operations VALUES"
+                " ('op1','olo-b','gmail_biz','t0',2,1,'completed','t1',NULL)")
+    raw.commit()
+    raw.close()
+
+    conn = connect(db)
+    migrate(conn)
+    migrate(conn)
+    assert [tuple(r) for r in conn.execute(
+        "SELECT operation_id, kind, status FROM hindsight_operations")] == [
+        ("op1", "retain", "completed")]
+    conn.execute("INSERT INTO hindsight_operations (operation_id, bank_id, source,"
+                 " submitted_at, doc_count, prose_count, status, kind)"
+                 " VALUES ('c1','olo-b','gmail_biz','t2',0,0,'submitted','consolidation')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO hindsight_operations (operation_id, bank_id, source,"
+                     " submitted_at, doc_count, prose_count, status, kind)"
+                     " VALUES ('x1','olo-b','gmail_biz','t2',0,0,'submitted','other')")
+    conn.close()

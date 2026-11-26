@@ -119,7 +119,13 @@ class Model:
 
 
 class Hindsight:
-    """Records retains per bank; operations complete unless told otherwise."""
+    """Records retains per bank; operations complete unless told otherwise.
+
+    Bank config follows Hindsight 1.2.1: GET /config on an unknown bank is a
+    404, PUT creates it, and PATCH replaces each top-level key it is given.
+    A completed prose retain leaves its memories pending consolidation until
+    a consolidation completes (auto-consolidation off).
+    """
 
     def __init__(self, *, raise_on_retain: bool = False) -> None:
         self.retained: dict[str, list[dict]] = {}
@@ -128,14 +134,82 @@ class Hindsight:
         self.next_status = "completed"      # status new operations report
         self.cancelled: list[str] = []
         self.submits: list[tuple[str, int]] = []
+        self.banks: dict[str, dict] = {}    # bank → bank-level config overrides
+        self.global_strategies: dict = {}   # server-level retain_strategies
+        self.patches: list[tuple[str, dict]] = []
+        self.config_error: Exception | None = None
+        self.unprepared_retains: list[str] = []
+        self.pending: dict[str, int] = {}   # bank → memories pending consolidation
+        self.consolidations: list[tuple[str, str]] = []   # (bank, operation id)
+        self.scopes: list = []              # observation_scopes of each trigger
+        self.server_consolidations: list[tuple[str, str]] = []   # unrecorded, server-side
+        self.consolidation_status = "completed"
+        self.consolidation_drains = True    # False: completes without consolidating
+        self.stats_error = False
+        self.trigger_error = False
+
+    # Bank configuration
+    def get_bank_config(self, bank_id=None):
+        from olo.m3.hindsight.client import HindsightAPIError
+        if self.config_error is not None:
+            raise self.config_error
+        if bank_id not in self.banks:
+            raise HindsightAPIError("bank not found", status_code=404)
+        overrides = self.banks[bank_id]
+        resolved = {"retain_extraction_mode": "concise",
+                    "retain_strategies": self.global_strategies, **overrides}
+        return {"bank_id": bank_id, "config": resolved, "overrides": dict(overrides)}
+
+    def ensure_bank(self, bank_id):
+        self.banks.setdefault(bank_id, {})
+        return {"bank_id": bank_id}
+
+    def patch_bank_config(self, updates, bank_id=None):
+        self.patches.append((bank_id, updates))
+        self.banks[bank_id].update(updates)
+        return self.get_bank_config(bank_id=bank_id)
+
+    def _prepared(self, bank_id) -> bool:
+        if bank_id not in self.banks:
+            return False
+        strategies = self.get_bank_config(bank_id=bank_id)["config"]["retain_strategies"]
+        return (strategies.get("structured-no-llm") or {}).get("enable_observations") is False
 
     def retain(self, items, *, operation_id, async_, bank_id):
         if self.raise_on_retain:
             raise ConnectionError("hindsight down")
+        if not self._prepared(bank_id):
+            self.unprepared_retains.append(bank_id)
         self.retained.setdefault(bank_id, []).extend(items)
         self.ops[operation_id] = self.next_status
         self.submits.append((bank_id, len(items)))
+        if self.next_status == "completed":
+            prose = sum(1 for i in items if "olo:prose" in i.get("tags", []))
+            self.pending[bank_id] = self.pending.get(bank_id, 0) + prose
         return {"operation_id": operation_id}
+
+    # Consolidation
+    def count_memories(self, *, consolidation_state, tags, bank_id=None):
+        if self.stats_error:
+            raise ConnectionError("stats down")
+        assert tags == ["olo:prose"]
+        return self.pending.get(bank_id, 0) if consolidation_state == "pending" else 0
+
+    def list_operations(self, limit=10, status=None, bank_id=None):
+        ops = [{"id": op, "task_type": "consolidation", "status": self.ops[op]}
+               for bank, op in self.server_consolidations if bank == bank_id]
+        return {"operations": [o for o in ops if o["status"] == status][:limit]}
+
+    def trigger_consolidation(self, observation_scopes=None, bank_id=None):
+        if self.trigger_error:
+            raise ConnectionError("hindsight down")
+        op = f"consolidation-{len(self.consolidations) + 1}"
+        self.consolidations.append((bank_id, op))
+        self.scopes.append(observation_scopes)
+        self.ops[op] = self.consolidation_status
+        if self.consolidation_status == "completed" and self.consolidation_drains:
+            self.pending[bank_id] = 0
+        return {"operation_id": op, "deduplicated": False}
 
     def get_operation_status(self, operation_id, bank_id=None):
         return {"status": self.ops.get(operation_id, "not_found")}

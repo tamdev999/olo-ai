@@ -25,6 +25,8 @@ _log = logging.getLogger(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+#: Business .env variables holding the tenant key, in order of preference.
+_TENANT_KEY_VARS = ("HINDSIGHT_API_TENANT_API_KEY", "HINDSIGHT_API_TENANT_EXTENSION_API_KEY")
 @dataclass
 class HindsightConfig:
     """Per-business Hindsight connection config.
@@ -112,17 +114,26 @@ class HindsightConfig:
         business_id: str,
         registry_path: "pathlib.Path",  # type: ignore[name-defined]
     ) -> str:
-        """Load the per-business tenant API key from the business .env file."""
-        import pathlib as _pathlib
+        """Load the per-business tenant API key from the business .env file.
+
+        ``HINDSIGHT_API_TENANT_API_KEY`` is the variable Hindsight 1.2.1's
+        ApiKeyTenantExtension enforces; ``HINDSIGHT_API_TENANT_EXTENSION_API_KEY``
+        is the name older setup.sh runs wrote (never read by the server) and is
+        accepted so a business set up before the fix keeps its key.
+        """
         # The .env file lives next to the registry, in businesses/{id}/.env
         hermes_home = registry_path.parent
         env_file = hermes_home / "businesses" / business_id / ".env"
         if not env_file.exists():
             return ""
+        values: dict[str, str] = {}
         for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("HINDSIGHT_API_TENANT_EXTENSION_API_KEY="):
-                return line.split("=", 1)[1].strip()
+            name, sep, value = line.strip().partition("=")
+            if sep:
+                values.setdefault(name, value.strip())
+        for name in _TENANT_KEY_VARS:
+            if values.get(name):
+                return values[name]
         return ""
 # ── Exceptions ────────────────────────────────────────────────────────────────
 class HindsightError(Exception):
@@ -576,6 +587,24 @@ class HindsightClient:
             "bank_id": bank_id,
             "description": description,
         })
+    def ensure_bank(self, bank_id: str) -> dict:
+        """Create the bank if missing (PUT /v1/default/banks/{bank_id}).
+
+        An empty body creates a missing bank with server defaults.  Callers
+        use it only for a bank that does not exist yet, so an existing bank's
+        profile is never rewritten.
+        """
+        return _request(
+            self._cfg, "PUT",
+            f"{self._API_PREFIX}/banks/{urllib.parse.quote(bank_id, safe='')}", {},
+        )
+    def get_bank_config(self, bank_id: Optional[str] = None) -> dict:
+        """Resolved bank configuration (GET /v1/default/banks/{bank_id}/config).
+
+        Returns {"bank_id", "config": resolved values, "overrides": bank-level
+        overrides only}.  HTTP 404 when the bank does not exist.
+        """
+        return _request(self._cfg, "GET", self._bank_path("/config", bank_id))
     def list_banks(self) -> dict:
         return _request(self._cfg, "GET", f"{self._API_PREFIX}/banks")
     def delete_bank(self, bank_id: str) -> dict:
@@ -622,6 +651,23 @@ class HindsightClient:
         if observation_scopes is not None:
             body["observation_scopes"] = observation_scopes
         return _request(self._cfg, "POST", self._bank_path("/consolidate", bank_id), body or None)
+    def count_memories(
+        self,
+        *,
+        consolidation_state: str,
+        tags: list[str],
+        bank_id: Optional[str] = None,
+    ) -> int:
+        """Source memories (world/experience) in *consolidation_state*
+        ('pending', 'failed' or 'done') carrying any of *tags*.
+
+        GET /v1/default/banks/{bank_id}/memories/list — the server's own count
+        (``total``), the same candidate predicate consolidation uses.
+        """
+        params = [("consolidation_state", consolidation_state), ("tags_match", "any_strict"),
+                  ("limit", "1")] + [("tags", t) for t in tags]
+        path = self._bank_path("/memories/list", bank_id) + "?" + urllib.parse.urlencode(params)
+        return int(_request(self._cfg, "GET", path)["total"])
     def get_observation_history(
         self, memory_id: str, bank_id: Optional[str] = None
     ) -> dict:

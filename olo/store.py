@@ -326,6 +326,10 @@ _S5_RESOLUTION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("commitment_outcome", "TEXT"),
     ("commitment_attempts", "INTEGER NOT NULL DEFAULT 0"),
 )
+#: Hindsight operations are retains (documents) or bank consolidations.
+_S5_OPERATION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("kind", "TEXT NOT NULL DEFAULT 'retain' CHECK (kind IN ('retain','consolidation'))"),
+)
 
 
 def _add_missing_columns(
@@ -355,6 +359,7 @@ def migrate(conn: Optional[sqlite3.Connection] = None,
         for stmt in _DDL_STATEMENTS:
             conn.execute(stmt)
         _add_missing_columns(conn, "signal_resolution", _S5_RESOLUTION_COLUMNS)
+        _add_missing_columns(conn, "hindsight_operations", _S5_OPERATION_COLUMNS)
         # Ensure exactly one schema_version row; upgrade v1 → v2 in-place
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
