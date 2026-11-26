@@ -1,0 +1,1768 @@
+{
+  "started": "2026-11-26T08:33:43.339114Z",
+  "steps": {
+    "0_preflight": {
+      "ok": true,
+      "result": {
+        "port": 18899,
+        "llm_trace": true,
+        "server_model": {
+          "log": "LLM: provider=deepseek, model=deepseek-flash",
+          "extra_body": "'{\"thinking\":{\"type\":\"disabled\"}}'",
+          "per_operation_overrides": [],
+          "connection_verified": true,
+          "llm_errors": []
+        },
+        "version": "1.2.1",
+        "auth": {
+          "no key": "refused: 401",
+          "wrong key": "refused: 401"
+        },
+        "banks_before": []
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "1_prepare_bank": {
+      "ok": true,
+      "result": {
+        "prepare_bank": "created",
+        "enable_auto_consolidation": false,
+        "structured_strategy": {
+          "enable_observations": false,
+          "retain_extraction_mode": "chunks"
+        }
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "2_activate": {
+      "ok": true,
+      "result": {
+        "commitment_budget": {
+          "max_calls": 8,
+          "max_total_tokens": 16000
+        },
+        "projection_limits": {
+          "max_docs_per_run": 20,
+          "max_prose_docs_per_run": 8,
+          "max_docs_per_window": 1000,
+          "max_prose_docs_per_window": 200,
+          "window_hours": 24,
+          "max_attempts_per_doc": 3,
+          "operation_timeout_minutes": 60,
+          "max_consolidation_attempts": 3,
+          "max_consolidations_per_window": 24
+        },
+        "guard": "UsageGuard",
+        "model_id": "deepseek:deepseek-flash@https://api.deepseek.com/v1:thinking=disabled:temperature=0:max_tokens=400"
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.6
+    },
+    "3_run1_commit_request_meeting": {
+      "ok": true,
+      "result": {
+        "status": "succeeded",
+        "inserted": 3,
+        "duplicates": 0,
+        "identity_resolved": 3,
+        "commitment": {
+          "applied": 3
+        },
+        "projection": {
+          "submitted": 5,
+          "bank_prepared": "unchanged",
+          "consolidation_deferred": 1
+        },
+        "error": null
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 3.8
+    },
+    "3_settle": {
+      "ok": true,
+      "result": {
+        "settled": true,
+        "worker_runs": 2,
+        "max_runs": 36,
+        "prose_pending": 0,
+        "projections": [
+          {
+            "unchanged": 5,
+            "consolidation_submitted": 1,
+            "confirmed": 5,
+            "bank_prepared": "unchanged",
+            "consolidation_pending": 4
+          },
+          {
+            "unchanged": 5,
+            "consolidation_completed": 1,
+            "bank_prepared": "unchanged"
+          }
+        ]
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 22.1
+    },
+    "3_state_before_confirmation": {
+      "ok": true,
+      "result": {
+        "ledger": {
+          "9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0": {
+            "event_type": "delivery",
+            "key": "ORD-501",
+            "status": "scheduled",
+            "scheduled_date": "2026-06-10",
+            "pending_action": "request_change",
+            "pending_proposed_date": "2026-06-15",
+            "versions": [
+              {
+                "version": 1,
+                "actor_role": "business",
+                "action": "commit",
+                "confirmed_date": "2026-06-10",
+                "prior_confirmed_date": null,
+                "proposed_date": null,
+                "is_confirmed": true,
+                "source_doc_id": "gmail:m1"
+              },
+              {
+                "version": 2,
+                "actor_role": "customer",
+                "action": "request_change",
+                "confirmed_date": null,
+                "prior_confirmed_date": "2026-06-10",
+                "proposed_date": "2026-06-15",
+                "is_confirmed": false,
+                "source_doc_id": "gmail:m2"
+              }
+            ]
+          },
+          "cd7a2b42-1da4-4912-afeb-9037708cf8a6": {
+            "event_type": "meeting",
+            "key": "",
+            "status": "scheduled",
+            "scheduled_date": "2026-06-05",
+            "pending_action": null,
+            "pending_proposed_date": null,
+            "versions": [
+              {
+                "version": 1,
+                "actor_role": "business",
+                "action": "commit",
+                "confirmed_date": "2026-06-05",
+                "prior_confirmed_date": null,
+                "proposed_date": null,
+                "is_confirmed": true,
+                "source_doc_id": "gmail:m3"
+              }
+            ]
+          }
+        },
+        "resolution": {
+          "c:m1": {
+            "signal_id": "c:m1",
+            "identity_status": "resolved",
+            "contact_id": "cid_578038f70dd84fc7a6856647c7113a60",
+            "commitment_status": "resolved",
+            "commitment_outcome": "applied",
+            "commitment_id": "9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0",
+            "commitment_version": 1,
+            "commitment_attempts": 1
+          },
+          "c:m2": {
+            "signal_id": "c:m2",
+            "identity_status": "resolved",
+            "contact_id": "cid_578038f70dd84fc7a6856647c7113a60",
+            "commitment_status": "resolved",
+            "commitment_outcome": "applied",
+            "commitment_id": "9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0",
+            "commitment_version": 2,
+            "commitment_attempts": 1
+          },
+          "c:m3": {
+            "signal_id": "c:m3",
+            "identity_status": "resolved",
+            "contact_id": "cid_578038f70dd84fc7a6856647c7113a60",
+            "commitment_status": "resolved",
+            "commitment_outcome": "applied",
+            "commitment_id": "cd7a2b42-1da4-4912-afeb-9037708cf8a6",
+            "commitment_version": 1,
+            "commitment_attempts": 1
+          }
+        },
+        "outbox": {
+          "operations": [
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 3,
+              "prose_count": 3,
+              "detail": ""
+            },
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 2,
+              "prose_count": 0,
+              "detail": ""
+            },
+            {
+              "kind": "consolidation",
+              "status": "completed",
+              "doc_count": 0,
+              "prose_count": 0,
+              "detail": ""
+            }
+          ],
+          "documents": {
+            "sig:c:m1": "confirmed",
+            "sig:c:m2": "confirmed",
+            "sig:c:m3": "confirmed",
+            "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1": "confirmed",
+            "ledger:cd7a2b42-1da4-4912-afeb-9037708cf8a6:v1": "confirmed"
+          }
+        },
+        "memory": {
+          "sig:c:m1": {
+            "text": "Subject: Order ORD-501 delivery\n\nHi Alice,\n\nThank you for your order ORD-501. Your delivery is confirmed for 2026-06-10.\n\nBest regards,\nOwner",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 1
+          },
+          "sig:c:m2": {
+            "text": "Subject: Re: Order ORD-501 delivery\n\nHi,\n\nCould we move the ORD-501 delivery from 2026-06-10 to 2026-06-15 instead?\n\nThanks,\nAlice\n\nOn Mon, 1 Jun 2026, Owner wrote:\n> Your delivery is confirmed for 2026-06-10.",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 2,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 2
+          },
+          "sig:c:m3": {
+            "text": "Subject: Planning meeting\n\nHi Alice,\n\nConfirming our planning meeting on 2026-06-05 at 10:00.\n\nBest regards,\nOwner",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 1
+          },
+          "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1": {
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-10.\nVersion 1: commit by business at 2026-06-01T09:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m1, gmail:m1.",
+            "tags": [
+              "kind:ledger.state",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          },
+          "ledger:cd7a2b42-1da4-4912-afeb-9037708cf8a6:v1": {
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment cd7a2b42-1da4-4912-afeb-9037708cf8a6 \u00b7 meeting \u00b7 key none \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-05.\nVersion 1: commit by business at 2026-06-02T11:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m3, gmail:m3.",
+            "tags": [
+              "kind:ledger.state",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          }
+        },
+        "observations": [
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "A planning meeting between the Owner (sender) and Alice Customer is confirmed for 2026-06-05 at 10:00."
+          },
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "The ORD-501 delivery is confirmed for 2026-06-10."
+          },
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15 on 2026-06-02."
+          }
+        ],
+        "recall": {
+          "delivery": [
+            {
+              "type": "world",
+              "text": "Order ORD-501 delivery is confirmed for 2026-06-10. | When: 2026-06-10 | Involving: Alice Customer | Order confirmation notification",
+              "document_id": "sig:c:m1"
+            },
+            {
+              "type": "world",
+              "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15. | When: 2026-06-02 | Involving: Alice (customer) | Rescheduling the confirmed delivery date",
+              "document_id": "sig:c:m2"
+            },
+            {
+              "type": "world",
+              "text": "Order ORD-501 delivery was confirmed for 2026-06-10 by the owner. | When: 2026-06-01 | Involving: Owner, Alice (customer)",
+              "document_id": "sig:c:m2"
+            },
+            {
+              "type": "observation",
+              "text": "The ORD-501 delivery is confirmed for 2026-06-10.",
+              "document_id": null
+            },
+            {
+              "type": "world",
+              "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-10.\nVersion 1: commit by business at 2026-06-01T09:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m1, gmail:m1.",
+              "document_id": "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1"
+            },
+            {
+              "type": "observation",
+              "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15 on 2026-06-02.",
+              "document_id": null
+            },
+            {
+              "type": "world",
+              "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment cd7a2b42-1da4-4912-afeb-9037708cf8a6 \u00b7 meeting \u00b7 key none \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-05.\nVersion 1: commit by business at 2026-06-02T11:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m3, gmail:m3.",
+              "document_id": "ledger:cd7a2b42-1da4-4912-afeb-9037708cf8a6:v1"
+            },
+            {
+              "type": "world",
+              "text": "Planning meeting confirmed for 2026-06-05 at 10:00 between the sender (Owner) and Alice Customer. | When: 2026-06-05 at 10:00 | Involving: Owner (sender), Alice Customer | Confirmation of a scheduled planning meeting",
+              "document_id": "sig:c:m3"
+            }
+          ],
+          "delivery_observations": [
+            {
+              "type": "observation",
+              "text": "The ORD-501 delivery is confirmed for 2026-06-10.",
+              "document_id": null
+            },
+            {
+              "type": "observation",
+              "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15 on 2026-06-02.",
+              "document_id": null
+            },
+            {
+              "type": "observation",
+              "text": "A planning meeting between the Owner (sender) and Alice Customer is confirmed for 2026-06-05 at 10:00.",
+              "document_id": null
+            }
+          ]
+        },
+        "spend": {
+          "hindsight_tokens_in": 21586,
+          "hindsight_tokens_out": 1816,
+          "hindsight_thoughts_tokens": 0,
+          "hindsight_usd": 0.00865,
+          "extraction_calls": 3,
+          "extraction_tokens": 1550,
+          "extraction_usd": 0.00066,
+          "total_usd_upper": 0.01052
+        }
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "4_run2_business_confirms": {
+      "ok": true,
+      "result": {
+        "status": "succeeded",
+        "inserted": 1,
+        "duplicates": 0,
+        "identity_resolved": 1,
+        "commitment": {
+          "applied": 1
+        },
+        "projection": {
+          "submitted": 2,
+          "unchanged": 5,
+          "bank_prepared": "unchanged",
+          "consolidation_deferred": 1
+        },
+        "error": null
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 1.4
+    },
+    "4_settle": {
+      "ok": true,
+      "result": {
+        "settled": true,
+        "worker_runs": 2,
+        "max_runs": 36,
+        "prose_pending": 0,
+        "projections": [
+          {
+            "unchanged": 7,
+            "consolidation_submitted": 1,
+            "confirmed": 2,
+            "bank_prepared": "unchanged",
+            "consolidation_pending": 1
+          },
+          {
+            "unchanged": 7,
+            "consolidation_completed": 1,
+            "bank_prepared": "unchanged"
+          }
+        ]
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 18.1
+    },
+    "4_state": {
+      "ok": true,
+      "result": {
+        "ledger": {
+          "9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0": {
+            "event_type": "delivery",
+            "key": "ORD-501",
+            "status": "scheduled",
+            "scheduled_date": "2026-06-15",
+            "pending_action": null,
+            "pending_proposed_date": null,
+            "versions": [
+              {
+                "version": 1,
+                "actor_role": "business",
+                "action": "commit",
+                "confirmed_date": "2026-06-10",
+                "prior_confirmed_date": null,
+                "proposed_date": null,
+                "is_confirmed": true,
+                "source_doc_id": "gmail:m1"
+              },
+              {
+                "version": 2,
+                "actor_role": "customer",
+                "action": "request_change",
+                "confirmed_date": null,
+                "prior_confirmed_date": "2026-06-10",
+                "proposed_date": "2026-06-15",
+                "is_confirmed": false,
+                "source_doc_id": "gmail:m2"
+              },
+              {
+                "version": 3,
+                "actor_role": "business",
+                "action": "confirm_change",
+                "confirmed_date": "2026-06-15",
+                "prior_confirmed_date": "2026-06-10",
+                "proposed_date": null,
+                "is_confirmed": true,
+                "source_doc_id": "gmail:m4"
+              }
+            ]
+          },
+          "cd7a2b42-1da4-4912-afeb-9037708cf8a6": {
+            "event_type": "meeting",
+            "key": "",
+            "status": "scheduled",
+            "scheduled_date": "2026-06-05",
+            "pending_action": null,
+            "pending_proposed_date": null,
+            "versions": [
+              {
+                "version": 1,
+                "actor_role": "business",
+                "action": "commit",
+                "confirmed_date": "2026-06-05",
+                "prior_confirmed_date": null,
+                "proposed_date": null,
+                "is_confirmed": true,
+                "source_doc_id": "gmail:m3"
+              }
+            ]
+          }
+        },
+        "resolution": {
+          "c:m1": {
+            "signal_id": "c:m1",
+            "identity_status": "resolved",
+            "contact_id": "cid_578038f70dd84fc7a6856647c7113a60",
+            "commitment_status": "resolved",
+            "commitment_outcome": "applied",
+            "commitment_id": "9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0",
+            "commitment_version": 1,
+            "commitment_attempts": 1
+          },
+          "c:m2": {
+            "signal_id": "c:m2",
+            "identity_status": "resolved",
+            "contact_id": "cid_578038f70dd84fc7a6856647c7113a60",
+            "commitment_status": "resolved",
+            "commitment_outcome": "applied",
+            "commitment_id": "9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0",
+            "commitment_version": 2,
+            "commitment_attempts": 1
+          },
+          "c:m3": {
+            "signal_id": "c:m3",
+            "identity_status": "resolved",
+            "contact_id": "cid_578038f70dd84fc7a6856647c7113a60",
+            "commitment_status": "resolved",
+            "commitment_outcome": "applied",
+            "commitment_id": "cd7a2b42-1da4-4912-afeb-9037708cf8a6",
+            "commitment_version": 1,
+            "commitment_attempts": 1
+          },
+          "c:m4": {
+            "signal_id": "c:m4",
+            "identity_status": "resolved",
+            "contact_id": "cid_578038f70dd84fc7a6856647c7113a60",
+            "commitment_status": "resolved",
+            "commitment_outcome": "applied",
+            "commitment_id": "9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0",
+            "commitment_version": 3,
+            "commitment_attempts": 1
+          }
+        },
+        "outbox": {
+          "operations": [
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 3,
+              "prose_count": 3,
+              "detail": ""
+            },
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 2,
+              "prose_count": 0,
+              "detail": ""
+            },
+            {
+              "kind": "consolidation",
+              "status": "completed",
+              "doc_count": 0,
+              "prose_count": 0,
+              "detail": ""
+            },
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 1,
+              "prose_count": 1,
+              "detail": ""
+            },
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 1,
+              "prose_count": 0,
+              "detail": ""
+            },
+            {
+              "kind": "consolidation",
+              "status": "completed",
+              "doc_count": 0,
+              "prose_count": 0,
+              "detail": ""
+            }
+          ],
+          "documents": {
+            "sig:c:m1": "confirmed",
+            "sig:c:m2": "confirmed",
+            "sig:c:m3": "confirmed",
+            "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1": "confirmed",
+            "ledger:cd7a2b42-1da4-4912-afeb-9037708cf8a6:v1": "confirmed",
+            "sig:c:m4": "confirmed",
+            "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v3": "confirmed"
+          }
+        },
+        "memory": {
+          "sig:c:m4": {
+            "text": "Subject: Re: Order ORD-501 delivery\n\nHi Alice,\n\nConfirmed: your ORD-501 delivery has been moved from 2026-06-10 to 2026-06-15.\n\nBest regards,\nOwner",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 2
+            },
+            "units": 1
+          },
+          "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v3": {
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 3: scheduled, date 2026-06-15.\nVersion 3: confirm_change by business at 2026-06-03T09:00:00.000000Z; supersedes version 1 (date 2026-06-10).\nSupporting documents: sig:c:m4, gmail:m4.",
+            "tags": [
+              "kind:ledger.state",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          },
+          "sig:c:m1": {
+            "text": "Subject: Order ORD-501 delivery\n\nHi Alice,\n\nThank you for your order ORD-501. Your delivery is confirmed for 2026-06-10.\n\nBest regards,\nOwner",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 1
+          },
+          "sig:c:m2": {
+            "text": "Subject: Re: Order ORD-501 delivery\n\nHi,\n\nCould we move the ORD-501 delivery from 2026-06-10 to 2026-06-15 instead?\n\nThanks,\nAlice\n\nOn Mon, 1 Jun 2026, Owner wrote:\n> Your delivery is confirmed for 2026-06-10.",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 2,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 2
+          },
+          "sig:c:m3": {
+            "text": "Subject: Planning meeting\n\nHi Alice,\n\nConfirming our planning meeting on 2026-06-05 at 10:00.\n\nBest regards,\nOwner",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 1
+          },
+          "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1": {
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-10.\nVersion 1: commit by business at 2026-06-01T09:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m1, gmail:m1.",
+            "tags": [
+              "kind:ledger.state",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          },
+          "ledger:cd7a2b42-1da4-4912-afeb-9037708cf8a6:v1": {
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment cd7a2b42-1da4-4912-afeb-9037708cf8a6 \u00b7 meeting \u00b7 key none \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-05.\nVersion 1: commit by business at 2026-06-02T11:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m3, gmail:m3.",
+            "tags": [
+              "kind:ledger.state",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          }
+        },
+        "observations": [
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15 on 2026-06-02."
+          },
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "The ORD-501 delivery is confirmed for 2026-06-10. (2026-06-03 09:00: Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15.)"
+          },
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "A planning meeting between the Owner (sender) and Alice Customer is confirmed for 2026-06-05 at 10:00."
+          }
+        ],
+        "spend": {
+          "hindsight_tokens_in": 35735,
+          "hindsight_tokens_out": 2395,
+          "hindsight_thoughts_tokens": 0,
+          "hindsight_usd": 0.01359,
+          "extraction_calls": 4,
+          "extraction_tokens": 2079,
+          "extraction_usd": 0.0009,
+          "total_usd_upper": 0.01609
+        }
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "5_recall": {
+      "ok": true,
+      "result": {
+        "delivery": [
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15. | When: 2026-06-03 | Involving: Alice (customer), Owner | Delivery date change confirmed by email",
+            "document_id": "sig:c:m4"
+          },
+          {
+            "type": "observation",
+            "text": "The ORD-501 delivery is confirmed for 2026-06-10. (2026-06-03 09:00: Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15.)",
+            "document_id": null
+          },
+          {
+            "type": "world",
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15. | When: 2026-06-02 | Involving: Alice (customer) | Rescheduling the confirmed delivery date",
+            "document_id": "sig:c:m2"
+          },
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery is confirmed for 2026-06-10. | When: 2026-06-10 | Involving: Alice Customer | Order confirmation notification",
+            "document_id": "sig:c:m1"
+          },
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery was confirmed for 2026-06-10 by the owner. | When: 2026-06-01 | Involving: Owner, Alice (customer)",
+            "document_id": "sig:c:m2"
+          },
+          {
+            "type": "observation",
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15 on 2026-06-02.",
+            "document_id": null
+          },
+          {
+            "type": "world",
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 3: scheduled, date 2026-06-15.\nVersion 3: confirm_change by business at 2026-06-03T09:00:00.000000Z; supersedes version 1 (date 2026-06-10).\nSupporting documents: sig:c:m4, gmail:m4.",
+            "document_id": "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v3"
+          },
+          {
+            "type": "world",
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-10.\nVersion 1: commit by business at 2026-06-01T09:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m1, gmail:m1.",
+            "document_id": "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1"
+          }
+        ],
+        "delivery_observations": [
+          {
+            "type": "observation",
+            "text": "The ORD-501 delivery is confirmed for 2026-06-10. (2026-06-03 09:00: Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15.)",
+            "document_id": null
+          },
+          {
+            "type": "observation",
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15 on 2026-06-02.",
+            "document_id": null
+          },
+          {
+            "type": "observation",
+            "text": "A planning meeting between the Owner (sender) and Alice Customer is confirmed for 2026-06-05 at 10:00.",
+            "document_id": null
+          }
+        ],
+        "meeting": [
+          {
+            "type": "world",
+            "text": "Planning meeting confirmed for 2026-06-05 at 10:00 between the sender (Owner) and Alice Customer. | When: 2026-06-05 at 10:00 | Involving: Owner (sender), Alice Customer | Confirmation of a scheduled planning meeting",
+            "document_id": "sig:c:m3"
+          },
+          {
+            "type": "observation",
+            "text": "A planning meeting between the Owner (sender) and Alice Customer is confirmed for 2026-06-05 at 10:00.",
+            "document_id": null
+          },
+          {
+            "type": "world",
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment cd7a2b42-1da4-4912-afeb-9037708cf8a6 \u00b7 meeting \u00b7 key none \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-05.\nVersion 1: commit by business at 2026-06-02T11:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m3, gmail:m3.",
+            "document_id": "ledger:cd7a2b42-1da4-4912-afeb-9037708cf8a6:v1"
+          },
+          {
+            "type": "observation",
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15 on 2026-06-02.",
+            "document_id": null
+          },
+          {
+            "type": "world",
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 3: scheduled, date 2026-06-15.\nVersion 3: confirm_change by business at 2026-06-03T09:00:00.000000Z; supersedes version 1 (date 2026-06-10).\nSupporting documents: sig:c:m4, gmail:m4.",
+            "document_id": "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v3"
+          },
+          {
+            "type": "world",
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15. | When: 2026-06-02 | Involving: Alice (customer) | Rescheduling the confirmed delivery date",
+            "document_id": "sig:c:m2"
+          },
+          {
+            "type": "world",
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-10.\nVersion 1: commit by business at 2026-06-01T09:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m1, gmail:m1.",
+            "document_id": "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1"
+          },
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery was confirmed for 2026-06-10 by the owner. | When: 2026-06-01 | Involving: Owner, Alice (customer)",
+            "document_id": "sig:c:m2"
+          }
+        ]
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "6_run3_restart_replay": {
+      "ok": true,
+      "result": {
+        "status": "succeeded",
+        "inserted": 0,
+        "duplicates": 4,
+        "identity_resolved": 0,
+        "commitment": {},
+        "projection": {
+          "unchanged": 7,
+          "bank_prepared": "unchanged"
+        },
+        "error": null
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "6_state": {
+      "ok": true,
+      "result": {
+        "versions": 4,
+        "operations": 6,
+        "documents": 7
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "7_probe_v1": {
+      "ok": true,
+      "result": {
+        "retain": "completed",
+        "consolidation": "completed",
+        "prose_pending_after": 0
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 6.1
+    },
+    "7_probe_v1_snapshot": {
+      "ok": true,
+      "result": {
+        "text": "Customer Bob confirmed that his order ORD-777 will be delivered on 2026-07-01.",
+        "facts": {
+          "world": 1,
+          "experience": 0,
+          "observation": 2
+        },
+        "units": 1,
+        "history": [
+          {
+            "facts_added": 0,
+            "facts_removed": 0,
+            "observations_created": {
+              "count": 2,
+              "ids": [
+                "083784e6-94f5-4de1-8a9b-402799d1b26d",
+                "f16137ae-2044-424e-a031-3ff799d00599"
+              ]
+            },
+            "observations_updated": {
+              "count": 2,
+              "ids": [
+                "083784e6-94f5-4de1-8a9b-402799d1b26d",
+                "f16137ae-2044-424e-a031-3ff799d00599"
+              ]
+            },
+            "observations_removed": {
+              "count": 0,
+              "ids": []
+            }
+          },
+          {
+            "facts_added": 1,
+            "facts_removed": 0,
+            "observations_created": {
+              "count": 0,
+              "ids": []
+            },
+            "observations_updated": {
+              "count": 0,
+              "ids": []
+            },
+            "observations_removed": {
+              "count": 0,
+              "ids": []
+            }
+          }
+        ],
+        "recall": [
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15. | When: 2026-06-03 | Involving: Alice (customer), Owner | Delivery date change confirmed by email",
+            "document_id": "sig:c:m4"
+          },
+          {
+            "type": "world",
+            "text": "Customer Bob confirmed that his order ORD-777 will be delivered on 2026-07-01. | When: 2026-07-01 | Involving: Bob (customer)",
+            "document_id": "sig:probe-prose-1"
+          },
+          {
+            "type": "world",
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15. | When: 2026-06-02 | Involving: Alice (customer) | Rescheduling the confirmed delivery date",
+            "document_id": "sig:c:m2"
+          },
+          {
+            "type": "observation",
+            "text": "The ORD-501 delivery is confirmed for 2026-06-10. (2026-06-03 09:00: Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15.)",
+            "document_id": null
+          },
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery is confirmed for 2026-06-10. | When: 2026-06-10 | Involving: Alice Customer | Order confirmation notification",
+            "document_id": "sig:c:m1"
+          },
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery was confirmed for 2026-06-10 by the owner. | When: 2026-06-01 | Involving: Owner, Alice (customer)",
+            "document_id": "sig:c:m2"
+          },
+          {
+            "type": "observation",
+            "text": "Bob's order ORD-777 is scheduled to be delivered on 2026-07-01.",
+            "document_id": null
+          },
+          {
+            "type": "world",
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 3: scheduled, date 2026-06-15.\nVersion 3: confirm_change by business at 2026-06-03T09:00:00.000000Z; supersedes version 1 (date 2026-06-10).\nSupporting documents: sig:c:m4, gmail:m4.",
+            "document_id": "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v3"
+          }
+        ],
+        "observations": [
+          {
+            "tags": [
+              "ent:cid_probe_bob",
+              "ym:2026-06"
+            ],
+            "text": "Bob's order ORD-777 is scheduled to be delivered on 2026-07-01."
+          },
+          {
+            "tags": [
+              "ent:cid_probe_bob",
+              "ym:2026-06"
+            ],
+            "text": "Bob is a customer."
+          }
+        ],
+        "spend": {
+          "hindsight_tokens_in": 48571,
+          "hindsight_tokens_out": 2765,
+          "hindsight_thoughts_tokens": 0,
+          "hindsight_usd": 0.01789,
+          "extraction_calls": 4,
+          "extraction_tokens": 2079,
+          "extraction_usd": 0.0009,
+          "total_usd_upper": 0.02038
+        }
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "8_probe_v2_same_id": {
+      "ok": true,
+      "result": {
+        "retain": "completed",
+        "consolidation": "completed",
+        "prose_pending_after": 0
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 8.3
+    },
+    "8_probe_v2_snapshot": {
+      "ok": true,
+      "result": {
+        "text": "Customer Bob's order ORD-777 is scheduled for delivery on 2026-07-09.",
+        "facts": {
+          "world": 1,
+          "experience": 0,
+          "observation": 1
+        },
+        "units": 1,
+        "history": [
+          {
+            "facts_added": 0,
+            "facts_removed": 0,
+            "observations_created": {
+              "count": 1,
+              "ids": [
+                "5a5cec1c-f2ce-44fe-ad56-a887037efe8d"
+              ]
+            },
+            "observations_updated": {
+              "count": 1,
+              "ids": [
+                "5a5cec1c-f2ce-44fe-ad56-a887037efe8d"
+              ]
+            },
+            "observations_removed": {
+              "count": 0,
+              "ids": []
+            }
+          },
+          {
+            "facts_added": 1,
+            "facts_removed": 1,
+            "observations_created": {
+              "count": 0,
+              "ids": []
+            },
+            "observations_updated": {
+              "count": 0,
+              "ids": []
+            },
+            "observations_removed": {
+              "count": 2,
+              "ids": [
+                "083784e6-94f5-4de1-8a9b-402799d1b26d",
+                "f16137ae-2044-424e-a031-3ff799d00599"
+              ]
+            }
+          },
+          {
+            "facts_added": 0,
+            "facts_removed": 0,
+            "observations_created": {
+              "count": 2,
+              "ids": [
+                "083784e6-94f5-4de1-8a9b-402799d1b26d",
+                "f16137ae-2044-424e-a031-3ff799d00599"
+              ]
+            },
+            "observations_updated": {
+              "count": 2,
+              "ids": [
+                "083784e6-94f5-4de1-8a9b-402799d1b26d",
+                "f16137ae-2044-424e-a031-3ff799d00599"
+              ]
+            },
+            "observations_removed": {
+              "count": 0,
+              "ids": []
+            }
+          },
+          {
+            "facts_added": 1,
+            "facts_removed": 0,
+            "observations_created": {
+              "count": 0,
+              "ids": []
+            },
+            "observations_updated": {
+              "count": 0,
+              "ids": []
+            },
+            "observations_removed": {
+              "count": 0,
+              "ids": []
+            }
+          }
+        ],
+        "recall": [
+          {
+            "type": "world",
+            "text": "Customer Bob's order ORD-777 is scheduled for delivery on 2026-07-09. | When: 2026-07-09 | Involving: Bob (customer)",
+            "document_id": "sig:probe-prose-1"
+          },
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15. | When: 2026-06-03 | Involving: Alice (customer), Owner | Delivery date change confirmed by email",
+            "document_id": "sig:c:m4"
+          },
+          {
+            "type": "observation",
+            "text": "Customer Bob's order ORD-777 is scheduled for delivery on 2026-07-09.",
+            "document_id": null
+          },
+          {
+            "type": "observation",
+            "text": "The ORD-501 delivery is confirmed for 2026-06-10. (2026-06-03 09:00: Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15.)",
+            "document_id": null
+          },
+          {
+            "type": "world",
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15. | When: 2026-06-02 | Involving: Alice (customer) | Rescheduling the confirmed delivery date",
+            "document_id": "sig:c:m2"
+          },
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery is confirmed for 2026-06-10. | When: 2026-06-10 | Involving: Alice Customer | Order confirmation notification",
+            "document_id": "sig:c:m1"
+          },
+          {
+            "type": "world",
+            "text": "Order ORD-501 delivery was confirmed for 2026-06-10 by the owner. | When: 2026-06-01 | Involving: Owner, Alice (customer)",
+            "document_id": "sig:c:m2"
+          },
+          {
+            "type": "world",
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 3: scheduled, date 2026-06-15.\nVersion 3: confirm_change by business at 2026-06-03T09:00:00.000000Z; supersedes version 1 (date 2026-06-10).\nSupporting documents: sig:c:m4, gmail:m4.",
+            "document_id": "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v3"
+          }
+        ],
+        "observations": [
+          {
+            "tags": [
+              "ent:cid_probe_bob",
+              "ym:2026-06"
+            ],
+            "text": "Customer Bob's order ORD-777 is scheduled for delivery on 2026-07-09."
+          }
+        ],
+        "spend": {
+          "hindsight_tokens_in": 61218,
+          "hindsight_tokens_out": 3103,
+          "hindsight_thoughts_tokens": 0,
+          "hindsight_usd": 0.02209,
+          "extraction_calls": 4,
+          "extraction_tokens": 2079,
+          "extraction_usd": 0.0009,
+          "total_usd_upper": 0.02458
+        }
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    },
+    "9_cancellation": {
+      "ok": true,
+      "result": {
+        "cancel": {
+          "success": true,
+          "message": "Operation 41c34dd9-775d-453a-bced-4cd04666bf6b cancelled"
+        },
+        "status_after": {
+          "status": "cancelled",
+          "error_message": null
+        },
+        "document": {
+          "exists": true,
+          "units": 1
+        }
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 5.1
+    },
+    "10_final": {
+      "ok": true,
+      "result": {
+        "ledger": {
+          "9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0": {
+            "event_type": "delivery",
+            "key": "ORD-501",
+            "status": "scheduled",
+            "scheduled_date": "2026-06-15",
+            "pending_action": null,
+            "pending_proposed_date": null,
+            "versions": [
+              {
+                "version": 1,
+                "actor_role": "business",
+                "action": "commit",
+                "confirmed_date": "2026-06-10",
+                "prior_confirmed_date": null,
+                "proposed_date": null,
+                "is_confirmed": true,
+                "source_doc_id": "gmail:m1"
+              },
+              {
+                "version": 2,
+                "actor_role": "customer",
+                "action": "request_change",
+                "confirmed_date": null,
+                "prior_confirmed_date": "2026-06-10",
+                "proposed_date": "2026-06-15",
+                "is_confirmed": false,
+                "source_doc_id": "gmail:m2"
+              },
+              {
+                "version": 3,
+                "actor_role": "business",
+                "action": "confirm_change",
+                "confirmed_date": "2026-06-15",
+                "prior_confirmed_date": "2026-06-10",
+                "proposed_date": null,
+                "is_confirmed": true,
+                "source_doc_id": "gmail:m4"
+              }
+            ]
+          },
+          "cd7a2b42-1da4-4912-afeb-9037708cf8a6": {
+            "event_type": "meeting",
+            "key": "",
+            "status": "scheduled",
+            "scheduled_date": "2026-06-05",
+            "pending_action": null,
+            "pending_proposed_date": null,
+            "versions": [
+              {
+                "version": 1,
+                "actor_role": "business",
+                "action": "commit",
+                "confirmed_date": "2026-06-05",
+                "prior_confirmed_date": null,
+                "proposed_date": null,
+                "is_confirmed": true,
+                "source_doc_id": "gmail:m3"
+              }
+            ]
+          }
+        },
+        "memory": {
+          "sig:probe-cancel-1": {
+            "text": "Customer Carol asked about order ORD-888.",
+            "tags": [
+              "olo:prose",
+              "ent:cid_probe_carol"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          },
+          "sig:probe-prose-1": {
+            "text": "Customer Bob's order ORD-777 is scheduled for delivery on 2026-07-09.",
+            "tags": [
+              "ent:cid_probe_bob",
+              "olo:prose",
+              "ym:2026-06"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 1
+          },
+          "sig:c:m4": {
+            "text": "Subject: Re: Order ORD-501 delivery\n\nHi Alice,\n\nConfirmed: your ORD-501 delivery has been moved from 2026-06-10 to 2026-06-15.\n\nBest regards,\nOwner",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 2
+            },
+            "units": 1
+          },
+          "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v3": {
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 3: scheduled, date 2026-06-15.\nVersion 3: confirm_change by business at 2026-06-03T09:00:00.000000Z; supersedes version 1 (date 2026-06-10).\nSupporting documents: sig:c:m4, gmail:m4.",
+            "tags": [
+              "kind:ledger.state",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          },
+          "sig:c:m1": {
+            "text": "Subject: Order ORD-501 delivery\n\nHi Alice,\n\nThank you for your order ORD-501. Your delivery is confirmed for 2026-06-10.\n\nBest regards,\nOwner",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 1
+          },
+          "sig:c:m2": {
+            "text": "Subject: Re: Order ORD-501 delivery\n\nHi,\n\nCould we move the ORD-501 delivery from 2026-06-10 to 2026-06-15 instead?\n\nThanks,\nAlice\n\nOn Mon, 1 Jun 2026, Owner wrote:\n> Your delivery is confirmed for 2026-06-10.",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 2,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 2
+          },
+          "sig:c:m3": {
+            "text": "Subject: Planning meeting\n\nHi Alice,\n\nConfirming our planning meeting on 2026-06-05 at 10:00.\n\nBest regards,\nOwner",
+            "tags": [
+              "olo:prose",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 1
+            },
+            "units": 1
+          },
+          "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1": {
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment 9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0 \u00b7 delivery \u00b7 key ORD-501 \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-10.\nVersion 1: commit by business at 2026-06-01T09:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m1, gmail:m1.",
+            "tags": [
+              "kind:ledger.state",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          },
+          "ledger:cd7a2b42-1da4-4912-afeb-9037708cf8a6:v1": {
+            "text": "Commitment ledger state (authoritative record: olo.db).\nCommitment cd7a2b42-1da4-4912-afeb-9037708cf8a6 \u00b7 meeting \u00b7 key none \u00b7 customer cid_578038f70dd84fc7a6856647c7113a60.\nStatus as of version 1: scheduled, date 2026-06-05.\nVersion 1: commit by business at 2026-06-02T11:00:00.000000Z; first confirmed version.\nSupporting documents: sig:c:m3, gmail:m3.",
+            "tags": [
+              "kind:ledger.state",
+              "ym:2026-06",
+              "ent:cid_578038f70dd84fc7a6856647c7113a60"
+            ],
+            "facts": {
+              "world": 1,
+              "experience": 0,
+              "observation": 0
+            },
+            "units": 1
+          }
+        },
+        "observations": [
+          {
+            "tags": [
+              "ent:cid_probe_bob",
+              "ym:2026-06"
+            ],
+            "text": "Customer Bob's order ORD-777 is scheduled for delivery on 2026-07-09."
+          },
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "Alice requested to move the ORD-501 delivery from 2026-06-10 to 2026-06-15 on 2026-06-02."
+          },
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "The ORD-501 delivery is confirmed for 2026-06-10. (2026-06-03 09:00: Order ORD-501 delivery was rescheduled from 2026-06-10 to 2026-06-15.)"
+          },
+          {
+            "tags": [
+              "ent:cid_578038f70dd84fc7a6856647c7113a60",
+              "ym:2026-06"
+            ],
+            "text": "A planning meeting between the Owner (sender) and Alice Customer is confirmed for 2026-06-05 at 10:00."
+          }
+        ],
+        "outbox": {
+          "operations": [
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 3,
+              "prose_count": 3,
+              "detail": ""
+            },
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 2,
+              "prose_count": 0,
+              "detail": ""
+            },
+            {
+              "kind": "consolidation",
+              "status": "completed",
+              "doc_count": 0,
+              "prose_count": 0,
+              "detail": ""
+            },
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 1,
+              "prose_count": 1,
+              "detail": ""
+            },
+            {
+              "kind": "retain",
+              "status": "completed",
+              "doc_count": 1,
+              "prose_count": 0,
+              "detail": ""
+            },
+            {
+              "kind": "consolidation",
+              "status": "completed",
+              "doc_count": 0,
+              "prose_count": 0,
+              "detail": ""
+            }
+          ],
+          "documents": {
+            "sig:c:m1": "confirmed",
+            "sig:c:m2": "confirmed",
+            "sig:c:m3": "confirmed",
+            "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v1": "confirmed",
+            "ledger:cd7a2b42-1da4-4912-afeb-9037708cf8a6:v1": "confirmed",
+            "sig:c:m4": "confirmed",
+            "ledger:9d5356b2-2ea2-4d42-ba40-d1c9ac1d10b0:v3": "confirmed"
+          }
+        },
+        "spend": {
+          "hindsight_tokens_in": 64357,
+          "hindsight_tokens_out": 3192,
+          "hindsight_thoughts_tokens": 0,
+          "hindsight_usd": 0.02314,
+          "extraction_calls": 4,
+          "extraction_tokens": 2079,
+          "extraction_usd": 0.0009,
+          "total_usd_upper": 0.02563
+        },
+        "llm_stats": {
+          "bank_id": "olo-s5accept",
+          "period": "7d",
+          "trunc": "day",
+          "start": "2026-11-19T08:34:49.724377+00:00",
+          "buckets": [
+            {
+              "time": "2026-11-26T00:00:00+00:00",
+              "statuses": {
+                "success": 50
+              },
+              "total": 50,
+              "tokens": {
+                "input": 64357,
+                "output": 3192,
+                "cached": 56192,
+                "thoughts": 0,
+                "total": 67549
+              },
+              "series": null
+            }
+          ],
+          "retention_days": 1
+        },
+        "bank_stats": {
+          "bank_id": "olo-s5accept",
+          "total_nodes": 14,
+          "total_links": 186,
+          "total_documents": 9,
+          "nodes_by_fact_type": {
+            "observation": 4,
+            "world": 10
+          },
+          "links_by_link_type": {
+            "semantic": 59,
+            "temporal": 45,
+            "entity": 82
+          },
+          "links_by_fact_type": {},
+          "links_breakdown": {},
+          "pending_operations": 0,
+          "failed_operations": 0,
+          "operations_by_status": {
+            "cancelled": 1,
+            "completed": 18
+          },
+          "last_consolidated_at": "2026-11-26T08:34:44.376514+00:00",
+          "last_memory_write_at": "2026-11-26T08:34:45.937083+00:00",
+          "pending_consolidation": 4,
+          "failed_consolidation": 0,
+          "total_observations": 4,
+          "paused_mental_models": 0
+        }
+      },
+      "findings": {
+        "ledger": [],
+        "hindsight": [],
+        "incomplete": [],
+        "notes": []
+      },
+      "seconds": 0.1
+    }
+  },
+  "verdict": {
+    "ledger": [],
+    "hindsight": [],
+    "incomplete": [],
+    "notes": [],
+    "pass": true
+  },
+  "provenance": {
+    "c:m1": {
+      "kind": "email.content",
+      "direction": "sent",
+      "thread": "t-ord501",
+      "blob_sha256": "fd22d5d664c37bff80cbb837e972bb2fdc434af90b88a82a4a08816e8321ea0e"
+    },
+    "c:m2": {
+      "kind": "email.content",
+      "direction": "received",
+      "thread": "t-ord501",
+      "blob_sha256": "a4e439a98174946fd56995f30779db4791ac5c03376bb2b760e4529ac7224938"
+    },
+    "c:m3": {
+      "kind": "email.content",
+      "direction": "sent",
+      "thread": "t-meeting",
+      "blob_sha256": "d380b2e8ea140b72ae542bcbe99f83ec498736a0a923c2b1a635bb773e76e2db"
+    },
+    "c:m4": {
+      "kind": "email.content",
+      "direction": "sent",
+      "thread": "t-ord501",
+      "blob_sha256": "86a45004821ce398602530d27977caa4730ca84f6cf6f47005dd7ed8fe8fbaa7"
+    }
+  },
+  "spend_checks": {
+    "run1": {
+      "hindsight_tokens_in": 0,
+      "hindsight_tokens_out": 0,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.0,
+      "extraction_calls": 0,
+      "extraction_tokens": 0,
+      "extraction_usd": 0.0,
+      "total_usd_upper": 0.0
+    },
+    "settle1_0": {
+      "hindsight_tokens_in": 0,
+      "hindsight_tokens_out": 0,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.0,
+      "extraction_calls": 3,
+      "extraction_tokens": 1550,
+      "extraction_usd": 0.00066,
+      "total_usd_upper": 0.00186
+    },
+    "settle1_1": {
+      "hindsight_tokens_in": 9909,
+      "hindsight_tokens_out": 630,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.00373,
+      "extraction_calls": 3,
+      "extraction_tokens": 1550,
+      "extraction_usd": 0.00066,
+      "total_usd_upper": 0.00559
+    },
+    "run2": {
+      "hindsight_tokens_in": 21586,
+      "hindsight_tokens_out": 1816,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.00865,
+      "extraction_calls": 3,
+      "extraction_tokens": 1550,
+      "extraction_usd": 0.00066,
+      "total_usd_upper": 0.01052
+    },
+    "settle2_0": {
+      "hindsight_tokens_in": 21586,
+      "hindsight_tokens_out": 1816,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.00865,
+      "extraction_calls": 4,
+      "extraction_tokens": 2079,
+      "extraction_usd": 0.0009,
+      "total_usd_upper": 0.01115
+    },
+    "settle2_1": {
+      "hindsight_tokens_in": 24892,
+      "hindsight_tokens_out": 1960,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.00982,
+      "extraction_calls": 4,
+      "extraction_tokens": 2079,
+      "extraction_usd": 0.0009,
+      "total_usd_upper": 0.01231
+    },
+    "recall": {
+      "hindsight_tokens_in": 35735,
+      "hindsight_tokens_out": 2395,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.01359,
+      "extraction_calls": 4,
+      "extraction_tokens": 2079,
+      "extraction_usd": 0.0009,
+      "total_usd_upper": 0.01609
+    },
+    "probe_v1": {
+      "hindsight_tokens_in": 35735,
+      "hindsight_tokens_out": 2395,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.01359,
+      "extraction_calls": 4,
+      "extraction_tokens": 2079,
+      "extraction_usd": 0.0009,
+      "total_usd_upper": 0.01609
+    },
+    "probe_v2": {
+      "hindsight_tokens_in": 48571,
+      "hindsight_tokens_out": 2765,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.01789,
+      "extraction_calls": 4,
+      "extraction_tokens": 2079,
+      "extraction_usd": 0.0009,
+      "total_usd_upper": 0.02038
+    },
+    "cancel_probe": {
+      "hindsight_tokens_in": 61218,
+      "hindsight_tokens_out": 3103,
+      "hindsight_thoughts_tokens": 0,
+      "hindsight_usd": 0.02209,
+      "extraction_calls": 4,
+      "extraction_tokens": 2079,
+      "extraction_usd": 0.0009,
+      "total_usd_upper": 0.02458
+    }
+  },
+  "restart_before": {
+    "versions": 4,
+    "operations": 6,
+    "documents": 7
+  },
+  "finished": "2026-11-26T08:34:49.743571Z"
+}

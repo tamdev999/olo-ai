@@ -331,10 +331,194 @@ def probe_replacement(snapshot: dict, *, new_iso: str, old_iso: str) -> Findings
 
 
 def cancellation(result: dict) -> Findings:
+    """A cancel is judged by what the server holds afterwards, not by the
+    operation status: Hindsight cancellation is cooperative and rolls nothing
+    back.  Olo's reconciliation must match the document state read directly."""
     f = Findings()
     status = (result.get("status_after") or {}).get("status")
     if status != "cancelled":
         f.incomplete.append(f"cancellation not observed: operation status {status!r}")
+    rec = result.get("reconciled")
+    exists = (result.get("document") or {}).get("exists")
+    if rec is None:
+        f.hindsight.append("cancellation outcome not reconciled against the persisted document "
+                           f"(document exists: {exists})")
+        return f
+    doc = result.get("document_id") or "sig:probe-cancel-1"
+    claimed = doc in (rec.get("persisted") or {})
+    if exists is None or claimed != bool(exists):
+        f.hindsight.append(f"reconciliation says persisted={claimed}, server document exists={exists}")
+    elif claimed:
+        f.notes.append(f"cancel left {doc} persisted ({rec['persisted'][doc]} memory units): "
+                       "cooperative cancellation, reported as a partial effect")
+    return f
+
+
+# ── Current state vs history (S5 live findings) ───────────────────────────────
+
+LEDGER_CURRENT, LEDGER_SUPERSEDED = "ledger:current", "ledger:superseded"
+NON_CURRENT_LABELS = ("historical", "superseded_ledger", "unconfirmed_request")
+
+
+def _current_version(c: dict):
+    if c.get("current_version") is not None:
+        return c["current_version"]
+    confirmed = [v["version"] for v in c.get("versions") or [] if v.get("is_confirmed")]
+    return max(confirmed) if confirmed else None
+
+
+def ledger_markers(memory: dict, ledger: dict) -> Findings:
+    """Each commitment has exactly one ledger document marked current — the
+    ledger's current version — and every other confirmed version is marked
+    superseded, in its tags and its first line."""
+    f = Findings()
+    for cid, c in ledger.items():
+        cur = _current_version(c)
+        for v in c.get("versions") or []:
+            if not v.get("is_confirmed"):
+                continue
+            doc_id = f"ledger:{cid}:v{v['version']}"
+            d = memory.get(doc_id)
+            if d is None:
+                continue                      # ledger_documents reports missing documents
+            tags, text = d.get("tags") or [], d.get("text") or ""
+            if v["version"] == cur:
+                if LEDGER_CURRENT not in tags or not text.startswith("CURRENT:"):
+                    f.hindsight.append(f"{doc_id} is the ledger's current version but is not marked current")
+            elif LEDGER_SUPERSEDED not in tags or not text.startswith("SUPERSEDED:"):
+                f.hindsight.append(f"{doc_id} is superseded (current is v{cur}) but not marked superseded")
+    return f
+
+
+def current_view(view: dict | None, expected: dict) -> Findings:
+    """The customer-facing view: ledger state first, every memory labelled.
+
+    *expected* maps event_type → (current_date, pending_date).  Labels are
+    re-verified here with this module's own date matching: a memory stating a
+    superseded or proposed date must carry a non-current label, and only a
+    current-version ledger document may be labelled current.
+    """
+    f = Findings()
+    if not view:
+        f.hindsight.append("no customer-facing current-state view: recall results are not "
+                           "distinguished from the ledger's current state")
+        return f
+    current = {c["event_type"]: c for c in view.get("current") or []}
+    for et, (cur_date, pending) in expected.items():
+        c = current.get(et)
+        if c is None:
+            f.ledger.append(f"current-state view has no {et} commitment")
+            continue
+        _expect(f.ledger, f"view {et} current date", c.get("current_date"), cur_date)
+        _expect(f.ledger, f"view {et} pending (unconfirmed) date", c.get("pending_date"), pending)
+    old = {d for c in current.values() for d in c.get("superseded_dates") or []}
+    asked = {c["pending_date"] for c in current.values() if c.get("pending_date")}
+    for m in view.get("memories") or []:
+        text, label = m.get("text") or "", m.get("label")
+        # A current-version ledger document names the version it supersedes
+        # (and so its date); it is verified by version below, not by dates.
+        if (label != "current_ledger" and label not in NON_CURRENT_LABELS
+                and any(mentions(text, d) for d in old | asked)):
+            f.hindsight.append(f"memory states a superseded or unconfirmed date but is labelled "
+                               f"{label!r}: {text[:140]!r}")
+        if label == "current_ledger":
+            cid_v = (m.get("document_id") or "").rsplit(":v", 1)
+            ok = any(c.get("commitment_id") and f"ledger:{c['commitment_id']}" == cid_v[0]
+                     and str(c.get("current_version")) == (cid_v[1] if len(cid_v) == 2 else "")
+                     for c in current.values())
+            if not ok:
+                f.hindsight.append(f"{m.get('document_id')} labelled current but is not the current version")
+    for x in view.get("excluded") or []:
+        f.hindsight.append(f"recall for the customer returned another customer's memory: "
+                           f"{(x.get('text') or '')[:100]!r}")
+    return f
+
+
+def stale_raw_observations(observations: list, ledger: dict) -> Findings:
+    """Raw observations that still state a superseded date: recorded, not
+    failed — the customer-facing view labels them (current_view)."""
+    f = Findings()
+    old = set()
+    for c in ledger.values():
+        cur = _current_version(c)
+        for v in c.get("versions") or []:
+            if v.get("is_confirmed") and v["version"] != cur and v.get("confirmed_date"):
+                old.add(v["confirmed_date"])
+    for o in observations:
+        for d in sorted(old):
+            if mentions(o.get("text") or "", d):
+                f.notes.append(f"raw observation still states superseded {d}: {(o.get('text') or '')[:140]!r}")
+    return f
+
+
+_QUOTED = re.compile(r"^\s*>|^On .{0,80}wrote:\s*$|^-{2,}\s*(Original|Forwarded) Message", re.MULTILINE)
+
+
+def authored_prose(memory: dict, *, replies: tuple[str, ...] = ("sig:c:m2",)) -> Findings:
+    """Retained prose is its author's own text: no quoted history, marked
+    ``text_scope=authored``, and the replies that quoted mail say so."""
+    f = Findings()
+    for doc_id, d in memory.items():
+        if not doc_id.startswith("sig:") or doc_id.startswith("sig:probe"):
+            continue
+        meta = d.get("metadata") or {}
+        if _QUOTED.search(d.get("text") or ""):
+            f.hindsight.append(f"{doc_id} retains quoted history as if it were the author's text")
+        if meta.get("text_scope") != "authored":
+            f.hindsight.append(f"{doc_id} is not marked text_scope=authored")
+        if doc_id in replies and meta.get("quoted_history") != "omitted":
+            f.hindsight.append(f"{doc_id} quoted earlier mail but is not marked quoted_history=omitted")
+    return f
+
+
+def bank_strategies(config_strategies: dict, wanted: dict) -> Findings:
+    f = Findings()
+    for name, settings in wanted.items():
+        got = config_strategies.get(name)
+        if not isinstance(got, dict) or any(got.get(k) != v for k, v in settings.items()):
+            f.hindsight.append(f"retain strategy {name!r} not registered as {settings} (got {got})")
+    return f
+
+
+def server_log(text: str | None) -> Findings:
+    """No silent strategy fallback and no server error during the run."""
+    f = Findings()
+    if text is None:
+        f.incomplete.append("server log unavailable")
+        return f
+    unknown = re.findall(r"Unknown retain strategy '([^']+)'", text)
+    if unknown:
+        f.hindsight.append(f"{len(unknown)} retains fell back to the default config: unknown "
+                           f"strategy {sorted(set(unknown))}")
+    errors = [ln for ln in text.splitlines() if " - ERROR - " in ln]
+    if errors:
+        f.incomplete.append(f"{len(errors)} server ERROR lines, first: {errors[0][:160]}")
+    return f
+
+
+def usage(breakdown: dict | None) -> Findings:
+    """Hindsight's LLM trace reconciled by call type.
+
+    The trace records every model call — LLM, embedding, rerank, decision —
+    so its total is not a count of DeepSeek requests, and a server-log line
+    count is a third, different metric (notes only).
+    """
+    f = Findings()
+    if not breakdown:
+        f.incomplete.append("usage not reconciled: no per-call-type trace breakdown recorded")
+        return f
+    total, parts = breakdown.get("total") or {}, breakdown.get("by_call_type") or {}
+    for key in ("count", "input", "output"):
+        s = sum((p or {}).get(key, 0) for p in parts.values())
+        if s != total.get(key, 0):
+            f.incomplete.append(f"trace {key} by call type sums to {s}, total {total.get(key, 0)}")
+    if total.get("errors"):
+        f.incomplete.append(f"{total['errors']} traced model calls failed")
+    llm = parts.get("llm") or {}
+    if llm.get("thoughts"):
+        f.hindsight.append(f"{llm['thoughts']} reasoning tokens traced: thinking was not disabled")
+    f.notes.append(f"traced calls by type: { {k: (v or {}).get('count', 0) for k, v in parts.items()} }; "
+                   f"server-log HTTP chat-completion lines: {breakdown.get('http_log_lines')}")
     return f
 
 

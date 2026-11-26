@@ -58,7 +58,8 @@ from olo.m3.hindsight.budget import COST_INPUT_PER_M as IN_PER_M
 from olo.m3.hindsight.budget import COST_OUTPUT_PER_M as OUT_PER_M
 from olo.m3.hindsight.budget import parse_stats
 from olo.m3.hindsight.client import HindsightClient, HindsightConfig, _request
-from olo.projection import PROSE_SCOPE_TAG, prepare_bank
+from olo.current_state import recall_for_customer
+from olo.projection import PROSE_SCOPE_TAG, olo_strategies, prepare_bank, reconcile_documents
 from olo.runner import run_source
 from olo.signals import format_utc
 from olo.store import connect, migrate
@@ -217,6 +218,7 @@ def ledger_state() -> dict:
     for cid, et, key in conn.execute("SELECT id, event_type, business_key FROM commitments ORDER BY created_at"):
         st = get_current_state(conn, cid)
         out[cid] = {"event_type": et, "key": key, "status": st["status"],
+                    "current_version": st["version"],
                     "scheduled_date": st["scheduled_date"], "pending_action": st["pending_action"],
                     "pending_proposed_date": st["pending_proposed_date"],
                     "versions": [{k: v[k] for k in ("version", "actor_role", "action", "confirmed_date",
@@ -250,6 +252,7 @@ def memory() -> dict:
     for d in client.list_documents(bank_id=BANK, limit=100).get("items", []):
         full = client.get_document(d["id"], bank_id=BANK)
         out[d["id"]] = {"text": (full.get("original_text") or "")[:600], "tags": full.get("tags"),
+                        "metadata": full.get("document_metadata") or full.get("metadata") or {},
                         "facts": full.get("nodes_by_fact_type"), "units": full.get("memory_unit_count")}
     return out
 
@@ -334,14 +337,16 @@ if not (pre["ok"] and r.get("llm_trace") is True and not r.get("banks_before")
 def provision():
     result = prepare_bank(client, BANK)
     cfg = client.get_bank_config(bank_id=BANK)["config"]
+    strategies = cfg.get("retain_strategies") or {}
     return {"prepare_bank": result, "enable_auto_consolidation": cfg.get("enable_auto_consolidation"),
-            "structured_strategy": (cfg.get("retain_strategies") or {}).get("structured-no-llm")}
+            "strategies": {k: strategies.get(k) for k in olo_strategies()}}, \
+        checks.bank_strategies(strategies, olo_strategies())
 
 
 prov = step("1_prepare_bank", provision)
 pr = prov.get("result") or {}
-if not (prov["ok"] and pr.get("enable_auto_consolidation") is False and pr.get("structured_strategy")):
-    abort("bank could not be prepared", 3)
+if not (prov["ok"] and pr.get("enable_auto_consolidation") is False):
+    abort("bank could not be prepared (strategies or auto-consolidation)", 3)
 state["base_in"], state["base_out"], state["base_thoughts"] = hs_tokens()
 
 DB.parent.mkdir(mode=0o700, exist_ok=True)
@@ -418,25 +423,46 @@ def before_confirmation():
     rec = {"delivery": recall(DELIVERY_Q),
            "delivery_observations": recall("ORD-501 delivery date", types=["observation"])}
     tag, f = alice_tag()
+    view = customer_view(tag)
     f.add(checks.ledger_after_request(led))
     f.add(checks.ledger_documents(mem, led))
+    f.add(checks.ledger_markers(mem, led))
+    f.add(checks.authored_prose(mem))
     f.add(checks.customer_scope(mem, obs, tag))
+    f.add(checks.current_view(view, {"delivery": ("2026-06-10", PROPOSED), "meeting": ("2026-06-05", None)}))
+    f.add(checks.stale_raw_observations(obs, led))
     texts = ([("observation", o["text"]) for o in obs]
              + [(f"recall {k}", x["text"]) for k, v in rec.items() for x in v])
     f.add(checks.no_proposal_as_fact(texts, sorted(set(checks.unconfirmed_proposals(led)) | {PROPOSED})))
     f.add(checks.recall_states(rec["delivery"], "2026-06-10", "delivery recall before confirmation"))
     return {"ledger": led, "resolution": resolution(), "outbox": outbox(), "memory": mem,
-            "observations": obs, "recall": rec, "spend": spend()}, f
+            "observations": obs, "recall": rec, "view": view, "spend": spend()}, f
 
 
 def after_confirmation():
     led, mem, obs = ledger_state(), memory(), observations()
     tag, f = alice_tag()
+    view = customer_view(tag)
     f.add(checks.ledger_after_confirmation(led))
     f.add(checks.ledger_documents(mem, led))
+    f.add(checks.ledger_markers(mem, led))
+    f.add(checks.authored_prose(mem))
     f.add(checks.customer_scope(mem, obs, tag))
+    f.add(checks.current_view(view, {"delivery": ("2026-06-15", None), "meeting": ("2026-06-05", None)}))
+    f.add(checks.stale_raw_observations(obs, led))
     return {"ledger": led, "resolution": resolution(), "outbox": outbox(), "memory": mem,
-            "observations": obs, "spend": spend()}, f
+            "observations": obs, "view": view, "spend": spend()}, f
+
+
+def customer_view(tag: str):
+    """olo.current_state's customer-facing recall: ledger state, then labelled memories."""
+    if not tag:
+        return None
+    conn = connect(DB)
+    try:
+        return recall_for_customer(conn, client, BANK, tag.removeprefix("ent:"), DELIVERY_Q)
+    finally:
+        conn.close()
 
 
 def final_recall():
@@ -543,13 +569,16 @@ def cancel_probe():
     cancel = client.cancel_operation(op, bank_id=BANK)
     time.sleep(5)
     status = client.get_operation_status(op, bank_id=BANK)
+    reconciled = reconcile_documents(client, BANK, ["sig:probe-cancel-1"])
     try:
         doc = client.get_document("sig:probe-cancel-1", bank_id=BANK)
         doc_state = {"exists": True, "units": doc.get("memory_unit_count")}
     except Exception as exc:
-        doc_state = {"exists": False, "error": str(getattr(exc, "status_code", exc))}
+        code = getattr(exc, "status_code", None)
+        doc_state = {"exists": False if code == 404 else None, "error": str(code or type(exc).__name__)}
     return {"cancel": {k: cancel.get(k) for k in ("success", "message")} if isinstance(cancel, dict) else cancel,
-            "status_after": {k: status.get(k) for k in ("status", "error_message")}, "document": doc_state}
+            "status_after": {k: status.get(k) for k in ("status", "error_message")},
+            "document_id": "sig:probe-cancel-1", "document": doc_state, "reconciled": reconciled}
 
 
 if processing_ok and guard("cancel_probe"):
@@ -557,11 +586,41 @@ if processing_ok and guard("cancel_probe"):
 if not processing_ok:
     ev["probes_skipped"] = ev.get("stopped") or "processing did not settle"
 
-step("10_final", lambda: {"ledger": ledger_state(), "memory": memory(), "observations": observations(),
-                          "outbox": outbox(), "spend": spend(),
-                          "llm_stats": client.get_llm_stats(bank_id=BANK),
-                          "bank_stats": client.get_bank_stats(bank_id=BANK)},
-     lambda r: checks.spend(r["spend"], STOP_USD))
+def usage_breakdown() -> dict:
+    """The bank's model-call trace split by call type (Hindsight traces LLM,
+    embedding, rerank and decision calls alike), plus the server log's count
+    of HTTP chat-completion requests — a different metric, kept apart."""
+    path = f"/v1/default/banks/{BANK}/llm-requests/stats"
+
+    def sums(**params) -> dict:
+        out = {"count": 0, "errors": 0, "input": 0, "output": 0, "cached": 0, "thoughts": 0}
+        for b in _request(hcfg, "GET", path, params=params or None).get("buckets") or []:
+            st = b.get("statuses") or {}
+            out["count"] += sum(st.values())
+            out["errors"] += sum(v for k, v in st.items() if k != "success")
+            for k in ("input", "output", "cached", "thoughts"):
+                out[k] += int((b.get("tokens") or {}).get(k, 0) or 0)
+        return out
+
+    log = (HH / "server.log").read_text(encoding="utf-8", errors="replace")
+    return {"total": sums(),
+            "by_call_type": {t: sums(call_type=t) for t in ("llm", "embedding", "rerank", "decision")},
+            "http_log_lines": sum(1 for ln in log.splitlines()
+                                  if "HTTP Request: POST" in ln and "/chat/completions" in ln)}
+
+
+def final():
+    r = {"ledger": ledger_state(), "memory": memory(), "observations": observations(),
+         "outbox": outbox(), "spend": spend(), "usage": usage_breakdown(),
+         "llm_stats": client.get_llm_stats(bank_id=BANK),
+         "bank_stats": client.get_bank_stats(bank_id=BANK)}
+    f = checks.spend(r["spend"], STOP_USD)
+    f.add(checks.usage(r["usage"]))
+    f.add(checks.server_log((HH / "server.log").read_text(encoding="utf-8", errors="replace")))
+    return r, f
+
+
+step("10_final", final)
 ev["finished"] = format_utc(datetime.now(UTC))
 save()
 v = ev["verdict"]

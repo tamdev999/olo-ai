@@ -124,7 +124,10 @@ class Hindsight:
     Bank config follows Hindsight 1.2.1: GET /config on an unknown bank is a
     404, PUT creates it, and PATCH replaces each top-level key it is given.
     A completed prose retain leaves its memories pending consolidation until
-    a consolidation completes (auto-consolidation off).
+    a consolidation completes (auto-consolidation off).  As Hindsight 1.2.1:
+    a retain naming an unregistered strategy is accepted (recorded in
+    ``unknown_strategy_retains``), and cancellation is cooperative — documents
+    already written stay (``get_document`` still finds them).
     """
 
     def __init__(self, *, raise_on_retain: bool = False) -> None:
@@ -147,6 +150,8 @@ class Hindsight:
         self.consolidation_drains = True    # False: completes without consolidating
         self.stats_error = False
         self.trigger_error = False
+        self.drop_strategies: set[str] = set()   # PATCHed strategies the server ignores
+        self.unknown_strategy_retains: list[tuple[str, str]] = []   # (bank, strategy)
 
     # Bank configuration
     def get_bank_config(self, bank_id=None):
@@ -165,7 +170,11 @@ class Hindsight:
         return {"bank_id": bank_id}
 
     def patch_bank_config(self, updates, bank_id=None):
-        self.patches.append((bank_id, updates))
+        import copy
+        self.patches.append((bank_id, copy.deepcopy(updates)))
+        updates = copy.deepcopy(updates)
+        for name in self.drop_strategies:
+            (updates.get("retain_strategies") or {}).pop(name, None)
         self.banks[bank_id].update(updates)
         return self.get_bank_config(bank_id=bank_id)
 
@@ -185,6 +194,10 @@ class Hindsight:
                 status_code=400)
         if not self._prepared(bank_id):
             self.unprepared_retains.append(bank_id)
+        strategies = self.get_bank_config(bank_id=bank_id)["config"]["retain_strategies"]
+        for strategy in {i.get("strategy") for i in items}:
+            if strategy and strategy not in strategies:
+                self.unknown_strategy_retains.append((bank_id, strategy))
         self.retained.setdefault(bank_id, []).extend(items)
         self.ops[operation_id] = self.next_status
         self.submits.append((bank_id, len(items)))
@@ -223,6 +236,12 @@ class Hindsight:
         self.ops[operation_id] = "cancelled"
         self.cancelled.append(operation_id)
         return {"status": "cancelled"}
+
+    def get_document(self, document_id, bank_id=None):
+        from olo.m3.hindsight.client import HindsightAPIError
+        if document_id not in self.docs(bank_id):
+            raise HindsightAPIError("document not found", status_code=404)
+        return {"id": document_id, "memory_unit_count": 1}
 
     def docs(self, bank: str) -> dict[str, dict]:
         latest: dict[str, dict] = {}

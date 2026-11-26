@@ -12,10 +12,19 @@ through the existing ``hindsight_projection`` outbox:
   projected once its identity is settled and, when commitments are being
   extracted, once its commitment outcome is settled.  Metadata copies of
   Gmail messages superseded by full content are not projected.
+  Email prose is retained as its author's own text only (quoted replies and
+  forwarded history omitted, ``text_scope=authored``); the full original
+  stays immutable in olo.db.
 * Ledger-state documents (``ledger:<commitment_id>:v<version>``) — one per
   confirmed ledger version: status and date as of that version, the version
-  it supersedes, and its supporting documents.  Pending proposals are not
-  state changes and get no state document.
+  it supersedes, and its supporting documents.  The ledger's current version
+  (``get_current_state``) is marked ``CURRENT`` and tagged
+  ``ledger:current``; every other version is marked ``SUPERSEDED`` (naming
+  the current state) and tagged ``ledger:superseded``, so a new version
+  re-renders the one it supersedes.  Pending proposals are not state changes
+  and get no state document.  Customer-facing answers come from
+  ``olo.current_state``, which reads the current state from the ledger and
+  labels recalled memories against it.
 
 Change detection: the outbox's ``content_sha256`` column holds a fingerprint
 of the whole item, so a changed identity or commitment link re-projects the
@@ -85,17 +94,21 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
-from olo.signal_content import PROSE_KINDS, load_content
+from olo.signal_content import EMAIL_KINDS, PROSE_KINDS, authored_text, load_content
 from olo.signals import format_utc
 
 __all__ = [
+    "LEDGER_CURRENT_TAG",
+    "LEDGER_SUPERSEDED_TAG",
     "BankNotPrepared",
     "ProjectionConfig",
     "ProjectionLimits",
     "ProjectionRefused",
     "bind_bank",
     "desired_documents",
+    "olo_strategies",
     "prepare_bank",
+    "reconcile_documents",
     "run_projection_stage",
 ]
 
@@ -200,13 +213,25 @@ def _signal_documents(
             content, sha = loaded.rendered, loaded.sha256
         else:
             continue                   # evidence unreadable: never project a guess
+        extra = {}
+        if row["kind"] in EMAIL_KINDS:
+            # Retained prose is the author's own text only: quoted replies and
+            # forwarded history are other people's earlier statements, which
+            # Hindsight's extraction would otherwise record as facts of this
+            # message.  The full original stays immutable in olo.db
+            # (content_sha256 names its blob); the commitment extractor reads
+            # the same authored text.
+            own = authored_text(row["kind"], content).rstrip()
+            extra["text_scope"] = "authored"
+            if own != content.rstrip():
+                extra["quoted_history"] = "omitted"
+            content = own
         if not content.strip():
             continue
         contact = row["contact_id"] if row["identity_status"] == "resolved" else ""
-        extra = {}
         if row["commitment_id"]:
-            extra = {"commitment_id": row["commitment_id"],
-                     "commitment_version": str(row["commitment_version"] or "")}
+            extra.update({"commitment_id": row["commitment_id"],
+                          "commitment_version": str(row["commitment_version"] or "")})
         item = build_signal_item(
             row, payload, content, sha,
             source=source, contact_id=contact or "", contact_info=contact_info,
@@ -224,8 +249,27 @@ def _signal_documents(
 
 # ── Ledger-state documents ────────────────────────────────────────────────────
 
+#: Tags marking which ledger-state document holds a commitment's current
+#: confirmed state.  Exactly one document per commitment carries
+#: LEDGER_CURRENT_TAG; every earlier confirmed version carries
+#: LEDGER_SUPERSEDED_TAG and says so in its first line.  Both are derived from
+#: olo.db on every run, so a new version re-renders (and Hindsight replaces in
+#: place) the document it supersedes.
+LEDGER_CURRENT_TAG = "ledger:current"
+LEDGER_SUPERSEDED_TAG = "ledger:superseded"
+#: Render contract of ledger-state documents (part of every fingerprint).
+#:   1 — S5 part 2;  2 — current / superseded marking.
+LEDGER_RENDER_VERSION = "2"
+
+
 def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
-    from olo.ledger import CANCEL_ACTION, STATUS_CANCELLED, STATUS_SCHEDULED, utc_instant
+    from olo.ledger import (
+        CANCEL_ACTION,
+        STATUS_CANCELLED,
+        STATUS_SCHEDULED,
+        get_current_state,
+        utc_instant,
+    )
     from olo.m3.feeder import STRUCTURED_STRATEGY, _ym_tag
 
     try:
@@ -243,6 +287,17 @@ def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
             " FROM commitment_versions WHERE commitment_id=? AND is_confirmed=1",
             (cid,),
         ).fetchall()
+        if not versions:
+            continue
+        # The ledger's own reading of "current" (latest confirmed by UTC
+        # instant) decides which document is current — never this ordering.
+        current = get_current_state(conn, cid) or {}
+        current_version = current.get("version")
+        current_line = (
+            f"{current.get('status')}"
+            + (f", date {current['scheduled_date']}" if current.get("scheduled_date")
+               else ", no scheduled date")
+        )
         ordered = sorted(versions, key=lambda v: (utc_instant(v[5]) or _EARLIEST, v[0]))
         previous = None
         for v in ordered:
@@ -250,12 +305,20 @@ def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
             cancelled = action == CANCEL_ACTION
             status = STATUS_CANCELLED if cancelled else STATUS_SCHEDULED
             date = None if cancelled else confirmed
+            is_current = version == current_version
             supporting = [d for d in (notes, doc) if d]
             supersedes = (
                 f"supersedes version {previous[0]} (date {previous[3] or 'none'})"
                 if previous is not None else "first confirmed version"
             )
+            role = (
+                f"CURRENT: version {version} is the latest confirmed state of this commitment."
+                if is_current else
+                f"SUPERSEDED: version {version} is history, not the current state. "
+                f"Current confirmed state (version {current_version}): {current_line}."
+            )
             content = (
+                f"{role}\n"
                 f"Commitment ledger state (authoritative record: olo.db).\n"
                 f"Commitment {cid} · {event_type} · key {key or 'none'} · customer {contact}.\n"
                 f"Status as of version {version}: {status}"
@@ -271,7 +334,8 @@ def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
                 "document_id": f"ledger:{cid}:v{version}",
                 "entities": [{"text": contact, "type": "person"}],
                 "resolve_entities": False,
-                "tags": [ent_tag, _ym_tag(occurred), "kind:ledger.state"],
+                "tags": [ent_tag, _ym_tag(occurred), "kind:ledger.state",
+                         LEDGER_CURRENT_TAG if is_current else LEDGER_SUPERSEDED_TAG],
                 "observation_scopes": [[ent_tag, "ym:*"], [ent_tag]],
                 "metadata": {
                     "kind": "ledger.state",
@@ -280,9 +344,11 @@ def _ledger_documents(conn: sqlite3.Connection) -> list[dict]:
                     "status": status,
                     "scheduled_date": date or "",
                     "superseded_version": str(previous[0]) if previous is not None else "",
+                    "ledger_role": "current" if is_current else "superseded",
+                    "current_version": str(current_version or ""),
                     "supporting_documents": ",".join(supporting),
                     "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                    "render_version": "1",
+                    "render_version": LEDGER_RENDER_VERSION,
                 },
                 "strategy": STRUCTURED_STRATEGY,
             })
@@ -324,6 +390,22 @@ def bind_bank(conn: sqlite3.Connection, bank_id: str, now: str) -> None:
 
 # ── Bank preparation ──────────────────────────────────────────────────────────
 
+#: Settings of Olo's prose strategy: Hindsight's own resolved defaults
+#: (concise LLM extraction, observations on), stated explicitly.  Before S5
+#: remediation the strategy name was never registered and Hindsight 1.2.1
+#: fell back to the resolved config with a warning ("Unknown retain strategy
+#: 'prose'"); registering it keeps that behaviour and makes it verifiable.
+PROSE_STRATEGY_SETTINGS = {"retain_extraction_mode": "concise", "enable_observations": True}
+
+
+def olo_strategies() -> dict[str, dict]:
+    """Every retain strategy Olo submits, with the settings it requires."""
+    from olo.m3.feeder import _BANK_CONFIG_OVERRIDES, PROSE_STRATEGY, STRUCTURED_STRATEGY
+
+    return {STRUCTURED_STRATEGY: dict(_BANK_CONFIG_OVERRIDES["retain_strategies"][STRUCTURED_STRATEGY]),
+            PROSE_STRATEGY: dict(PROSE_STRATEGY_SETTINGS)}
+
+
 def _strategies(state: dict) -> dict:
     return dict((state.get("config") or {}).get("retain_strategies") or {})
 
@@ -333,8 +415,9 @@ def _has(strategies: dict, name: str, wanted: dict) -> bool:
     return isinstance(got, dict) and all(got.get(k) == v for k, v in wanted.items())
 
 
-def _prepared(state: dict, name: str, wanted: dict) -> bool:
-    return (_has(_strategies(state), name, wanted)
+def _prepared(state: dict, wanted: dict[str, dict]) -> bool:
+    strategies = _strategies(state)
+    return (all(_has(strategies, name, w) for name, w in wanted.items())
             and (state.get("config") or {}).get("enable_auto_consolidation") is False)
 
 
@@ -343,10 +426,12 @@ def prepare_bank(client: Any, bank_id: str) -> str:
 
     Creates the bank when the server does not know it, then ensures:
 
-    * the resolved ``retain_strategies`` contain Olo's structured strategy
-      with the required settings — the PATCH carries the current resolved
-      strategies plus Olo's entry, because Hindsight replaces a top-level
-      config key wholesale;
+    * the resolved ``retain_strategies`` contain every strategy Olo submits
+      (``olo_strategies``: structured and prose) with the required settings —
+      the PATCH carries the current resolved strategies plus Olo's entries,
+      because Hindsight replaces a top-level config key wholesale.  Hindsight
+      1.2.1 accepts an unregistered strategy name with only a warning and
+      falls back to the resolved config; Olo never relies on that fallback;
     * ``enable_auto_consolidation`` is off for the bank.  Every automatic
       consolidation Hindsight 1.2.1 queues (after a retain, a document update
       or delete) is bank-wide, and its default is on: it would hand
@@ -357,10 +442,9 @@ def prepare_bank(client: Any, bank_id: str) -> str:
     No other key is sent.  Raises BankNotPrepared when the server refuses or
     the result cannot be verified.
     """
-    from olo.m3.feeder import _BANK_CONFIG_OVERRIDES, STRUCTURED_STRATEGY
     from olo.m3.hindsight.client import HindsightAPIError, HindsightError
 
-    wanted = _BANK_CONFIG_OVERRIDES["retain_strategies"][STRUCTURED_STRATEGY]
+    wanted = olo_strategies()
     created = False
     try:
         try:
@@ -371,13 +455,14 @@ def prepare_bank(client: Any, bank_id: str) -> str:
             client.ensure_bank(bank_id)
             created = True
             state = client.get_bank_config(bank_id=bank_id)
-        if _prepared(state, STRUCTURED_STRATEGY, wanted):
+        if _prepared(state, wanted):
             return "created" if created else "unchanged"
         updates: dict[str, Any] = {}
         strategies = _strategies(state)
-        if not _has(strategies, STRUCTURED_STRATEGY, wanted):
-            strategies[STRUCTURED_STRATEGY] = {**(strategies.get(STRUCTURED_STRATEGY) or {}), **wanted}
-            updates["retain_strategies"] = strategies
+        for name, settings in wanted.items():
+            if not _has(strategies, name, settings):
+                strategies[name] = {**(strategies.get(name) or {}), **settings}
+                updates["retain_strategies"] = strategies
         if (state.get("config") or {}).get("enable_auto_consolidation") is not False:
             updates["enable_auto_consolidation"] = False
         state = client.patch_bank_config(updates, bank_id=bank_id)
@@ -385,9 +470,9 @@ def prepare_bank(client: Any, bank_id: str) -> str:
         raise BankNotPrepared(
             f"bank {bank_id!r}: {type(exc).__name__} "
             f"(HTTP {getattr(exc, 'status_code', None)})") from exc
-    if not _prepared(state, STRUCTURED_STRATEGY, wanted):
+    if not _prepared(state, wanted):
         raise BankNotPrepared(
-            f"bank {bank_id!r}: {STRUCTURED_STRATEGY!r} strategy or disabled "
+            f"bank {bank_id!r}: Olo retain strategies {sorted(wanted)} or disabled "
             "auto-consolidation not in effect after update")
     return "created" if created else "updated"
 
@@ -474,7 +559,63 @@ def _record(out: dict[str, int], conn, bank_id: str, op: str, kind: str,
 
 
 def _outcome_counts() -> dict[str, int]:
-    return {k: 0 for k in (*_RETAIN_OUTCOME.values(), *_CONSOLIDATION_OUTCOME.values())}
+    return {k: 0 for k in (*_RETAIN_OUTCOME.values(), *_CONSOLIDATION_OUTCOME.values(),
+                           "cancelled_persisted")}
+
+
+def reconcile_documents(client: Any, bank_id: str, document_ids: list[str]) -> dict:
+    """What the server actually holds for *document_ids*: {persisted: {id:
+    memory units}, absent: [ids], unknown: [ids]}.
+
+    Hindsight 1.2.1 cancellation is cooperative: the operation row is flipped
+    to 'cancelled' and its worker stops at its next checkpoint, after the
+    batch or document it is on.  Nothing is rolled back, so a cancelled
+    retain can leave documents and memories behind.  This reads them back
+    rather than inferring anything from the operation status.
+    """
+    from olo.m3.hindsight.client import HindsightAPIError
+
+    out: dict[str, Any] = {"persisted": {}, "absent": [], "unknown": []}
+    for doc in document_ids:
+        try:
+            got = client.get_document(doc, bank_id=bank_id) or {}
+            out["persisted"][doc] = int(got.get("memory_unit_count") or 0)
+        except HindsightAPIError as exc:
+            (out["absent"] if exc.status_code == 404 else out["unknown"]).append(doc)
+        except Exception:
+            out["unknown"].append(doc)
+    return out
+
+
+def _record_cancelled(out: dict[str, int], conn, cfg: ProjectionConfig, op: str, kind: str,
+                      now: str, why: str) -> None:
+    """Record a cancellation together with what it did NOT undo.
+
+    The documents stay 'failed' (resubmission replaces them in place), and the
+    operation's detail names every document the server still holds, so the
+    status never reads as a rollback.
+    """
+    _record(out, conn, cfg.bank_id, op, kind, "cancelled", now, why)
+    if kind == "consolidation":
+        _note(conn, cfg.bank_id, op, f"{why}; cooperative cancel: observations written before "
+                                     "the stop are kept")
+        return
+    docs = [r[0] for r in conn.execute(
+        "SELECT document_id FROM hindsight_operation_docs WHERE operation_id=? ORDER BY document_id",
+        (op,))]
+    seen = reconcile_documents(cfg.client, cfg.bank_id, docs)
+    out["cancelled_persisted"] += len(seen["persisted"])
+    _note(conn, cfg.bank_id, op, (
+        f"{why}; cooperative cancel, not a rollback: persisted on server "
+        f"{seen['persisted'] or 'none'}; absent {seen['absent'] or 'none'}; "
+        f"unknown {seen['unknown'] or 'none'}"))
+
+
+def _note(conn, bank_id: str, op: str, detail: str) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE hindsight_operations SET detail=? WHERE operation_id=? AND bank_id=?",
+                 (detail[:500], op, bank_id))
+    conn.execute("COMMIT")
 
 
 def _poll_in_flight(conn, cfg: ProjectionConfig, now_dt: datetime, now: str) -> dict[str, int]:
@@ -506,9 +647,11 @@ def _poll_in_flight(conn, cfg: ProjectionConfig, now_dt: datetime, now: str) -> 
                 cfg.client.cancel_operation(op, bank_id=cfg.bank_id)
             except Exception:
                 continue                     # cancel failed: try again next run
-            _record(out, conn, cfg.bank_id, op, kind, "cancelled", now, "timed out")
+            _record_cancelled(out, conn, cfg, op, kind, now, "timed out")
         elif state == _OP_DONE:
             _record(out, conn, cfg.bank_id, op, kind, "completed", now)
+        elif state == "cancelled":
+            _record_cancelled(out, conn, cfg, op, kind, now, "cancelled on the server")
         elif state == "not_found":
             _record(out, conn, cfg.bank_id, op, kind, "lost", now, "unknown to server")
         else:
@@ -526,7 +669,7 @@ def _cancel_in_flight(conn, cfg: ProjectionConfig, now: str, why: str) -> dict[s
             cfg.client.cancel_operation(op, bank_id=cfg.bank_id)
         except Exception:
             continue
-        _record(out, conn, cfg.bank_id, op, kind, "cancelled", now, why)
+        _record_cancelled(out, conn, cfg, op, kind, now, why)
     return out
 
 
@@ -740,7 +883,7 @@ def run_projection_stage(
     counts: dict[str, Any] = {
         "submitted": 0, "unchanged": 0, "deferred": 0, "retries_exhausted": 0,
         "budget_exceeded": 0, "stats_unavailable": 0, "bank_unprepared": 0,
-        "consolidation_submitted": 0, **_outcome_counts()}
+        "unregistered_strategy": 0, "consolidation_submitted": 0, **_outcome_counts()}
     _add(counts, _poll_in_flight(conn, cfg, now_dt, now))
     try:
         counts["bank_prepared"] = prepare_bank(cfg.client, cfg.bank_id)
@@ -784,8 +927,13 @@ def _changed_documents(conn, cfg: ProjectionConfig, source: str,
     existing = {r[0]: (r[1], r[2]) for r in conn.execute(
         "SELECT signal_id, content_sha256, status FROM hindsight_projection WHERE bank_id=?",
         (cfg.bank_id,))}
+    registered = olo_strategies()
     todo: list[tuple[dict, str]] = []
     for item in desired_documents(conn, source, await_commitment=cfg.await_commitment):
+        if item.get("strategy") not in registered:
+            # Fail closed: Hindsight would silently fall back to its default.
+            counts["unregistered_strategy"] += 1
+            continue
         doc, fp = item["document_id"], _fingerprint(item)
         prior = existing.get(doc)
         if doc in in_flight or (prior is not None and prior == (fp, "confirmed")):

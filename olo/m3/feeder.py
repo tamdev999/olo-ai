@@ -37,7 +37,11 @@ STRUCTURED_STRATEGY = "structured-no-llm"
 
 #: Prose signals (email, voice transcript) use the bank default extraction
 #: (concise mode = DeepSeek extraction).  Consolidation is triggered explicitly.
-PROSE_STRATEGY = "prose"  # falls back to bank default (concise + LLM)
+#: Benchmark banks do not register it, so Hindsight 1.2.1 falls back to the
+#: bank default with a warning there (gate evidence is left as recorded);
+#: the production projection registers it explicitly with those same settings
+#: and refuses to submit an unregistered strategy (olo.projection.olo_strategies).
+PROSE_STRATEGY = "prose"
 
 #: Source tags that identify prose signals (used for targeted consolidation).
 PROSE_SOURCES: frozenset = frozenset({"src:gmail_owner", "src:voice_fixture"})

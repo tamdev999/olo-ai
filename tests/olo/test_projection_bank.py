@@ -34,6 +34,10 @@ pytestmark = pytest.mark.not_integration
 
 STRUCTURED = "structured-no-llm"
 WANTED = {"retain_extraction_mode": "chunks", "enable_observations": False}
+PROSE = "prose"
+#: Hindsight's resolved defaults, registered explicitly (S5 live finding B).
+PROSE_WANTED = {"retain_extraction_mode": "concise", "enable_observations": True}
+OLO = {STRUCTURED: WANTED, PROSE: PROSE_WANTED}
 
 
 @pytest.fixture()
@@ -61,14 +65,14 @@ class TestBankPreparation:
         assert any(d.startswith("ledger:") for d in p.hindsight.docs(p.bank))
         assert p.hindsight.unprepared_retains == []
         strategies = p.hindsight.banks[p.bank]["retain_strategies"]
-        assert strategies[STRUCTURED] == WANTED
+        assert strategies[STRUCTURED] == WANTED and strategies[PROSE] == PROSE_WANTED
         assert p.hindsight.banks[p.bank]["enable_auto_consolidation"] is False
 
     def test_auto_consolidation_is_turned_off_for_the_bank(self, tmp_path, clock) -> None:
         """Hindsight's automatic consolidations are bank-wide and on by default:
         they would hand ledger-state memories to the consolidation LLM."""
         p = Pipeline(tmp_path)
-        p.hindsight.banks[p.bank] = {"retain_strategies": {STRUCTURED: dict(WANTED)},
+        p.hindsight.banks[p.bank] = {"retain_strategies": {k: dict(v) for k, v in OLO.items()},
                                      "enable_auto_consolidation": True}
         r = p.run(*_signals(1), clock=clock)
         assert r.projection["bank_prepared"] == "updated"
@@ -92,7 +96,7 @@ class TestBankPreparation:
         bank = p.hindsight.banks[p.bank]
         assert bank["retain_extraction_mode"] == "verbatim"
         assert bank["enable_observations"] is True
-        assert bank["retain_strategies"] == {"legal-verbatim": other, STRUCTURED: WANTED}
+        assert bank["retain_strategies"] == {"legal-verbatim": other, **OLO}
         assert [set(u) for _, u in p.hindsight.patches] == [
             {"retain_strategies", "enable_auto_consolidation"}]
 
@@ -100,7 +104,7 @@ class TestBankPreparation:
         p = Pipeline(tmp_path)
         p.hindsight.global_strategies = {"server-wide": {"retain_extraction_mode": "chunks"}}
         p.run(*_signals(1), clock=clock)
-        assert set(p.hindsight.banks[p.bank]["retain_strategies"]) == {"server-wide", STRUCTURED}
+        assert set(p.hindsight.banks[p.bank]["retain_strategies"]) == {"server-wide", STRUCTURED, PROSE}
 
     def test_wrong_structured_strategy_is_corrected_keeping_its_extra_fields(self, tmp_path, clock) -> None:
         p = Pipeline(tmp_path)
@@ -153,10 +157,27 @@ class TestBankPreparation:
 
     def test_existing_prepared_bank_is_left_untouched(self) -> None:
         hs = Hindsight()
-        hs.banks["olo-x"] = {"retain_strategies": {STRUCTURED: dict(WANTED)},
+        hs.banks["olo-x"] = {"retain_strategies": {k: dict(v) for k, v in OLO.items()},
                              "enable_auto_consolidation": False}
         assert prepare_bank(hs, "olo-x") == "unchanged"
         assert hs.patches == []
+
+    def test_bank_without_the_prose_strategy_gets_it_registered(self) -> None:
+        """Before S5 remediation 'prose' was never registered: Hindsight 1.2.1
+        warned 'Unknown retain strategy' and fell back to its default."""
+        hs = Hindsight()
+        hs.banks["olo-x"] = {"retain_strategies": {STRUCTURED: dict(WANTED)},
+                             "enable_auto_consolidation": False}
+        assert prepare_bank(hs, "olo-x") == "updated"
+        assert hs.patches == [("olo-x", {"retain_strategies": OLO})]
+
+    def test_prose_strategy_that_does_not_take_effect_fails_closed(self, tmp_path, clock) -> None:
+        p = Pipeline(tmp_path)
+        p.hindsight.drop_strategies = {PROSE}          # server silently ignores it
+        r = p.run(content("m1", sent=True, body=COMMIT_BODY, day=1), clock=clock)
+        assert r.projection["bank_unprepared"] == 1
+        assert p.hindsight.retained.get(p.bank) is None
+        assert p.hindsight.unknown_strategy_retains == []
 
 
 # ── Consolidation ─────────────────────────────────────────────────────────────

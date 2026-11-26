@@ -138,4 +138,13 @@ The proposal-as-fact check is lexical and deliberately strict: a date stated
 with no request wording fails. Resolve a suspected false alarm by reading the
 recorded text, not by rerunning.
 
+### Added after the first live run (see `S5_LIVE_FINDINGS_REMEDIATION.md`)
+
+| Where | Check |
+|---|---|
+| `1_prepare_bank` | `structured-no-llm` and `prose` both registered with the required settings; otherwise exit 3 |
+| `3_state_before_confirmation`, `4_state` | **Ledger markers:** exactly the ledger's current version is tagged `ledger:current` with a `CURRENT:` first line; every other confirmed version is `ledger:superseded` / `SUPERSEDED:`. **Customer view** (`olo.current_state.recall_for_customer`): the ledger state comes first (delivery 06-10 with a pending 06-15 request, then 06-15 with none; the meeting 06-05); every memory stating a superseded or requested date is labelled `historical`, `superseded_ledger` or `unconfirmed_request`; only the current version's ledger document is `current_ledger`; no other customer's memory. **Prose:** `sig:` documents hold authored text only (`text_scope=authored`; `sig:c:m2` has `quoted_history=omitted`). Raw observations that still state a superseded date are notes |
+| `9_cancellation` | Olo's reconciliation (`reconcile_documents`) matches the document's actual state; a document that persisted is reported as a partial effect |
+| `10_final` | Trace reconciled by call type (`llm`, `embedding`, `rerank`, `decision` sum to the totals; no failed calls; no reasoning tokens). No `Unknown retain strategy` and no `ERROR` line in the server log. The server-log count of chat-completion lines is recorded as a note: it is a different metric |
+
 Failures are kept; nothing is retried selectively.

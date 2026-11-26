@@ -177,8 +177,12 @@ short run and one customer. They must be fixed before real customer data.
      incomplete.
 3. **Stale ledger-state documents.** Each confirmed version stays in
    Hindsight as `ledger:<cid>:v<n>`. Superseded versions (for example v1
-   after v3) carry no "current" marker, so recall can return a superseded
-   date beside the current one. This is by design so far, and not fixed.
+   after v3) carried no "current" marker, so recall could return a
+   superseded date beside the current one. **Addressed after the first live
+   run:** versions are now marked current or superseded from the ledger, and
+   `olo.current_state` labels recall against the ledger. See
+   `S5_LIVE_FINDINGS_REMEDIATION.md`. Verified offline and on a disposable
+   server, not yet in a paid run.
 
 ## 6. Remaining before the paid run
 

@@ -195,8 +195,16 @@ def test_operations_and_cancellation_require_terminal_success() -> None:
     assert checks.probe_operation({"retain": "completed", "consolidation": "completed",
                                    "prose_pending_after": 0}).ok
     assert checks.probe_operation({"retain": "completed", "consolidation": "pending"}).incomplete
-    assert checks.cancellation({"status_after": {"status": "cancelled"}}).ok
-    assert checks.cancellation({"status_after": {"status": "completed"}}).incomplete
+    absent = {"status_after": {"status": "cancelled"}, "document": {"exists": False},
+              "reconciled": {"persisted": {}, "absent": ["sig:probe-cancel-1"], "unknown": []}}
+    assert checks.cancellation(absent).ok
+    persisted = {"status_after": {"status": "cancelled"}, "document": {"exists": True, "units": 1},
+                 "reconciled": {"persisted": {"sig:probe-cancel-1": 1}, "absent": [], "unknown": []}}
+    f = checks.cancellation(persisted)
+    assert f.ok and any("partial effect" in n for n in f.notes)
+    assert checks.cancellation(dict(persisted, reconciled=absent["reconciled"])).hindsight
+    assert checks.cancellation({"status_after": {"status": "cancelled"}}).hindsight   # unreconciled
+    assert checks.cancellation(dict(absent, status_after={"status": "completed"})).incomplete
 
 
 def test_run_and_replay_counts() -> None:
@@ -214,3 +222,100 @@ def test_spend_and_reasoning() -> None:
     assert checks.spend({"total_usd_upper": 0.01, "hindsight_thoughts_tokens": 0}, 0.20).ok
     assert checks.spend({"total_usd_upper": 0.20, "hindsight_thoughts_tokens": 0}, 0.20).incomplete
     assert checks.spend({"total_usd_upper": 0.01, "hindsight_thoughts_tokens": 12}, 0.20).hindsight
+
+
+# ── S5 live findings: current state, evidence scope, strategies, usage ───────
+
+def test_ledger_markers_follow_the_ledgers_current_version() -> None:
+    led = _ledger_after_confirmation()
+    led["cmt_d"]["current_version"] = 3
+    mem = {"ledger:cmt_d:v1": {"text": "SUPERSEDED: version 1 is history.", "tags": [ALICE, "ledger:superseded"]},
+           "ledger:cmt_d:v3": {"text": "CURRENT: version 3 is the latest.", "tags": [ALICE, "ledger:current"]}}
+    assert checks.ledger_markers(mem, led).ok
+    mem["ledger:cmt_d:v1"] = {"text": "Commitment ledger state ...", "tags": [ALICE]}
+    assert checks.ledger_markers(mem, led).hindsight
+
+
+def _view(current_date, pending, superseded, memories, excluded=()):
+    return {"current": [{"commitment_id": "cmt_d", "event_type": "delivery", "current_date": current_date,
+                         "current_version": 3 if current_date == "2026-06-15" else 1,
+                         "pending_date": pending, "superseded_dates": superseded}],
+            "memories": list(memories), "excluded": list(excluded)}
+
+
+def test_current_view_requires_labels_on_superseded_and_requested_dates() -> None:
+    stale = "The ORD-501 delivery is confirmed for 2026-06-10. (rescheduled to 2026-06-15.)"
+    good = _view("2026-06-15", None, ["2026-06-10"], [{"text": stale, "label": "historical"}])
+    assert checks.current_view(good, {"delivery": ("2026-06-15", None)}).ok
+    bad = _view("2026-06-15", None, ["2026-06-10"], [{"text": stale, "label": "memory"}])
+    assert checks.current_view(bad, {"delivery": ("2026-06-15", None)}).hindsight
+    asked = _view("2026-06-10", "2026-06-15", [], [{"text": "Delivery confirmed for June 15.",
+                                                    "label": "memory"}])
+    assert checks.current_view(asked, {"delivery": ("2026-06-10", "2026-06-15")}).hindsight
+    wrong_ledger = _view("2026-06-15", None, ["2026-06-10"], [{"text": "Status as of version 1",
+                                                               "label": "current_ledger",
+                                                               "document_id": "ledger:cmt_d:v1"}])
+    assert checks.current_view(wrong_ledger, {"delivery": ("2026-06-15", None)}).hindsight
+    current_doc = _view("2026-06-15", None, ["2026-06-10"], [{
+        "text": "CURRENT: version 3 ... supersedes version 1 (date 2026-06-10).",
+        "label": "current_ledger", "document_id": "ledger:cmt_d:v3"}])
+    assert checks.current_view(current_doc, {"delivery": ("2026-06-15", None)}).ok
+    leaked = _view("2026-06-15", None, [], [], excluded=[{"text": "Bob's order"}])
+    assert checks.current_view(leaked, {"delivery": ("2026-06-15", None)}).hindsight
+    assert checks.current_view(good, {"delivery": ("2026-06-10", None)}).ledger
+    assert checks.current_view(None, {"delivery": ("2026-06-15", None)}).hindsight
+
+
+def test_authored_prose_and_strategy_and_log_checks() -> None:
+    mem = {"sig:c:m2": {"text": "Could we move it?", "tags": [ALICE],
+                        "metadata": {"text_scope": "authored", "quoted_history": "omitted"}}}
+    assert checks.authored_prose(mem).ok
+    mem["sig:c:m2"]["text"] += "\n\nOn Mon, 1 Jun 2026, Owner wrote:\n> Your delivery is confirmed."
+    assert checks.authored_prose(mem).hindsight
+    want = {"prose": {"retain_extraction_mode": "concise", "enable_observations": True}}
+    assert checks.bank_strategies(dict(want), want).ok
+    assert checks.bank_strategies({}, want).hindsight
+    assert checks.server_log("INFO ok").ok
+    assert checks.server_log("x - WARNING - y - Unknown retain strategy 'prose', using").hindsight
+    assert checks.server_log(None).incomplete
+
+
+def test_usage_is_reconciled_by_call_type() -> None:
+    parts = {"llm": {"count": 3, "input": 900, "output": 90, "thoughts": 0},
+             "embedding": {"count": 5, "input": 100, "output": 0}, "rerank": {}, "decision": {}}
+    good = {"total": {"count": 8, "input": 1000, "output": 90, "errors": 0}, "by_call_type": parts,
+            "http_log_lines": 3}
+    assert checks.usage(good).ok
+    assert checks.usage(dict(good, total={"count": 9, "input": 1000, "output": 90})).incomplete
+    assert checks.usage(None).incomplete
+
+
+# ── The first live run (5bf8753b), re-judged ──────────────────────────────────
+
+_LIVE = Path(__file__).resolve().parents[2] / "docs/olo/m3/s5_live_5bf8753b"
+
+
+@pytest.fixture(scope="module")
+def live() -> dict:
+    import json
+    return json.loads((_LIVE / "evidence.json").read_text(encoding="utf-8"))
+
+
+def test_the_first_live_run_passed_its_own_checks(live) -> None:
+    assert live["verdict"]["pass"] is True                     # the shortcoming being fixed
+
+
+def test_new_checks_identify_the_first_live_runs_shortcomings(live) -> None:
+    after = live["steps"]["4_state"]["result"]
+    final = live["steps"]["10_final"]["result"]
+    markers = checks.ledger_markers(after["memory"], after["ledger"])
+    assert any("is superseded (current is v3) but not marked superseded" in x for x in markers.hindsight)
+    assert any("current version but is not marked current" in x for x in markers.hindsight)
+    assert checks.current_view(after.get("view"), {"delivery": ("2026-06-15", None)}).hindsight
+    assert any("sig:c:m2 retains quoted history" in x for x in checks.authored_prose(after["memory"]).hindsight)
+    log = checks.server_log((_LIVE / "server.redacted.log").read_text(encoding="utf-8"))
+    assert any("5 retains fell back" in x and "'prose'" in x for x in log.hindsight)
+    assert checks.cancellation(live["steps"]["9_cancellation"]["result"]).hindsight
+    assert checks.usage(final.get("usage")).incomplete
+    stale = checks.stale_raw_observations(after["observations"], after["ledger"])
+    assert any("superseded 2026-06-10" in n and "confirmed for 2026-06-10" in n for n in stale.notes)
