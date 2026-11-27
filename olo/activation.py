@@ -255,6 +255,7 @@ def activate(
         commitment = CommitmentStageConfig(
             model_fn=model_fn,
             budget=Budget(max_calls=max_calls, max_total_tokens=max_tokens),
+            extraction_enabled=bool(max_calls),
         )
 
     if req.enable_projection:

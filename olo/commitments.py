@@ -29,6 +29,9 @@ Outcomes (``commitment_outcome``) and their ``commitment_status``:
   content_error       failed      stored content missing/corrupt; retried
   budget_exhausted    pending     no call made; the run stops extracting (calendar
                                   events, which need no model, are still applied)
+  (extraction_disabled) pending   counted only: a no-model activation
+                                  (--extract-max-calls 0) never extracts prose, so
+                                  it waits for a model; not a degradation
 
 Only signals with ``identity_status='resolved'`` are processed: the ledger
 key is the canonical Rolodex contact, never a guess.  Ambiguous or unresolved
@@ -85,6 +88,7 @@ OUTCOME_LEDGER_UNRESOLVED = "ledger_unresolved"
 OUTCOME_LEDGER_INVALID    = "ledger_invalid"
 OUTCOME_MODEL_ERROR       = "model_error"
 OUTCOME_CONTENT_ERROR     = "content_error"
+OUTCOME_EXTRACTION_DISABLED = "extraction_disabled"  # counted only; row stays pending
 
 _METADATA_EMAIL_KINDS: frozenset[str] = frozenset({"email.sent", "email.received"})
 
@@ -112,12 +116,16 @@ class CommitmentStageConfig:
 
     ``model_fn`` is the extraction backend (e.g. make_deepseek_model_fn()).
     ``budget`` caps the run's model calls/tokens; ``max_attempts`` caps
-    retries of failed extractions per signal.
+    retries of failed extractions per signal.  ``extraction_enabled=False``
+    is a no-model activation (Mode A): prose is never extracted and stays
+    pending as ``extraction_disabled``, which unlike an exhausted positive
+    budget is not a degradation; calendar events are applied as usual.
     """
     model_fn: Callable[[str], tuple]
     model_id: Optional[str] = None
     budget: Optional[Budget] = None
     max_attempts: int = 5
+    extraction_enabled: bool = True
 
 
 def message_doc_id(kind: str, payload: dict, source: str, signal_id: str) -> str:
@@ -307,6 +315,9 @@ def run_commitment_stage(
             counts[OUTCOME_SUPERSEDED] = counts.get(OUTCOME_SUPERSEDED, 0) + 1
             continue
 
+        if not cfg.extraction_enabled:
+            counts[OUTCOME_EXTRACTION_DISABLED] = counts.get(OUTCOME_EXTRACTION_DISABLED, 0) + 1
+            continue                   # no model configured: prose waits for one
         if extraction_stopped:
             continue                   # prose waits for the next run's budget
         prepared = load_prepared_signal(conn, source, sid)

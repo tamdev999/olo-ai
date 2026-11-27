@@ -89,6 +89,83 @@ class TestRendering:
         assert "2026-07-01" not in p.full_text and "2026-05-01" not in p.full_text
 
 
+
+def _raw_part(data: bytes, label: str, *, mime: str = "text/plain", part_id: str = "0") -> dict:
+    """A text part carrying *data* under the Content-Type label *label*."""
+    import base64
+    return {"partId": part_id, "mimeType": mime, "filename": "",
+            "headers": [{"name": "Content-Type", "value": f'{mime}; charset="{label}"'},
+                        {"name": "Content-Transfer-Encoding", "value": "quoted-printable"}],
+            "body": {"size": len(data), "data": base64.urlsafe_b64encode(data).decode().rstrip("=")}}
+
+
+class TestGmailTranscodedCharset:
+    """Live Google acceptance (2026-11-27, G3): a part sent as ISO-8859-1
+    quoted-printable (``Caf=E9``) came back from ``format=full`` as the
+    UTF-8 bytes ``43 61 66 c3 a9`` under its original ``charset=iso-8859-1``
+    label, and Olo rendered "CafÃ© dÃ©jÃ  vu"."""
+
+    TEXT = "Café déjà vu"
+    LIVE = TEXT.encode()                        # what Gmail returned (UTF-8)
+    WIRE = TEXT.encode("latin-1")               # what was sent
+
+    def test_the_live_bytes_are_the_reported_ones(self) -> None:
+        assert self.LIVE[:5] == bytes.fromhex("436166c3a9")
+
+    def test_utf8_under_a_latin1_label_reads_as_written(self) -> None:
+        _, p = _prepare(_msg(_raw_part(self.LIVE + b"\n", "iso-8859-1")))
+        assert self.TEXT in p.full_text and self.TEXT in p.authored_text
+        assert "Ã" not in p.full_text
+
+    def test_genuine_latin1_is_unchanged(self) -> None:
+        _, p = _prepare(_msg(_raw_part(self.WIRE + b"\n", "iso-8859-1")))
+        assert self.TEXT in p.full_text and "�" not in p.full_text
+
+    def test_html_only_with_the_mismatched_label(self) -> None:
+        html = b"<html><body><p>" + self.LIVE + b"</p><style>p{}</style></body></html>"
+        _, p = _prepare(_msg(_raw_part(html, "iso-8859-1", mime="text/html")))
+        assert self.TEXT in p.full_text and "<" not in p.full_text
+
+    def test_forwarded_and_attachment_parts_stay_out_of_the_body(self) -> None:
+        forwarded = {"partId": "2", "mimeType": "message/rfc822", "filename": "",
+                     "headers": [{"name": "Content-Type", "value": "message/rfc822"}],
+                     "body": {"size": 0}, "parts": [_raw_part(b"Ancien d\xe9j\xe0", "iso-8859-1",
+                                                              part_id="2.0")]}
+        payload = gf.multipart("multipart/mixed", [
+            _raw_part(self.LIVE, "iso-8859-1"),
+            gf.attachment_part("notes.txt", inline_text="OLO-ATTACHMENT-TEXT"), forwarded])
+        _, p = _prepare(_msg(payload))
+        assert self.TEXT in p.authored_text
+        assert "OLO-ATTACHMENT-TEXT" not in p.full_text and "Ancien" not in p.full_text
+
+    def test_every_text_path_agrees(self) -> None:
+        """Ingestion's text (olo.content.email_text) and the authored text the
+        extractor and Hindsight read decode the same way."""
+        from olo.content import email_text
+        raw = _msg(_raw_part(self.LIVE, "iso-8859-1"))
+        _, p = _prepare(raw)
+        assert email_text(raw).plain.strip() == self.TEXT and self.TEXT in p.authored_text
+
+    @pytest.mark.parametrize("data,label,want", [
+        ("Café".encode("latin-1"), "iso-8859-1", "Café"),
+        ("Café".encode(), "iso-8859-1", "Café"),          # Gmail-transcoded
+        ("Café".encode(), "windows-1252", "Café"),
+        ("“€”".encode("cp1252"), "windows-1252", "“€”"),         # cp1252 is not valid UTF-8
+        ("Plain ASCII".encode(), "iso-8859-1", "Plain ASCII"),
+        ("ありがとう".encode(), "shift_jis", "ありがとう"),
+        ("ありがとう".encode("shift_jis"), "shift_jis", "ありがとう"),
+        (b"bad \xff utf-8", "utf-8", "bad � utf-8"),
+        (b"no label \xe9", "", "no label �"),
+        ("Café".encode(), "x-unknown-charset", "Café"),
+        # The documented boundary: Latin-1 text that literally reads "Ã©" is
+        # byte-for-byte valid UTF-8 and is read as "é" (rule 2).
+        ("Ã©".encode("latin-1"), "iso-8859-1", "é"),
+    ])
+    def test_decoding_rules(self, data, label, want) -> None:
+        from olo.content import decode_text_part
+        assert decode_text_part(data, label) == want
+
+
 # ── Authored text vs quoted history ───────────────────────────────────────────
 
 class TestAuthoredText:

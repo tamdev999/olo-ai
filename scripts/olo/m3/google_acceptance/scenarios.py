@@ -3,7 +3,16 @@
 Every scenario names the manual action that precedes it (done by hand in the
 test accounts' Gmail and Calendar UIs, or by a runner command) and which
 identities it needs.  Test data is tagged: an email subject or event title
-carries ``[OLO-<ID>]`` so a check finds exactly its own data.
+carries ``[OLO-<ID>]`` so a check finds exactly its own data.  With a run id
+(``Ctx.run_id``; the seeder's subjects and titles end in ``acc <run id>``) a
+check sees only that run's data, so a diagnostic or repeated run in the same
+home cannot mix into an earlier run's verdict.
+
+Verdicts are point in time.  ``evaluate`` reuses a verdict already recorded
+for the same run, scenario and action (``frozen``) unless the scenario is
+re-checked explicitly, so later unrelated activity (more scenarios, the
+unattended E2 window, cleanup) cannot rewrite it; run.py keeps every verdict
+in an append-only log.
 
 Each scenario also has an evidence class, which says what a pass proves:
 
@@ -53,6 +62,7 @@ class Ctx:
     actions: dict[str, dict]
     mode: str = "A"
     facts: dict[str, Any] = field(default_factory=dict)
+    run_id: str = ""                     # "" = unscoped (runs before run ids)
 
 
 @dataclass(frozen=True)
@@ -72,15 +82,20 @@ class Outcome:
     id: str
     status: str
     details: dict
+    checked_at: str = ""                 # when the check ran ("" = no check ran)
+    action_at: str = ""                  # the action it judged
+    fresh: bool = False                  # evaluated now, not reused
 
 
 # ── olo.db helpers ────────────────────────────────────────────────────────────
 
 def _tagged(ctx: Ctx, tag: str, kinds=EMAIL_KINDS) -> list[dict]:
     marks = ",".join("?" * len(kinds))
+    run = f"%acc {ctx.run_id}%" if ctx.run_id else "%"
     rows = ctx.conn.execute(
         f"SELECT source, external_id, kind, subject, payload FROM signals WHERE kind IN ({marks})"
-        " AND subject LIKE ? ORDER BY occurred_at, id", (*kinds, f"%[OLO-{tag}]%")).fetchall()
+        " AND subject LIKE ? AND subject LIKE ? ORDER BY occurred_at, id",
+        (*kinds, f"%[OLO-{tag}]%", run)).fetchall()
     return [{"source": r[0], "sid": r[1], "kind": r[2], "subject": r[3],
              "payload": json.loads(r[4]) if isinstance(r[4], str) else dict(r[4] or {})} for r in rows]
 
@@ -345,10 +360,34 @@ def l3(ctx):
 
 
 def d1(ctx):
-    before = ctx.facts.get("signals_before_rerun")
-    after = ctx.conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
-    return before is not None and before == after and _dupes(ctx, "email.content") == 0, {
-        "signals_before_rerun": before, "signals_after_rerun": after}
+    """The rerun window (run.py rerun records the signal ids around it) holds
+    no second copy of anything stored before it: the same message (email
+    kinds), event revision (calendar kinds) or ledger source document.  New
+    mail or edits arriving meanwhile are legitimate; later ingestion is
+    outside the window and never counts."""
+    w = ctx.facts.get("rerun") or {}
+    if "max_signal_id_before" not in w or "max_signal_id_after" not in w:
+        return False, {"reason": "no rerun window recorded (run.py rerun records it)"}
+    lo, hi = int(w["max_signal_id_before"]), int(w["max_signal_id_after"])
+    e_marks, c_marks = ",".join("?" * len(EMAIL_KINDS)), ",".join("?" * len(CAL_KINDS))
+    email = ctx.conn.execute(
+        f"SELECT COUNT(*) FROM signals n WHERE n.id > ? AND n.id <= ? AND n.kind IN ({e_marks})"
+        " AND EXISTS (SELECT 1 FROM signals o WHERE o.id <= ? AND o.kind = n.kind AND o.source = n.source"
+        "  AND json_extract(o.payload,'$.message_id') = json_extract(n.payload,'$.message_id'))",
+        (lo, hi, *EMAIL_KINDS, lo)).fetchone()[0]
+    cal = ctx.conn.execute(
+        f"SELECT COUNT(*) FROM signals n WHERE n.id > ? AND n.id <= ? AND n.kind IN ({c_marks})"
+        " AND EXISTS (SELECT 1 FROM signals o WHERE o.id <= ? AND o.source = n.source"
+        "  AND json_extract(o.payload,'$.calendar_id') = json_extract(n.payload,'$.calendar_id')"
+        "  AND json_extract(o.payload,'$.event_id') = json_extract(n.payload,'$.event_id')"
+        "  AND json_extract(o.payload,'$.updated') = json_extract(n.payload,'$.updated'))",
+        (lo, hi, *CAL_KINDS, lo)).fetchone()[0]
+    versions = ctx.conn.execute(
+        "SELECT COUNT(*) FROM (SELECT source_doc_id, COUNT(*) n FROM commitment_versions"
+        " GROUP BY source_doc_id HAVING n > 1)").fetchone()[0]
+    return email == 0 and cal == 0 and versions == 0, {
+        "window": [lo, hi], "inserted_during_rerun": hi - lo, "duplicate_messages": email,
+        "duplicate_event_revisions": cal, "duplicate_ledger_versions": versions}
 
 
 def e1(ctx):
@@ -451,7 +490,13 @@ SCENARIOS: tuple[Scenario, ...] = (
 )
 
 
-def evaluate(ctx: Ctx, only: Optional[set[str]] = None) -> list[Outcome]:
+def evaluate(ctx: Ctx, only: Optional[set[str]] = None, *,
+             frozen: Optional[dict[str, Outcome]] = None,
+             recheck: frozenset[str] = frozenset(), now: str = "") -> list[Outcome]:
+    """One outcome per scenario.  ``frozen`` maps a scenario to the verdict
+    recorded for this run; it is reused while it judged the scenario's
+    current action and the scenario is not in ``recheck``."""
+    frozen = frozen or {}
     out: list[Outcome] = []
     for sc in SCENARIOS:
         if only and sc.id not in only:
@@ -469,16 +514,21 @@ def evaluate(ctx: Ctx, only: Optional[set[str]] = None) -> list[Outcome]:
         if act is None:
             out.append(Outcome(sc.id, "not_run", {"action": sc.action}))
             continue
+        prior = frozen.get(sc.id)
+        if prior is not None and prior.action_at == act.get("at", "") and sc.id not in recheck:
+            out.append(prior)
+            continue
         try:
             ok, details = sc.check(ctx)
         except Exception as exc:  # health: allow BLE001 -- a broken check is a recorded result
-            out.append(Outcome(sc.id, "error", {"error": f"{type(exc).__name__}: {exc}"[:400]}))
+            out.append(Outcome(sc.id, "error", {"error": f"{type(exc).__name__}: {exc}"[:400]},
+                               now, act.get("at", ""), True))
             continue
         details = {**details, "evidence": sc.evidence, "by": act.get("by", "operator")}
         status = "passed" if ok else "failed"
         if ok and sc.evidence == "simulated" and not real:
             status = "passed_simulated"
-        out.append(Outcome(sc.id, status, details))
+        out.append(Outcome(sc.id, status, details, now, act.get("at", ""), True))
     return out
 
 

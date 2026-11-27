@@ -29,8 +29,9 @@ Authored text  — ``authored_text`` drops ``>``-quoted lines and everything fro
                  commitment extractor and the Hindsight projection both use
                  ``PreparedSignal.authored_text`` (``authored_sha256``).
 MIME           — the readable body of a Gmail document: text/plain from
-                 multipart/alternative (HTML otherwise), each part decoded with
-                 its declared charset; attachments and attached messages are
+                 multipart/alternative (HTML otherwise), each part decoded by
+                 olo.content.decode_text_part (its declared charset, unless
+                 Gmail transcoded it to UTF-8); attachments and attached messages are
                  not body text; HTML loses head/style/script/comments and its
                  quote containers become quoted lines.
 
@@ -39,7 +40,6 @@ No side effects at import time; no network; blob reads are injected.
 from __future__ import annotations
 
 import base64
-import codecs
 import hashlib
 import html
 import json
@@ -51,6 +51,7 @@ from datetime import datetime
 from typing import Optional
 
 from olo.adapters.gmail_full import GMAIL_MSG_MEDIA_TYPE
+from olo.content import decode_text_part
 from olo.signals import format_utc
 
 __all__ = [
@@ -153,24 +154,21 @@ _CHARSET_RE = re.compile(r"""charset\s*=\s*["']?([A-Za-z0-9_.:+-]+)""", re.IGNOR
 
 
 def _part_charset(part: dict) -> str:
+    """The part's declared charset label, or "" when it declares none."""
     m = _CHARSET_RE.search(_part_header(part, "content-type"))
-    if not m:
-        return "utf-8"
-    try:
-        return codecs.lookup(m.group(1)).name
-    except LookupError:
-        return "utf-8"
+    return m.group(1) if m else ""
 
 
 def _part_text(part: dict) -> str:
-    """A text part's body decoded with its declared charset.
+    """A text part's body as text (olo.content.decode_text_part).
 
     The Gmail API has already undone the transfer encoding (base64,
-    quoted-printable): ``body.data`` is the part's raw bytes, base64url.
+    quoted-printable): ``body.data`` is the part's bytes, base64url — which
+    Gmail may have transcoded to UTF-8 under the original label.
     """
     data = (part.get("body") or {}).get("data") or ""
     raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
-    return raw.decode(_part_charset(part), errors="replace")
+    return decode_text_part(raw, _part_charset(part))
 
 
 def _is_attachment(part: dict) -> bool:

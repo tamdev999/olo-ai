@@ -5,13 +5,34 @@ Started the way olo.hindsight_service starts Hindsight (`--host 127.0.0.1
 server: ``HINDSIGHT_API_TENANT_API_KEY`` is enforced on every
 ``/v1/default/banks/...`` request, ``/health`` is open.  ``FAKE_TENANT_AUTH=off``
 in ``.env`` serves without authentication (a misconfigured server).
+``FAKE_PG0=on`` starts an embedded database the way Hindsight's pg0 does:
+detached (it outlives this server), under ``./.pg0/instances/fake/data``, and
+reused by the next server while it runs (tests/olo/fake_pg0.py).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+
+def _ensure_database() -> None:
+    data = Path(".pg0/instances/fake/data").resolve()
+    pidfile = data / "postmaster.pid"
+    if pidfile.exists():
+        pid = int(pidfile.read_text(encoding="utf-8").partition("\n")[0])
+        try:
+            if Path(f"/proc/{pid}/cwd").resolve() == data:
+                return                                  # running: reuse it
+        except OSError:
+            pass
+    subprocess.Popen([sys.executable, str(Path(__file__).with_name("fake_pg0.py")), str(data)],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True, env=dict(os.environ))
 
 
 def _env() -> dict[str, str]:
@@ -31,6 +52,8 @@ def main() -> None:
     env = _env()
     key = env.get("HINDSIGHT_API_TENANT_API_KEY", "")
     auth = env.get("FAKE_TENANT_AUTH", "on") != "off"
+    if env.get("FAKE_PG0") == "on":
+        _ensure_database()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):

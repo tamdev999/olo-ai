@@ -8,7 +8,8 @@ and tenant key).  This module owns that process:
   cache) in olo.db; the tenant key and port stay where setup.sh put them;
 * ``start`` / ``stop`` run it detached (its own session), cwd = the business
   home (Hindsight reads ``./.env``), the LLM key passed through the
-  environment only — never argv, never the business ``.env``;
+  environment only — never argv, never the business ``.env``; an operator
+  ``stop`` also stops the embedded database the business home owns;
 * ``supervise_once`` is one pass of a supervisor, run every minute by cron
   or in a loop (``hermes olo hindsight supervise --loop``).
 
@@ -53,8 +54,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-__all__ = ["Probe", "ServiceSpec", "configure", "migrate", "probe", "service_status",
-           "start", "stop", "supervise_once"]
+__all__ = ["Probe", "ServiceSpec", "business_home", "configure", "migrate", "probe",
+           "service_status", "start", "stop", "supervise_once"]
 
 START_GRACE = timedelta(minutes=3)
 UNHEALTHY_AFTER = 3
@@ -268,9 +269,60 @@ def start(conn: sqlite3.Connection, spec: ServiceSpec, now: str, *,
     return pid
 
 
+def _owned_postmasters(home: Path) -> list:
+    """Live postmasters of this business's embedded databases (pg0).
+
+    Hindsight starts its embedded PostgreSQL detached, so it outlives the
+    server: terminating the server alone left the database running (live
+    acceptance, 2026-11-27).  Ownership is proved by the data directory,
+    never by a command line: each ``<home>/.pg0/instances/*/data/postmaster.pid``
+    names its postmaster, and that process must run as this user with that
+    data directory as its working directory (PostgreSQL chdirs into it).  A
+    stale pid file whose pid now belongs to anything else matches nothing.
+    """
+    import psutil
+    me = psutil.Process().username()
+    out = []
+    for pidfile in sorted(home.glob(".pg0/instances/*/data/postmaster.pid")):
+        try:
+            pid = int(pidfile.read_text(encoding="utf-8").partition("\n")[0])
+            proc = psutil.Process(pid)
+            if proc.username() != me or Path(proc.cwd()).resolve() != pidfile.parent.resolve():
+                continue
+        except (OSError, ValueError, psutil.Error):
+            continue
+        out.append(proc)
+    return out
+
+
+def _stop_postmasters(home: Path, timeout: float) -> list[int]:
+    """Fast-shutdown (SIGINT) each owned postmaster; immediate (SIGQUIT) if it hangs."""
+    import signal
+    import psutil
+    stopped = []
+    for proc in _owned_postmasters(home):
+        try:
+            proc.send_signal(signal.SIGINT)
+            try:
+                proc.wait(timeout)
+            except psutil.TimeoutExpired:
+                proc.send_signal(signal.SIGQUIT)
+                proc.wait(timeout)
+        except psutil.NoSuchProcess:
+            pass
+        stopped.append(proc.pid)
+    return stopped
+
+
 def stop(conn: sqlite3.Connection, now: str, *, reason: str = "operator",
-         timeout: float = 15.0) -> bool:
-    """Stop the recorded process (verified by pid and creation time)."""
+         timeout: float = 15.0, home: Optional[Path] = None) -> bool:
+    """Stop the recorded process (verified by pid and creation time).
+
+    With *home* (the business home), also stop the embedded databases that
+    home owns (``_owned_postmasters``), so nothing of this business keeps
+    running; the supervisor's restart of an unhealthy server passes none and
+    keeps the database.  True when anything was stopped.
+    """
     import psutil
     migrate(conn)
     st = _state(conn)
@@ -284,11 +336,21 @@ def stop(conn: sqlite3.Connection, now: str, *, reason: str = "operator",
             proc.kill()
             proc.wait(timeout)
         stopped = True
+    databases = _stop_postmasters(home, timeout) if home is not None else []
+    detail = reason + (f"; embedded database stopped (pid {', '.join(map(str, databases))})"
+                       if databases else "")
     conn.execute("BEGIN IMMEDIATE")
-    _save(conn, now, pid=None, create_time=None, status="stopped", failures=0, detail=reason)
-    _event(conn, now, "stopped", reason)
+    _save(conn, now, pid=None, create_time=None, status="stopped", failures=0, detail=detail)
+    _event(conn, now, "stopped", detail)
     conn.execute("COMMIT")
-    return stopped
+    return stopped or bool(databases)
+
+
+def business_home(conn: sqlite3.Connection, hermes_home: Path) -> Optional[Path]:
+    """The configured business's home (setup.sh), or None when unconfigured."""
+    migrate(conn)
+    row = conn.execute("SELECT business_id FROM hindsight_service WHERE id=1").fetchone()
+    return hermes_home / "businesses" / row[0] if row else None
 
 
 def _restarts_within(conn: sqlite3.Connection, now: datetime, window: timedelta) -> int:

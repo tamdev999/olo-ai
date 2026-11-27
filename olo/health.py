@@ -90,19 +90,31 @@ def record_run(conn: sqlite3.Connection, source: str, now: str, *, run_status: s
                error: Optional[str], fetched: int, inserted: int,
                identity: tuple[int, int, int], commitment_enabled: bool,
                commitment: dict, projection_enabled: bool, projection: dict,
-               stage_errors: Optional[dict] = None, max_attempts: int = 5) -> RunHealth:
-    """Persist this run's stage outcomes; return what made it not successful."""
+               stage_errors: Optional[dict] = None, coverage: Optional[dict] = None,
+               max_attempts: int = 5) -> RunHealth:
+    """Persist this run's stage outcomes; return what made it not successful.
+
+    ``coverage`` is the last batch's ``FetchBatch.coverage``: when the source
+    still has streams to visit (a Calendar cycle cut short by its budget) the
+    ingest stage is ``degraded`` with the coverage in its detail, not ``ok``.
+    """
     stage_errors = stage_errors or {}
     degraded: list[str] = []
     conn.execute("BEGIN IMMEDIATE")
     try:
         ok = run_status in ("succeeded", "partial")
+        incomplete = ok and bool(coverage) and not coverage.get("complete", True)
         operator = next((msg for marker, msg in _OPERATOR_ERRORS if error and marker in error), None)
-        _upsert(conn, source, "ingest", now, "ok" if ok else "failed",
+        _upsert(conn, source, "ingest", now,
+                "degraded" if incomplete else ("ok" if ok else "failed"),
                 {"run_status": run_status, "fetched": fetched, "inserted": inserted,
-                 "error": (error or "")[:300]}, operator)
+                 "error": (error or "")[:300],
+                 **({"coverage": coverage} if coverage else {})}, operator)
         if not ok:
             degraded.append(f"ingest {run_status}: {(error or '')[:160]}")
+        elif incomplete:
+            degraded.append(f"ingest incomplete: {coverage.get('pending')} of "
+                            f"{coverage.get('calendars', '?')} streams still pending")
 
         resolved, unresolved, failed = identity
         _upsert(conn, source, "identity", now, "degraded" if failed else "ok",
@@ -266,8 +278,10 @@ def assess(conn: sqlite3.Connection, now: datetime, *,
         source, stage, attempt, success, status, detail, fails, operator = tuple(r)
         if status in ("failed", "degraded") and stage != "operator":
             d = json.loads(detail or "{}")
-            what = d.get("error") or _nonzero(d.get("counts") or {}, (
-                *PROJECTION_DEGRADED, *COMMITMENT_DEGRADED)) or d
+            incomplete = not (d.get("coverage") or {}).get("complete", True)
+            what = (d.get("error") or ({"incomplete coverage": d["coverage"]} if incomplete else None)
+                    or _nonzero(d.get("counts") or {}, (*PROJECTION_DEGRADED, *COMMITMENT_DEGRADED))
+                    or d)
             out.append(Condition("degraded", f"{source}/{stage}",
                                  f"{status} ({fails} consecutive): {str(what)[:200]}"))
         if operator:

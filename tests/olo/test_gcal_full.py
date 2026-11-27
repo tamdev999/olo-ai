@@ -682,8 +682,10 @@ def test_p0a_all_calendars_serviced_in_round_robin() -> None:
         )
 
 
-def test_p0a_round_robin_index_advances() -> None:
-    """P0-A: cursor-embedded next_cal index advances on each steady-state tick."""
+def test_p0a_one_steady_state_run_visits_every_calendar() -> None:
+    """P0-A: one run (fetch until has_more is False) syncs every calendar and
+    ends with its cycle empty — not one calendar per run (live acceptance,
+    2026-11-27; see tests/olo/test_gcal_cycle.py)."""
     with FakeGoogleServer() as fake:
         CAL_IDS = ["cal-x@example.com", "cal-y@example.com"]
         for cal_id in CAL_IDS:
@@ -693,34 +695,13 @@ def test_p0a_round_robin_index_advances() -> None:
 
         a = _make_adapter(fake)
         cursor, _ = _drive_to_steady(a)
-
-        # Add new events to trigger incr fetches
         for cal_id in CAL_IDS:
-            sec = fake.calendar._extra_calendar_states.get(cal_id)
-            if sec:
-                sec.add_event(f"rr-{cal_id}")
+            fake.calendar._extra_calendar_states[cal_id].add_event(f"rr-{cal_id}")
+        fake.calendar.add_event("rr-primary")
 
-        # Collect next_cal indices over several ticks
-        indices: list[int] = []
-        cur = cursor
-        for _ in range(10):
-            b = a.fetch(cur, limit=10)
-            try:
-                comp = json.loads(b.next_cursor)
-                if isinstance(comp, dict) and "next_cal" in comp:
-                    indices.append(comp["next_cal"])
-            except (json.JSONDecodeError, ValueError):
-                pass
-            cur = b.next_cursor
-            if not b.has_more:
-                break
-
-        # At least some ticks should have advanced the index
-        if indices:
-            # Verify index cycles within [0, len(CAL_IDS))
-            n = len(CAL_IDS)
-            for idx in indices:
-                assert 0 <= idx < n, f"P0-A: next_cal index {idx} out of range [0,{n})"
+        cursor, sigs = _drive_to_steady(a, cursor)
+        assert {s.payload["calendar_id"] for s in sigs} == {"primary", *CAL_IDS}
+        assert json.loads(cursor)["cycle"] == []
 
 
 # ── P0-B: Deleted calendar filtering on full scan ────────────────────────────

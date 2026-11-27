@@ -190,7 +190,8 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _install(tmp_path: Path, *, auth: str = "on", key: str = "tenant-key") -> ServiceSpec:
+def _install(tmp_path: Path, *, auth: str = "on", key: str = "tenant-key",
+             pg0: bool = False) -> ServiceSpec:
     venv = tmp_path / "venv" / "bin"
     venv.mkdir(parents=True)
     exe = venv / "hindsight-api"
@@ -198,8 +199,8 @@ def _install(tmp_path: Path, *, auth: str = "on", key: str = "tenant-key") -> Se
     exe.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n', encoding="utf-8")
     exe.chmod(0o755)
     s = spec(tmp_path, executable=exe, port=_free_port(), key=key)
-    (s.home / ".env").write_text(f"HINDSIGHT_API_TENANT_API_KEY=tenant-key\nFAKE_TENANT_AUTH={auth}\n",
-                                 encoding="utf-8")
+    (s.home / ".env").write_text(f"HINDSIGHT_API_TENANT_API_KEY=tenant-key\nFAKE_TENANT_AUTH={auth}\n"
+                                 f"FAKE_PG0={'on' if pg0 else 'off'}\n", encoding="utf-8")
     return s
 
 
@@ -254,5 +255,79 @@ def test_the_probe_catches_a_misconfigured_server(conn, tmp_path, auth, key, exp
         wait_until(lambda: probe(s).status != "down", timeout=30, what="server up")
         assert probe(s).status == expected
         assert supervise_once(conn, s, datetime.now(UTC)) == "misconfigured"
+    finally:
+        stop(conn, datetime.now(UTC).isoformat(), reason="test teardown")
+
+
+
+# ── The embedded database (pg0) the business home owns ───────────────────────
+
+def _database_pid(s: ServiceSpec) -> int | None:
+    pidfile = s.home / ".pg0" / "instances" / "fake" / "data" / "postmaster.pid"
+    try:
+        return int(pidfile.read_text(encoding="utf-8").partition("\n")[0])
+    except (OSError, ValueError):
+        return None
+
+
+def _gone(pid: int) -> bool:
+    return not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+
+
+def _details(conn) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT detail FROM hindsight_service_events ORDER BY id")]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass       # the database is detached, outside the test's tree
+def test_stop_ends_the_server_and_its_embedded_database(conn, tmp_path) -> None:
+    """Live acceptance, 2026-11-27: ``hermes olo hindsight stop`` stopped the
+    server and left its embedded PostgreSQL running.  Repeated start/stop,
+    then a crash and restart, then stop: nothing of the business is left, and
+    a process merely named by a stale pid file is never touched.  Real
+    signals are delivered: the stand-in database is detached exactly like
+    pg0's, so it is reparented away from the test once its server exits."""
+    s = _install(tmp_path, pg0=True)
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+    stale = s.home / ".pg0" / "instances" / "stale" / "data"
+    stale.mkdir(parents=True)
+    (stale / "postmaster.pid").write_text(f"{bystander.pid}\n", encoding="utf-8")
+    try:
+        for _ in range(2):                                          # repeated start / stop
+            start(conn, s, datetime.now(UTC).isoformat())
+            wait_until(lambda: probe(s).status == "healthy" and _database_pid(s), timeout=30,
+                       what="server and database up")
+            server, db = service_status(conn)["pid"], _database_pid(s)
+            assert stop(conn, datetime.now(UTC).isoformat(), home=s.home) is True
+            wait_until(lambda: _gone(server) and _gone(db), timeout=30, what="both stopped")
+            assert probe(s).status == "down"
+        # A crash: the server dies, its detached database keeps running and is
+        # reused by the restarted server; the supervisor never stops it.
+        start(conn, s, datetime.now(UTC).isoformat())
+        wait_until(lambda: probe(s).status == "healthy" and _database_pid(s), timeout=30, what="up")
+        db = _database_pid(s)
+        psutil.Process(service_status(conn)["pid"]).kill()
+        wait_until(lambda: probe(s).status == "down", timeout=30, what="server dead")
+        assert supervise_once(conn, s, datetime.now(UTC)) == "restarting"
+        wait_until(lambda: probe(s).status == "healthy", timeout=30, what="server back")
+        assert _database_pid(s) == db and not _gone(db)
+        assert stop(conn, datetime.now(UTC).isoformat(), home=s.home) is True
+        wait_until(lambda: _gone(db), timeout=30, what="database stopped")
+        assert "embedded database stopped" in _details(conn)[-1]
+        assert bystander.poll() is None                             # never signalled
+    finally:
+        stop(conn, datetime.now(UTC).isoformat(), reason="test teardown", home=s.home)
+        bystander.kill()
+        bystander.wait(10)
+
+
+@pytest.mark.platforms("posix")
+def test_stop_without_a_database_is_unchanged(conn, tmp_path) -> None:
+    s = _install(tmp_path)
+    try:
+        start(conn, s, datetime.now(UTC).isoformat())
+        wait_until(lambda: probe(s).status == "healthy", timeout=30, what="server up")
+        assert stop(conn, datetime.now(UTC).isoformat(), home=s.home) is True
+        assert stop(conn, datetime.now(UTC).isoformat(), home=s.home) is False      # not running
     finally:
         stop(conn, datetime.now(UTC).isoformat(), reason="test teardown")

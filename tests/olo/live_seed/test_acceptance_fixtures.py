@@ -28,6 +28,11 @@ from google_acceptance import guard, run, scenarios
 ACCOUNT, CUSTOMER = "biz@acceptance.test", "customer@acceptance.test"
 RUN = "acc20261127t120000beef"
 T0 = datetime(2026, 11, 27, 12, 0, tzinfo=UTC)
+#: The live acceptance account had four readable calendars; the seeded events
+#: live on the primary one, which a one-calendar-per-run sync visited only
+#: every fourth run (C2/C3/C6 failed live, 2026-11-27).
+SECONDARY_CALENDARS = ("team@group.calendar.test", "family@group.calendar.test",
+                       "ops@group.calendar.test")
 
 
 def _session(api, manifest=None, evidence=None) -> af.Session:
@@ -199,6 +204,8 @@ def acceptance(tmp_path, monkeypatch):
     home, evidence = tmp_path / "home", tmp_path / "evidence"
     home.mkdir()
     with FakeGoogleServer(email=ACCOUNT) as google:
+        for cal in SECONDARY_CALENDARS:
+            google.add_secondary_calendar_with_events(cal, f"Calendar {cal}")
         _save_creds(google, "accept", home)
         env = {"OLO_ACCEPTANCE_HOME": str(home), "OLO_ACCEPTANCE_ACCOUNT": ACCOUNT,
                "OLO_ACCEPTANCE_CONFIRM": ACCOUNT, "OLO_ACCEPTANCE_CUSTOMER": CUSTOMER,
@@ -253,3 +260,115 @@ def test_second_identity_scenarios_are_never_passed_on_seeded_data(acceptance) -
     run.record_action(pf, "C4", "a genuine second account invited the business", by="real-identity")
     run.check(pf, {"C4"}, "A")
     assert _results(evidence)["C4"]["status"] == "failed"   # evaluated now: no such data exists
+
+
+# ── Harness integrity (live acceptance 2026-11-27: misleading late verdicts) ──
+
+def _seed_run(pf, s, sid: str) -> None:
+    for phase in range(1, len(af.PHASES[sid]) + 1):
+        af.seed_phase(s, sid, phase)
+        run.sync(pf, max_requests=300, limit=5, run=s.run_id)
+    run.record_action(pf, sid, f"seeded, run {s.run_id}", by="seeder", run=s.run_id)
+
+
+def _other_run(google_api, evidence) -> af.Session:
+    other = "acc20261127t130000cafe"
+    return af.Session(google_api, other, ACCOUNT, CUSTOMER,
+                      af.new_run({"runs": {}}, other, ACCOUNT, CUSTOMER, T0), evidence)
+
+
+def test_a_check_sees_only_its_own_run(acceptance) -> None:
+    """A diagnostic run of the same scenario in the same home (C2/C3 live)
+    must not mix into the original run's verdict."""
+    pf, s, evidence = acceptance
+    _seed_run(pf, s, "C3")
+    diag = _other_run(s.api, evidence)
+    _seed_run(pf, diag, "C3")
+    assert run.check(pf, {"C3"}, "A", run=s.run_id) in (0, 4)
+    assert _results(evidence)["C3"]["details"]["outcomes"] == ["applied", "no_change"]
+    assert run.check(pf, {"C3"}, "A", run=diag.run_id) in (0, 4)
+    assert _results(evidence)["C3"]["details"]["outcomes"] == ["applied", "no_change"]
+    run.record_action(pf, "C3", "unscoped look", by="seeder")
+    run.check(pf, {"C3"}, "A")                       # unscoped: both runs' revisions
+    assert _results(evidence)["C3"]["details"]["outcomes"].count("applied") == 2
+
+
+def test_a_verdict_is_not_rewritten_by_later_activity(acceptance) -> None:
+    """D1 passed when checked, then the final aggregate check reported it
+    failed because later scenarios had added signals (live, 2026-11-27)."""
+    pf, s, evidence = acceptance
+    _seed_run(pf, s, "G8")
+    window = run.rerun(pf, mode="A", key_file=None, run=s.run_id)
+    run.check(pf, {"D1", "G8"}, "A", run=s.run_id)
+    first = _results(evidence)
+    assert first["D1"]["status"] == "passed", first["D1"]
+    assert first["D1"]["details"]["window"] == [window["max_signal_id_before"],
+                                                window["max_signal_id_after"]]
+    for sid in ("G9", "C8"):                          # much later, unrelated ingestion
+        _seed_run(pf, s, sid)
+    run.check(pf, None, "A", run=s.run_id)
+    later = _results(evidence)
+    for sid in ("D1", "G8"):
+        assert later[sid]["status"] == first[sid]["status"]
+        assert later[sid]["checked_at"] == first[sid]["checked_at"]      # the recorded verdict
+    # Re-evaluated on request, D1 still judges only its own window.
+    run.check(pf, {"D1"}, "A", run=s.run_id, recheck=frozenset({"D1"}))
+    assert _results(evidence)["D1"]["status"] == "passed"
+    log = [json.loads(line) for line in (evidence / "verdicts.jsonl").read_text().splitlines()]
+    assert [v["status"] for v in log if v["id"] == "D1"] == ["passed", "passed"]
+
+
+def test_a_new_action_is_judged_afresh(acceptance) -> None:
+    pf, s, evidence = acceptance
+    run.record_action(pf, "C3", "nothing seeded yet", by="seeder", run=s.run_id)
+    run.check(pf, {"C3"}, "A", run=s.run_id)
+    assert _results(evidence)["C3"]["status"] == "failed"
+    _seed_run(pf, s, "C3")                            # records a new action
+    run.check(pf, {"C3"}, "A", run=s.run_id)
+    assert _results(evidence)["C3"]["status"] == "passed"
+
+
+def test_d1_counts_duplicates_inside_its_window_only(acceptance) -> None:
+    pf, s, evidence = acceptance
+    _seed_run(pf, s, "G8")
+    run.rerun(pf, mode="A", key_file=None, run=s.run_id)
+    conn = run._conn(pf)
+    # A second copy of a message stored before the window, ingested inside it.
+    row = conn.execute("SELECT source, kind, subject, payload, occurred_at FROM signals"
+                       " WHERE kind='email.content' ORDER BY id LIMIT 1").fetchone()
+    lo = conn.execute("SELECT MAX(id) FROM signals").fetchone()[0]
+    conn.execute("INSERT INTO signals (source, external_id, kind, occurred_at, subject, payload,"
+                 " content_sha256, schema_version, ingested_at, run_id)"
+                 " SELECT source, external_id || ':dup', kind, occurred_at, subject, payload,"
+                 " content_sha256, schema_version, ingested_at, run_id FROM signals"
+                 " WHERE id=(SELECT MIN(id) FROM signals WHERE kind='email.content')")
+    conn.commit()
+    facts = json.loads((evidence / "facts.json").read_text())
+    facts["runs"][s.run_id]["rerun"]["max_signal_id_after"] = lo + 1
+    (evidence / "facts.json").write_text(json.dumps(facts))
+    run.check(pf, {"D1"}, "A", run=s.run_id)
+    d1 = _results(evidence)["D1"]
+    assert row is not None and d1["status"] == "failed" and d1["details"]["duplicate_messages"] == 1
+
+
+def test_expire_cursor_handles_a_bare_gmail_history_id() -> None:
+    """``expire-cursor gmail`` raised TypeError on the live plain cursor."""
+    assert run.stale_cursor("gmail", "4182") == "1"            # json.loads gives an int
+    with pytest.raises(SystemExit):
+        run.stale_cursor("gmail", json.dumps({"phase": "backfill"}))
+    cal = json.loads(run.stale_cursor("gcal", json.dumps(
+        {"v": 2, "cals": {"a": {"phase": "incr", "sync_token": "t"}, "b": {"phase": "full"}}})))
+    assert cal["cals"]["a"]["sync_token"] != "t" and "sync_token" not in cal["cals"]["b"]
+
+
+def test_cleanup_dry_run_reports_items_already_in_trash(tmp_path) -> None:
+    """After a cleanup, the dry run said ``would be trashed`` again (live)."""
+    with FakeGoogleServer(email=ACCOUNT) as google:
+        api = FakeWriteApi(google, ACCOUNT)
+        s = _session(api)
+        af.seed_phase(s, "G8", 1)
+        assert {r["result"] for r in af.cleanup(api, RUN, s.run, dry_run=True)
+                if r["type"] == "message"} == {"would be trashed"}
+        assert {r["result"] for r in af.cleanup(api, RUN, s.run) if r["type"] == "message"} == {"trashed"}
+        after = [r["result"] for r in af.cleanup(api, RUN, s.run, dry_run=True) if r["type"] == "message"]
+        assert after and set(after) == {"already in trash"}

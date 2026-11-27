@@ -11,8 +11,10 @@ B4-content (M2b): calendar.event.content signals with full event document blob
 Registered as "gcal"; per-account source = "gcal_<alias>".
 
 Opus audit fixes (M2b):
-  - P0-A: round-robin calendar scheduling via cursor-embedded next_cal index;
-    prevents secondary calendars from starving when multiple are registered.
+  - P0-A: no calendar starves.  Live Google acceptance (2026-11-27) showed the
+    original one-calendar-per-run round-robin delayed every change by up to
+    N runs and collapsed quick edits, so each run now syncs a full cycle over
+    every calendar (cursor ``cycle``; see GcalAdapter._fetch_next).
   - P0-B: deleted calendars filtered from full-scan registration.
   - P1-D: deduplicate "primary"/email-id after v1 migration.
   - P1-E: optional calendars= option to restrict which calendars are synced.
@@ -37,9 +39,9 @@ from olo.adapters import (
 from olo.signals import NormalizedSignal
 
 _MAX_EMPTY_PAGES = 20
-# Fix 7: maximum consecutive event pages for a single calendar before yielding
-# to other calendars in round-robin. Prevents one calendar from monopolizing
-# all fetch ticks during a large paginated sync.
+# Fix 7: maximum consecutive event pages for a single calendar before it moves
+# to the back of the current cycle, so one large paginated sync cannot starve
+# the other calendars.
 _MAX_CONSECUTIVE_CAL_PAGES = 10
 _MAX_SUMMARY = 1024
 _MAX_LOCATION = 1024
@@ -47,6 +49,10 @@ _MAX_ATTENDEES = 100
 _MAX_RECURRENCE = 20
 _SIGNAL_SUBJECT_MAX = 256
 _MAX_CALENDARS = 50   # calendarList cap; warn if exceeded
+# Signal-free steps one fetch() may take through a cycle (each step is one
+# request and either finishes a calendar or a calendarList page).  Past it the
+# fetch stops and the remaining calendars are reported pending.
+_MAX_CYCLE_STEPS = 2 * _MAX_CALENDARS + 8
 
 # Composite cursor schema version
 _CURSOR_V2 = 2
@@ -400,129 +406,99 @@ class GcalAdapter(MonitorAdapter):
         limit: int,
         fetch_time: datetime,
     ) -> FetchBatch:
-        """Decide which sub-fetch to do next and do it.
+        """Advance the current sync cycle until a page carries signals or the cycle ends.
 
-        Priority:
-        1. If list cursor needs syncing (None or has page_token): calendarList bootstrap
-           or mid-pagination.
-        2. If any calendar has pending work (page_token or phase=full): do that calendar.
-        3. Steady-state: calendarList incremental (discovers changes), then update comp
-           and proceed to events for one calendar — selected by round-robin via the
-           cursor-embedded `next_cal` index (P0-A: prevents secondary calendar starvation).
-        4. No calendars registered — return empty.
+        A *cycle* is one pass over every registered calendar, kept in the
+        cursor as ``cycle`` (the calendar ids still to visit, in order):
 
-        Step 3 combines calendarList + events in one fetch() call so the cron runner
-        doesn't need an extra tick just for calendarList housekeeping.
+        * A cycle starts with calendarList (full on bootstrap, incremental
+          afterwards), then lists every registered calendar.
+        * Each calendar is synced from its own cursor until Google hands back a
+          ``nextSyncToken``, and then leaves the cycle.  Calendars added
+          mid-cycle join at the end; removed ones are dropped.
+        * A calendar that pages ``_MAX_CONSECUTIVE_CAL_PAGES`` times in a row
+          moves to the back, so one large backlog cannot starve the others.
+
+        The runner keeps calling while ``has_more`` holds, so one scheduled run
+        normally covers every calendar.  A run cut short by its batch budget
+        leaves ``cycle`` in the committed cursor, and the next run resumes it.
+        ``FetchBatch.coverage`` reports what is still pending, so incomplete
+        coverage is visible rather than reported as done.
+
+        Incremental sync gives each changed event's state *at fetch time*.  An
+        event edited twice between fetches shows only its final state: the
+        ledger converges on that state, but the intermediate revision is never
+        seen.  Full change history is not reconstructed.
         """
+        comp = {k: v for k, v in comp.items() if k != "next_cal"}  # pre-cycle round-robin
+        for _ in range(_MAX_CYCLE_STEPS):
+            batch = self._cycle_step(client, comp, limit, fetch_time)
+            if batch.signals or not batch.has_more:
+                return batch
+            comp = json.loads(batch.next_cursor)
+        # Step bound reached without a signal page: stop here, keep the cycle.
+        return self._cycle_batch((), comp, has_more=False)
+
+    def _cycle_batch(self, signals: tuple, comp: dict, *, has_more: bool) -> FetchBatch:
+        cals = comp.get("cals") or {}
+        pending = [c for c in comp.get("cycle") or [] if c in cals]
+        return FetchBatch(
+            signals=signals,
+            next_cursor=json.dumps(comp),
+            has_more=has_more,
+            coverage={"calendars": len(cals), "pending": len(pending),
+                      "complete": not pending},
+        )
+
+    def _cycle_step(
+        self,
+        client: "GoogleClient",
+        comp: dict,
+        limit: int,
+        fetch_time: datetime,
+    ) -> FetchBatch:
+        """One request's worth of the current cycle (see ``_fetch_next``)."""
         list_state = comp.get("list")
-        cals_state: dict = comp.get("cals") or {}
+        cycle: list[str] = list(comp.get("cycle") or [])
+        # calendarList has no usable sync token yet (bootstrap, a further page,
+        # or a list sync that never completed): list again before events.
+        list_pending = not isinstance(list_state, dict) or bool(list_state.get("page_token")) \
+            or not list_state.get("sync_token")
 
-        # 1. calendarList bootstrap or mid-pagination.
-        # After calendarList completes, immediately proceed to events if no signals
-        # (avoids returning has_more=True with empty signals, which the runner rejects).
-        if list_state is None or (isinstance(list_state, dict) and list_state.get("page_token")):
-            cal_list_result = self._fetch_calendar_list(client, comp, limit, fetch_time)
-            if cal_list_result.signals:
-                return cal_list_result
-            if not cal_list_result.has_more:
-                return cal_list_result
-            # No signals but has_more=True (calendars registered, events pending).
-            new_comp = json.loads(cal_list_result.next_cursor)
-            new_cals = new_comp.get("cals") or {}
-            for cal_id, cal_cursor in new_cals.items():
-                if isinstance(cal_cursor, dict):
-                    if cal_cursor.get("page_token") or cal_cursor.get("phase") == "full":
-                        result = self._fetch_calendar_events(
-                            client, new_comp, cal_id, cal_cursor, limit, fetch_time
-                        )
-                        if result.signals or not result.has_more:
-                            return result
-                        # Empty + still pending → update comp and continue cascade
-                        new_comp = json.loads(result.next_cursor)
-                        new_cals = new_comp.get("cals") or {}
-            for cal_id, cal_cursor in new_cals.items():
-                if isinstance(cal_cursor, dict) and cal_cursor.get("phase") == "incr":
-                    result = self._fetch_calendar_events(
-                        client, new_comp, cal_id, cal_cursor, limit, fetch_time
-                    )
-                    if result.signals or not result.has_more:
-                        return result
-                    new_comp = json.loads(result.next_cursor)
-                    new_cals = new_comp.get("cals") or {}
-            # All cascaded calendars exhausted with no signals
-            return FetchBatch(
-                signals=(),
-                next_cursor=json.dumps(new_comp),
-                has_more=self._any_pending(new_comp, exclude_cal=None),
-            )
+        if list_pending or not cycle:
+            # calendarList: bootstrap, a further page, or the start of a new cycle.
+            starting = not cycle
+            result = self._fetch_calendar_list(client, comp, limit, fetch_time)
+            new_comp = json.loads(result.next_cursor)
+            cals = new_comp.get("cals") or {}
+            if starting:
+                cycle = sorted(cals)
+            else:
+                cycle = [c for c in cycle if c in cals] + sorted(c for c in cals if c not in cycle)
+            new_comp["cycle"] = cycle
+            list_more = bool((new_comp.get("list") or {}).get("page_token"))
+            return self._cycle_batch(result.signals, new_comp, has_more=bool(cycle) or list_more)
 
-        # 2. Any calendar with pending work (non-incr cursor, or has_more page_token)
-        # Fix 7: enforce maximum consecutive pages per calendar to prevent one
-        # calendar from monopolizing all fetch ticks during a large paginated sync.
-        for cal_id, cal_cursor in cals_state.items():
-            if isinstance(cal_cursor, dict):
-                consecutive = cal_cursor.get("_pages", 0)
-                if cal_cursor.get("page_token"):
-                    if consecutive >= _MAX_CONSECUTIVE_CAL_PAGES:
-                        # Yield: reset counter and skip to round-robin (step 3)
-                        # Other calendars will get a tick; this one resumes after.
-                        new_comp = dict(comp)
-                        new_cals = dict(cals_state)
-                        reset_cursor = dict(cal_cursor)
-                        reset_cursor["_pages"] = 0
-                        new_cals[cal_id] = reset_cursor
-                        new_comp["cals"] = new_cals
-                        # Fall through to step 3 with reset cursor
-                        comp = new_comp
-                        cals_state = new_cals
-                        break
-                    return self._fetch_calendar_events(
-                        client, comp, cal_id, cal_cursor, limit, fetch_time
-                    )
-                if cal_cursor.get("phase") == "full":
-                    return self._fetch_calendar_events(
-                        client, comp, cal_id, cal_cursor, limit, fetch_time
-                    )
+        cal_id = cycle[0]
+        cals = comp.get("cals") or {}
+        if cal_id not in cals or not isinstance(cals[cal_id], dict):
+            return self._cycle_batch((), {**comp, "cycle": cycle[1:]}, has_more=True)
 
-        # 3. Steady-state: calendarList incremental first, then pick the NEXT calendar
-        #    by round-robin to prevent starvation of secondary calendars (P0-A).
-        if isinstance(list_state, dict) and list_state.get("sync_token"):
-            cal_list_result = self._fetch_calendar_list(client, comp, limit, fetch_time)
-            new_comp = json.loads(cal_list_result.next_cursor)
-
-            if cal_list_result.signals:
-                return cal_list_result
-
-            # Round-robin calendar selection: use next_cal index stored in cursor
-            new_cals = new_comp.get("cals") or {}
-            incr_cal_ids = sorted(
-                cal_id for cal_id, c in new_cals.items()
-                if isinstance(c, dict) and c.get("phase") == "incr"
-            )
-
-            if not incr_cal_ids:
-                # First handle newly registered cals needing full sync
-                for cal_id, cal_cursor in new_cals.items():
-                    if isinstance(cal_cursor, dict):
-                        if cal_cursor.get("page_token") or cal_cursor.get("phase") == "full":
-                            return self._fetch_calendar_events(
-                                client, new_comp, cal_id, cal_cursor, limit, fetch_time
-                            )
-                return cal_list_result
-
-            # Advance the round-robin index
-            current_idx = comp.get("next_cal", 0)
-            next_idx = (current_idx + 1) % len(incr_cal_ids)
-            chosen_id = incr_cal_ids[current_idx % len(incr_cal_ids)]
-            chosen_cursor = new_cals[chosen_id]
-            new_comp["next_cal"] = next_idx
-
-            return self._fetch_calendar_events(
-                client, new_comp, chosen_id, chosen_cursor, limit, fetch_time
-            )
-
-        # 4. No calendars registered
-        return FetchBatch(signals=(), next_cursor=json.dumps(comp), has_more=False)
+        result = self._fetch_calendar_events(client, comp, cal_id, cals[cal_id], limit, fetch_time)
+        new_comp = json.loads(result.next_cursor)
+        state = (new_comp.get("cals") or {}).get(cal_id) or {}
+        if state.get("phase") == "incr" and not state.get("page_token"):
+            cycle = cycle[1:]                                   # calendar caught up
+        elif not result.has_more:
+            # The calendar yielded (an empty-page run): stop this fetch; the
+            # cycle resumes it next time and coverage reports it pending.
+            new_comp["cycle"] = cycle
+            return self._cycle_batch(result.signals, new_comp, has_more=False)
+        elif state.get("_pages", 0) >= _MAX_CONSECUTIVE_CAL_PAGES:
+            new_comp["cals"][cal_id] = {**state, "_pages": 0}
+            cycle = cycle[1:] + [cal_id]                        # fairness: back of the cycle
+        new_comp["cycle"] = cycle
+        return self._cycle_batch(result.signals, new_comp, has_more=bool(cycle))
 
     # ── calendarList sync ─────────────────────────────────────────────────────
 
@@ -840,16 +816,13 @@ class GcalAdapter(MonitorAdapter):
     ) -> dict:
         """Return a new composite cursor with the updated state for cal_id.
 
-        Preserves next_cal (round-robin index) from the input comp.
+        The caller (``_cycle_step``) re-attaches the cycle.
         """
         new_comp = {
             "v": _CURSOR_V2,
             "list": comp.get("list"),
             "cals": dict(comp.get("cals") or {}),
         }
-        # P0-A: preserve round-robin index
-        if "next_cal" in comp:
-            new_comp["next_cal"] = comp["next_cal"]
         if next_sync_token:
             new_comp["cals"][cal_id] = {
                 "phase": "incr",

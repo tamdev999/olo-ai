@@ -6,8 +6,15 @@
   python scripts/olo/m3/google_acceptance/run.py action <ID> [--by operator|seeder|real-identity] [--note TEXT]
   python scripts/olo/m3/google_acceptance/run.py expire-cursor gmail|gcal
   python scripts/olo/m3/google_acceptance/run.py rerun
-  python scripts/olo/m3/google_acceptance/run.py check [ID ...]
+  python scripts/olo/m3/google_acceptance/run.py check [ID ...] [--recheck ID ...]
   python scripts/olo/m3/google_acceptance/run.py teardown
+
+``--run-id`` (default ``$OLO_ACCEPTANCE_RUN``) scopes actions, facts and checks
+to one seeder run: a check sees only data tagged ``acc <run id>``.  Each
+verdict is appended to ``verdicts.jsonl`` and reused by later ``check`` calls
+for the same run and action, so later activity cannot rewrite it; ``--recheck``
+evaluates a scenario again (both verdicts stay in the log).  Without a run id
+the checks are unscoped, as before run ids existed.
 
 Test data comes from the seeder project
 (``python -m tests.olo.live_seed.acceptance_fixtures``) or by hand; ``action
@@ -61,12 +68,54 @@ def _now() -> str:
 
 
 def _json(path: Path, default):
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+    return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else default
 
 
 def _write(path: Path, obj) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, indent=2, sort_keys=True, default=str), encoding="utf-8")
+
+
+def _scoped(doc: dict, run: str) -> dict:
+    """The part of an evidence document (actions, facts) that belongs to *run*.
+
+    Unscoped ("") is the top level, as written before run ids existed."""
+    return doc.setdefault("runs", {}).setdefault(run, {}) if run else doc
+
+
+def _verdicts(evidence: Path, run: str) -> dict:
+    """The latest recorded verdict of each scenario of *run*."""
+    path = evidence / "verdicts.jsonl"
+    latest = {}
+    for line in path.read_text(encoding="utf-8-sig").splitlines() if path.exists() else ():
+        v = json.loads(line)
+        if v.get("run", "") == run:
+            latest[v["id"]] = scenarios.Outcome(v["id"], v["status"], v["details"],
+                                                v["checked_at"], v["action_at"])
+    return latest
+
+
+#: Verdicts that are recorded and reused; an error re-runs its check.
+_RECORDED = ("passed", "passed_simulated", "failed")
+
+
+def stale_cursor(source: str, raw: str | None) -> str:
+    """The committed cursor made stale: Gmail's is a bare history id (string
+    or number), Calendar's a composite whose incremental sync tokens are
+    replaced by a long-expired one."""
+    if source == "gmail":
+        try:
+            parsed = json.loads(raw or "")
+        except ValueError:
+            parsed = raw
+        if isinstance(parsed, dict):
+            raise SystemExit("gmail cursor is mid-backfill; let the backfill finish first")
+        return "1"
+    cur = json.loads(raw or "{}")
+    for cal in (cur.get("cals") or {}).values():
+        if isinstance(cal, dict) and cal.get("phase") == "incr":
+            cal["sync_token"] = "CPDAlvWDx70CEPDAlvWDx70CGAU="   # long-expired form
+    return json.dumps(cur)
 
 
 def _preflight(env=os.environ, client_factory=None) -> guard.Preflight:
@@ -91,7 +140,7 @@ def _conn(pf: guard.Preflight):
 
 
 def sync(pf: guard.Preflight, *, max_requests: int, limit: int, client_factory=None,
-         mode: str = "A", key_file: str | None = None) -> dict:
+         mode: str = "A", key_file: str | None = None, run: str = "") -> dict:
     """Both sources once through the real worker, budgeted and recorded."""
     from olo.activation import ActivationRequest, activate
     from olo.adapters.gcal import GcalAdapter
@@ -121,14 +170,16 @@ def sync(pf: guard.Preflight, *, max_requests: int, limit: int, client_factory=N
         results[adapter.source] = {"status": r.status, "error": r.error, "fetched": r.fetched,
                                    "inserted": r.inserted, "commitment": r.commitment,
                                    "projection": {k: v for k, v in r.projection.items() if v}}
-    facts = _json(s.evidence / "facts.json", {})
+    doc = _json(s.evidence / "facts.json", {})
+    facts = _scoped(doc, run)
     facts["history_pages"] = max(facts.get("history_pages", 0), 1 + sum(
         1 for c in client.calls if c["path"] == "/users/me/history" and "pageToken" in c["params"]))
     facts["calendar_pages"] = max(facts.get("calendar_pages", 0), 1 + sum(
         1 for c in client.calls if c["path"].endswith("/events") and "pageToken" in c["params"]))
-    _write(s.evidence / "facts.json", facts)
+    _write(s.evidence / "facts.json", doc)
     client.save(s.evidence, _now())
-    out = {"at": _now(), "requests": client.requests, "budget": max_requests, "runs": results}
+    out = {"at": _now(), "run": run, "requests": client.requests, "budget": max_requests,
+           "runs": results}
     with (s.evidence / "syncs.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(out, default=str) + "\n")
     return out
@@ -137,16 +188,17 @@ def sync(pf: guard.Preflight, *, max_requests: int, limit: int, client_factory=N
 ACTORS = ("operator", "seeder", "real-identity")
 
 
-def record_action(pf: guard.Preflight, sid: str, note: str, by: str = "operator") -> None:
+def record_action(pf: guard.Preflight, sid: str, note: str, by: str = "operator",
+                  run: str = "") -> None:
     known = {sc.id for sc in scenarios.SCENARIOS}
     if sid not in known:
         raise SystemExit(f"unknown scenario {sid!r}; known: {sorted(known)}")
     if by not in ACTORS:
         raise SystemExit(f"--by must be one of {ACTORS}")
     path = pf.settings.evidence / "actions.json"
-    actions = _json(path, {})
-    actions[sid] = {"at": _now(), "note": note, "by": by}
-    _write(path, actions)
+    doc = _json(path, {})
+    _scoped(doc, run)[sid] = {"at": _now(), "note": note, "by": by}
+    _write(path, doc)
 
 
 def expire_cursor(pf: guard.Preflight, source: str) -> str:
@@ -154,39 +206,66 @@ def expire_cursor(pf: guard.Preflight, source: str) -> str:
     from olo.store import get_checkpoint
     conn = _conn(pf)
     name = f"{source}_{pf.settings.alias}"
-    cur = json.loads(get_checkpoint(name, conn) or "{}")
-    if source == "gmail":
-        cur["start_history_id"] = "1"
-    else:
-        for cal in (cur.get("cals") or {}).values():
-            if isinstance(cal, dict) and cal.get("phase") == "incr":
-                cal["sync_token"] = "CPDAlvWDx70CEPDAlvWDx70CGAU="   # long-expired form
     # As the M2b failure stage does (test_google_live): the cursor row only.
-    conn.execute("UPDATE sync_checkpoints SET cursor=? WHERE source=?", (json.dumps(cur), name))
+    conn.execute("UPDATE sync_checkpoints SET cursor=? WHERE source=?",
+                 (stale_cursor(source, get_checkpoint(name, conn)), name))
     conn.commit()
     return name
 
 
-def check(pf: guard.Preflight, only: set[str] | None, mode: str) -> int:
+def rerun(pf: guard.Preflight, *, mode: str, key_file: str | None, run: str) -> dict:
+    """D1: both jobs twice back to back, with the signal-id window around them."""
+    conn = _conn(pf)
+
+    def top() -> int:
+        return conn.execute("SELECT COALESCE(MAX(id), 0) FROM signals").fetchone()[0]
+
+    window = {"max_signal_id_before": top(), "at": _now()}
+    for _ in range(2):
+        sync(pf, max_requests=200, limit=5, mode=mode, key_file=key_file, run=run)
+    window["max_signal_id_after"] = top()
+    path = pf.settings.evidence / "facts.json"
+    doc = _json(path, {})
+    _scoped(doc, run)["rerun"] = window
+    _write(path, doc)
+    record_action(pf, "D1", "rerun twice", run=run)
+    return window
+
+
+def check(pf: guard.Preflight, only: set[str] | None, mode: str, *, run: str = "",
+          recheck: frozenset[str] = frozenset()) -> int:
     s = pf.settings
     conn = _conn(pf)
-    facts = _json(s.evidence / "facts.json", {})
-    ctx = scenarios.Ctx(conn, s.account, s.customer, _json(s.evidence / "actions.json", {}),
-                        mode=mode, facts=facts)
-    outcomes = scenarios.evaluate(ctx, only)
+    facts_doc = _json(s.evidence / "facts.json", {})
+    actions = _scoped(_json(s.evidence / "actions.json", {}), run)
+    ctx = scenarios.Ctx(conn, s.account, s.customer, actions, mode=mode,
+                        facts=_scoped(facts_doc, run), run_id=run)
+    now = _now()
+    outcomes = scenarios.evaluate(ctx, only, frozen=_verdicts(s.evidence, run),
+                                  recheck=recheck, now=now)
     verdict, code = scenarios.verdict(outcomes)
-    facts.update(ctx.facts)
-    _write(s.evidence / "facts.json", facts)
-    _write(s.evidence / "results.json", {"at": _now(), "verdict": verdict, "mode": mode,
+    _write(s.evidence / "facts.json", facts_doc)          # ctx.facts is the run's part of it
+    with (s.evidence / "verdicts.jsonl").open("a", encoding="utf-8") as fh:
+        for o in outcomes:
+            if o.fresh and o.status in _RECORDED:
+                fh.write(json.dumps({"run": run, "id": o.id, "status": o.status, "details": o.details,
+                                     "checked_at": o.checked_at, "action_at": o.action_at},
+                                    default=str) + "\n")
+    _write(s.evidence / "results.json", {"at": now, "run": run, "verdict": verdict, "mode": mode,
                                          "outcomes": [o.__dict__ for o in outcomes]})
-    lines = [f"# Google acceptance results ({_now()}, mode {mode}): {verdict}", "",
-             "| Scenario | Evidence | Result | Details |", "|---|---|---|---|"]
+    lines = [f"# Google acceptance results ({now}, mode {mode}, run {run or 'unscoped'}): {verdict}",
+             "", "| Scenario | Evidence | Result | Checked at | Details |", "|---|---|---|---|---|"]
     evidence = {sc.id: sc.evidence for sc in scenarios.SCENARIOS}
-    lines += [f"| {o.id} | {evidence[o.id]} | {o.status} | `{json.dumps(o.details, default=str)[:300]}` |"
-              for o in outcomes]
+    lines += [f"| {o.id} | {evidence[o.id]} | {o.status} | {o.checked_at or '-'} |"
+              f" `{json.dumps(o.details, default=str)[:300]}` |" for o in outcomes]
     (s.evidence / "results.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if not run:
+        print("note: no --run-id / $OLO_ACCEPTANCE_RUN; checks are not scoped to a run",
+              file=sys.stderr)
     for o in outcomes:
-        print(f"{o.id:4s} {evidence[o.id]:15s} {o.status:16s} {json.dumps(o.details, default=str)[:140]}")
+        reused = "" if o.fresh or not o.checked_at else f" (as checked {o.checked_at})"
+        print(f"{o.id:4s} {evidence[o.id]:15s} {o.status:16s} "
+              f"{json.dumps(o.details, default=str)[:140]}{reused}")
     print(f"verdict: {verdict}")
     return code
 
@@ -209,6 +288,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mode", choices=("A", "B"), default="A",
                     help="B adds paid inference; it needs its own approval and --key-file")
     ap.add_argument("--key-file", help="mode B: owner-only DeepSeek key file")
+    ap.add_argument("--run-id", default=os.environ.get("OLO_ACCEPTANCE_RUN", ""),
+                    help="seeder run id to scope actions, facts and checks to"
+                         " (default $OLO_ACCEPTANCE_RUN)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("environment")
     sub.add_parser("preflight")
@@ -226,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("rerun")
     ck = sub.add_parser("check")
     ck.add_argument("ids", nargs="*")
+    ck.add_argument("--recheck", nargs="*", default=[],
+                    help="evaluate these scenarios again instead of reusing their recorded verdict")
     sub.add_parser("teardown")
     args = ap.parse_args(argv)
     if args.cmd == "teardown":
@@ -241,25 +325,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "sync":
         print(json.dumps(sync(pf, max_requests=args.max_requests, limit=args.limit,
-                              mode=args.mode, key_file=args.key_file), indent=2, default=str))
+                              mode=args.mode, key_file=args.key_file, run=args.run_id),
+                         indent=2, default=str))
         return 0
     if args.cmd == "action":
-        record_action(pf, args.id, args.note, args.by)
+        record_action(pf, args.id, args.note, args.by, run=args.run_id)
         return 0
     if args.cmd == "expire-cursor":
         print(f"cursor of {expire_cursor(pf, args.source)} made stale")
-        record_action(pf, "G10" if args.source == "gmail" else "C7", "expire-cursor")
+        record_action(pf, "G10" if args.source == "gmail" else "C7", "expire-cursor",
+                      run=args.run_id)
         return 0
     if args.cmd == "rerun":
-        conn = _conn(pf)
-        facts = _json(pf.settings.evidence / "facts.json", {})
-        facts["signals_before_rerun"] = conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
-        _write(pf.settings.evidence / "facts.json", facts)
-        for _ in range(2):
-            sync(pf, max_requests=200, limit=5, mode=args.mode, key_file=args.key_file)
-        record_action(pf, "D1", "rerun twice")
+        print(json.dumps(rerun(pf, mode=args.mode, key_file=args.key_file, run=args.run_id)))
         return 0
-    return check(pf, set(args.ids) or None, args.mode)
+    return check(pf, set(args.ids) or None, args.mode, run=args.run_id,
+                 recheck=frozenset(args.recheck))
 
 
 if __name__ == "__main__":

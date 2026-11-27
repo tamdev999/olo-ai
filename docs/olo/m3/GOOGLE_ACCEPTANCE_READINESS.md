@@ -179,6 +179,7 @@ python scripts/olo/m3/google_acceptance/run.py sync
 #     export OLO_ACCEPTANCE_EVIDENCE=/home/olo_hs/accept/evidence
 #     python -m tests.olo.live_seed.seeder auth
 #     RUN=$(python -m tests.olo.live_seed.acceptance_fixtures new-run)
+#   olo_hs shell: export OLO_ACCEPTANCE_RUN=$RUN   # scopes every action, fact and check to this run
 #   root:   python -m tests.olo.live_seed.acceptance_fixtures seed --run-id $RUN --scenario G5 --phase 1
 python scripts/olo/m3/google_acceptance/run.py sync
 #   root:   python -m tests.olo.live_seed.acceptance_fixtures seed --run-id $RUN --scenario G5 --phase 2
@@ -194,6 +195,8 @@ python scripts/olo/m3/google_acceptance/run.py expire-cursor gcal && \
 python scripts/olo/m3/google_acceptance/run.py rerun                 # D1
 
 # 7. Final report (every scenario), then E6 last, then cleanup and teardown.
+#    Verdicts already recorded for this run are reported as checked (verdicts.jsonl);
+#    `check --recheck <ID>` evaluates one again, keeping both in the log.
 python scripts/olo/m3/google_acceptance/run.py check
 #   root:   python -m tests.olo.live_seed.acceptance_fixtures cleanup --run-id $RUN --dry-run   # then without
 python scripts/olo/m3/google_acceptance/run.py teardown              # prints the steps
@@ -212,6 +215,8 @@ Mode B adds `--mode B --key-file /secure/deepseek.env` to `sync` and `check`, an
   - `needs_approval`, for mode B;
   - `needs_identity`, for a `second_identity` scenario not recorded `--by real-identity`.
 - **Who produced the data** is recorded with `run.py action <ID> --by operator|seeder|real-identity`, and appears in each outcome with its evidence class.
+- **Run scoping.** With `--run-id` (or `$OLO_ACCEPTANCE_RUN`) actions and facts are kept per run and a check sees only data tagged `acc <run id>`, so a diagnostic run in the same home cannot change another run's verdict.
+- **Point-in-time verdicts.** Each verdict is appended to `verdicts.jsonl` with when it was checked and which action it judged. A later `check` reuses it until that scenario's action is recorded again or it is re-checked with `--recheck`, so later activity (more scenarios, the E2 window, cleanup) never rewrites it. D1 judges the signal-id window recorded around its own rerun.
 - **Verdict:**
   - `rejected` (exit 1) on any failure or error;
   - `incomplete` (exit 2) while anything is not run or awaits approval;
@@ -223,7 +228,7 @@ Mode B adds `--mode B --key-file /secure/deepseek.env` to `sync` and `check`, an
   - `api_shapes.json`;
   - `requests.jsonl` (every request: endpoint template, parameter names, budget);
   - `syncs.jsonl`;
-  - `results.json`, `results.md`;
+  - `results.json`, `results.md`, `verdicts.jsonl` (every verdict, append-only);
   - `fixtures.jsonl` (each seeder write: run, scenario, phase, operation, Google ID).
 - **olo.db** keeps the source evidence (signals, blobs) in the acceptance home; it is archived or deleted at teardown.
 

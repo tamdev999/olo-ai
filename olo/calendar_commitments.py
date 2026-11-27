@@ -48,7 +48,13 @@ commitment.
 Recurring series.  A series master has no single date, so it is not a dated
 commitment.  Google returns each moved or cancelled occurrence as its own
 event (``recurringEventId`` + ``originalStartTime``), tracked as its own
-commitment under the occurrence's id.
+commitment under the occurrence's id.  A series and all its occurrences share
+one iCalendar UID (confirmed against live Google, 2026-11-27), so for them
+the UID names the series, not a meeting: it never links or aliases a
+recurring revision, and cancelling or moving one occurrence cannot reach
+another's commitment.  The occurrence's place in its series is recorded
+apart, as the alias ``series:<series key>@<original start>`` (basis
+``series_occurrence``), which no matcher consults.
 
 Ordering.  Revisions apply in Google's ``updated`` order: an older revision
 arriving after a newer one (a full resync after an expired sync token,
@@ -147,10 +153,22 @@ class Revision:
     series: bool                    # recurring series master
     start: Optional[str] = None     # start dateTime with offset (None: all-day)
     ical_uid: str = ""              # iCalUID shared with its invitation emails
+    series_key: str = ""            # the series' key, for an occurrence of one
+    original_start: str = ""        # the occurrence's original slot, as Google gave it
 
     @property
     def doc_id(self) -> str:
         return f"{self.key}@{self.updated}"
+
+    @property
+    def recurring(self) -> bool:
+        """A series master or one of its occurrences: its iCalUID names the series."""
+        return self.series or bool(self.series_key)
+
+    @property
+    def link_uid(self) -> str:
+        """The iCalUID that identifies this one meeting, or "" (recurring)."""
+        return "" if self.recurring else self.ical_uid
 
 
 @dataclass(frozen=True)
@@ -202,6 +220,8 @@ def read_revision(doc: dict, calendar_id: str) -> Revision:
     organiser_self = bool((doc.get("organizer") or {}).get("self")) or bool(
         me and me.get("organizer"))
     updated = utc_instant((doc.get("updated") or "").replace("Z", "+00:00"))
+    series_id = str(doc.get("recurringEventId") or "")
+    original = doc.get("originalStartTime") if isinstance(doc.get("originalStartTime"), dict) else {}
     return Revision(
         key=event_key(calendar_id, str(doc.get("id") or "")),
         status=str(doc.get("status") or "confirmed"),
@@ -213,6 +233,8 @@ def read_revision(doc: dict, calendar_id: str) -> Revision:
         series=bool(doc.get("recurrence")) and not doc.get("recurringEventId"),
         start=_start_time(doc.get("start")),
         ical_uid=str(doc.get("iCalUID") or ""),
+        series_key=event_key(calendar_id, series_id) if series_id else "",
+        original_start=str(original.get("dateTime") or original.get("date") or ""),
     )
 
 
@@ -283,12 +305,13 @@ def _current(conn: sqlite3.Connection, commitment_id: str) -> Current:
 
 def _owners(conn: sqlite3.Connection, rev: Revision) -> list[tuple[str, str, str]]:
     """(commitment, customer, basis) of every commitment holding this event's
-    identity: its provider key as name or alias, or its iCalendar UID."""
+    identity: its provider key as name or alias, or — for a single,
+    non-recurring event only — its iCalendar UID."""
     out = [(r[0], r[1], "provider_key") for r in conn.execute(
         "SELECT id, contact_id FROM commitments WHERE event_type='meeting' AND business_key=?",
         (rev.key,))]
     for alias, basis in ((rev.key, "provider_key"),
-                         (f"ical:{rev.ical_uid}" if rev.ical_uid else "", "ical_uid")):
+                         (f"ical:{rev.link_uid}" if rev.link_uid else "", "ical_uid")):
         target = alias_target(conn, alias) if alias else None
         if target and all(target != o[0] for o in out):
             row = conn.execute("SELECT contact_id FROM commitments WHERE id=?", (target,)).fetchone()
@@ -381,6 +404,7 @@ def _document_from_payload(payload: dict) -> dict:
                       for a in payload.get("attendees") or [] if isinstance(a, dict)],
         "recurrence": payload.get("recurrence") or [],
         "recurringEventId": payload.get("recurring_event_id"),
+        "iCalUID": payload.get("ical_uid") or "",
     }
 
 
@@ -462,10 +486,14 @@ def process_calendar_signal(
                 outcome = _LEDGER_OUTCOME[applied.outcome]
                 reason = f"{step.reason}; {applied.outcome.value}: {applied.message}"
                 commitment_id, version = applied.commitment_id, applied.version
-                if commitment_id and rev.ical_uid and outcome == OUTCOME_APPLIED:
-                    if not add_alias(conn, f"ical:{rev.ical_uid}", commitment_id, "ical_uid",
+                if commitment_id and rev.link_uid and outcome == OUTCOME_APPLIED:
+                    if not add_alias(conn, f"ical:{rev.link_uid}", commitment_id, "ical_uid",
                                      rev.doc_id, now):
                         reason += "; invitation UID already names another commitment"
+                if (commitment_id and rev.series_key and rev.original_start
+                        and outcome == OUTCOME_APPLIED):
+                    add_alias(conn, f"series:{rev.series_key}@{rev.original_start}",
+                              commitment_id, "series_occurrence", rev.doc_id, now)
         record(conn, source, signal_id, STATUS_OF[outcome], outcome, reason, now,
                commitment_id=commitment_id, version=version, attempted=False)
         conn.execute("COMMIT")

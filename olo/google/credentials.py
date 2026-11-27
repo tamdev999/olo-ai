@@ -211,6 +211,15 @@ class GoogleAccountCredentials:
     def has_calendar_scope(self) -> bool:
         return bool(self.granted_scopes & CALENDAR_SCOPES)
 
+    def scope_labels(self) -> list[str]:
+        """The granted scopes, short and sorted (``gmail.readonly``, ...).
+
+        Exactly what the token holds — never labels inferred from scope
+        families (the connect message printed ``gmail.metadata``/``calendar``
+        for a token holding the three read-only v2 scopes).
+        """
+        return sorted(s.removeprefix("https://www.googleapis.com/auth/") for s in self.granted_scopes)
+
     def is_full_content_profile(self) -> bool:
         """True when this credential has the M2b full-content scope profile."""
         return self.scope_profile == SCOPE_PROFILE_FULL_V1

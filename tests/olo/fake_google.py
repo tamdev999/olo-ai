@@ -273,7 +273,17 @@ class FakeCalendarState:
             self._incr_events.append(ev)
 
     def consume_incr(self) -> list[FakeCalendarEvent]:
-        evs = list(self._incr_events)
+        """Events changed since the last sync, each once, in its current state.
+
+        Like Google: incremental sync reports *that* an event changed, with
+        its state at fetch time — never the intermediate revisions of an event
+        edited twice between syncs (live acceptance, 2026-11-27, C2/C3/C6).
+        """
+        latest: dict[str, FakeCalendarEvent] = {}
+        for ev in self._incr_events:
+            latest.pop(ev.id, None)
+            latest[ev.id] = self.events.get(ev.id, ev)
+        evs = list(latest.values())
         self._incr_events.clear()
         self.sync_token = f"synctoken_{len(self.events)}"
         return evs

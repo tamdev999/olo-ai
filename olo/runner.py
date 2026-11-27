@@ -169,6 +169,16 @@ def _recover_pending(
     )
 
 
+def _final_status(coverage: Optional[dict]) -> str:
+    """The status of a run whose last batch said ``has_more=False``.
+
+    An adapter that stopped with streams still to visit (a Calendar cycle the
+    batch budget cut short) leaves them in its committed cursor for the next
+    run; this run did not cover everything, so it is ``partial``.
+    """
+    return "partial" if coverage and not coverage.get("complete", True) else "succeeded"
+
+
 # ── Default owner ─────────────────────────────────────────────────────────────
 
 def _default_owner() -> str:
@@ -501,6 +511,7 @@ def run_source(
     backfilled = resumed = 0
 
     ds: dict = {"stage": None, "commitment": {}, "projection": {}, "errors": {}}
+    coverage: Optional[dict] = None      # last batch's FetchBatch.coverage
 
     def _downstream() -> tuple[dict, dict]:
         from olo.store import renew_lease
@@ -531,7 +542,7 @@ def run_source(
                 identity=(id_resolved, id_unresolved, id_failed),
                 commitment_enabled=commitment is not None, commitment=ds["commitment"],
                 projection_enabled=projection is not None, projection=ds["projection"],
-                stage_errors=ds["errors"],
+                stage_errors=ds["errors"], coverage=coverage,
                 max_attempts=getattr(commitment, "max_attempts", 5))
         except Exception as exc:
             print(f"olo: could not record pipeline health: {type(exc).__name__}: {exc}",
@@ -597,6 +608,7 @@ def run_source(
                 pending_audit_events=getattr(batch, "pending_audit_events", ()),
             )
             batches += 1
+            coverage = batch.coverage
             fetched += len(batch.signals)
             inserted += b_ins
             duplicates += b_dup
@@ -660,8 +672,9 @@ def run_source(
             if not batch.has_more:
                 c_counts, p_counts = _downstream()
                 final_cursor = get_checkpoint(source, conn)
-                updated = finish_run(source, run_id, "succeeded", conn, clock=clock)
-                actual_status = "succeeded" if updated else "failed"
+                done = _final_status(coverage)
+                updated = finish_run(source, run_id, done, conn, clock=clock)
+                actual_status = done if updated else "failed"
                 actual_error = None if updated else "run was abandoned by a successor before finish_run"
                 health = _health(actual_status, actual_error)
                 conn.close()

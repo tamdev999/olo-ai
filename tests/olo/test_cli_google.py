@@ -445,3 +445,34 @@ def test_upgrade_scope_union_exits_nonzero(
         _cmd_google_connect(ns)
 
     assert exc_info.value.code == 1
+
+
+# ── Reported scopes are the granted ones (live acceptance, 2026-11-27) ───────
+
+def test_status_reports_exactly_the_granted_read_only_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """The connect message and status printed ``['gmail.metadata', 'calendar']``
+    for a token holding the three read-only v2 scopes."""
+    from datetime import UTC, datetime
+
+    from olo.google.credentials import (
+        CALENDAR_LIST_SCOPE, CALENDAR_READONLY_SCOPE, GMAIL_READONLY_SCOPE, SCOPE_PROFILE_FULL_V1,
+        GoogleAccountCredentials, credential_lock, save_credentials,
+    )
+    from olo.hermes_plugin.cli import _cmd_google_status
+
+    _home(tmp_path, monkeypatch)
+    creds = GoogleAccountCredentials(
+        alias="livetest", client_id="cid", client_secret="cs", refresh_token="rt",
+        granted_scopes=frozenset({GMAIL_READONLY_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_LIST_SCOPE}),
+        email_address="biz@example.com", refresh_token_issued_at=datetime.now(UTC),
+        oauth_publishing_status="testing", api_base_override=None, scope_profile=SCOPE_PROFILE_FULL_V1)
+    with credential_lock("livetest"):
+        save_credentials(creds)
+    want = "['calendar.calendarlist.readonly', 'calendar.events.readonly', 'gmail.readonly']"
+    assert str(creds.scope_labels()) == want
+    _cmd_google_status(_ns(check=False))
+    _cmd_status(_ns())
+    out = capsys.readouterr().out
+    assert out.count(want) == 2 and "gmail.metadata" not in out and "'calendar'" not in out

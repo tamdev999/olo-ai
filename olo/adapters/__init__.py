@@ -47,12 +47,19 @@ class FetchBatch:
     subject_type and subject_id keys are forwarded to _audit.
     The runner passes these straight through to ingest_batch; adapters must
     NOT write them to the DB directly (that would break atomicity).
+
+    coverage: for adapters that sync several streams per run (Calendar), what
+    the committed cursor still has to visit: ``{"complete": bool, "pending":
+    int, ...}``.  A final batch (``has_more=False``) whose coverage is not
+    complete makes the run ``partial`` and the ingest stage ``degraded``
+    (olo.health), so a budget that cannot cover every stream is visible.
     """
 
     signals: tuple[NormalizedSignal, ...]
     next_cursor: str | None
     has_more: bool
     pending_audit_events: tuple[dict, ...] = ()
+    coverage: dict | None = None
 
 
 # ── MonitorAdapter ABC ────────────────────────────────────────────────────────

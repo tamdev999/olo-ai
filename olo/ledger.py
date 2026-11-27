@@ -271,11 +271,14 @@ _UNRESOLVED_ADDED = (
 #: by the calendar event and by the invitation emails Gmail delivers for it)
 #: names the commitment it was first recorded on; an event bearing that
 #: identity belongs to it.  One alias names one commitment, forever.
+#: ``series:<series key>@<original start>`` (basis series_occurrence) records
+#: which recurring series an occurrence's commitment belongs to; it is never
+#: used to match an event (a recurring series' UID names every occurrence).
 _ALIASES_DDL = """\
 CREATE TABLE IF NOT EXISTS commitment_aliases (
     alias          TEXT NOT NULL PRIMARY KEY,
     commitment_id  TEXT NOT NULL,
-    basis          TEXT NOT NULL,       -- provider_key | ical_uid | operator
+    basis          TEXT NOT NULL,       -- provider_key | ical_uid | operator | series_occurrence
     source_doc_id  TEXT NOT NULL,
     recorded_at    TEXT NOT NULL,
     FOREIGN KEY (commitment_id) REFERENCES commitments (id)

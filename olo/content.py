@@ -131,8 +131,62 @@ def _html_to_text(html_str: str) -> str:
 
 # ── Charset-aware part body decode ────────────────────────────────────────────
 
+_CHARSET_ALIASES = {
+    "windows-1252": "cp1252",
+    "win-1252": "cp1252",
+    "windows-1251": "cp1251",
+    "iso-8859-1": "latin-1",
+    "iso8859-1": "latin-1",
+}
+
+
+def decode_text_part(raw: bytes, declared: str) -> str:
+    """A MIME text part's bytes as text: deterministic and conservative.
+
+    The Gmail API's ``format=full`` undoes the transfer encoding but may also
+    transcode the part to UTF-8 while keeping its original Content-Type
+    label.  Live Google acceptance (2026-11-27, G3) returned the UTF-8 bytes
+    ``43 61 66 c3 a9`` ("Café") for a part sent as ISO-8859-1
+    quoted-printable (``Caf=E9``) and still labelled ``charset=iso-8859-1``.
+
+    Rules, in order:
+
+    1. Declared (or missing) UTF-8: decode as UTF-8; invalid bytes become
+       U+FFFD.
+    2. Bytes that are valid UTF-8 *and* contain a multi-byte sequence win
+       over any other label.  Genuine single-byte text is valid UTF-8 with a
+       multi-byte sequence only when it literally pairs a lead byte
+       (U+00C2–U+00F4: "Â"…"ô") with continuation bytes (U+0080–U+00BF,
+       C1 controls and "¡"…"¿"), as in "Ã©".  That is the mojibake this
+       rule exists to prevent, not ordinary prose.
+    3. Otherwise the declared charset, strictly; an unknown label, or bytes
+       invalid in it, fall back to UTF-8 with U+FFFD.
+
+    Pure ASCII decodes the same under every rule.  No text is normalised:
+    each code point decoded is kept, so distinct characters stay distinct.
+    """
+    label = _CHARSET_ALIASES.get((declared or "utf-8").strip().lower(),
+                                 (declared or "utf-8").strip().lower())
+    try:
+        codec = codecs.lookup(label).name
+    except LookupError:
+        codec = "utf-8"
+    if codec == "utf-8":
+        return raw.decode("utf-8", errors="replace")
+    try:
+        text = raw.decode("utf-8")
+        if len(text) < len(raw):          # at least one multi-byte sequence
+            return text
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode(codec)
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
+
 def _decode_part_body(raw_data: str | bytes, charset: str) -> str:
-    """Decode base64-encoded part body or raw bytes to str, using the declared charset."""
+    """Decode a base64url part body (or raw bytes) with ``decode_text_part``."""
     if isinstance(raw_data, str):
         # Gmail inline body.data is base64url
         try:
@@ -141,23 +195,7 @@ def _decode_part_body(raw_data: str | bytes, charset: str) -> str:
             raw_bytes = raw_data.encode("utf-8", errors="replace")
     else:
         raw_bytes = raw_data
-
-    # Try the declared charset, fall back to UTF-8 with replacement
-    charset = (charset or "utf-8").strip().lower()
-    # Normalize common aliases
-    _ALIASES = {
-        "windows-1252": "cp1252",
-        "win-1252": "cp1252",
-        "windows-1251": "cp1251",
-        "iso-8859-1": "latin-1",
-        "iso8859-1": "latin-1",
-    }
-    charset = _ALIASES.get(charset, charset)
-    try:
-        codecs.lookup(charset)
-    except LookupError:
-        charset = "utf-8"
-    return raw_bytes.decode(charset, errors="replace")
+    return decode_text_part(raw_bytes, charset)
 
 
 # ── EmailText result ──────────────────────────────────────────────────────────

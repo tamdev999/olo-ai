@@ -45,14 +45,9 @@ def _cmd_status(args: argparse.Namespace) -> None:
             for alias in accounts:
                 try:
                     creds = load_credentials(alias)
-                    scopes_short = []
-                    if creds.has_gmail_scope():
-                        scopes_short.append("gmail.metadata")
-                    if creds.has_calendar_scope():
-                        scopes_short.append("calendar")
                     print(
                         f"    {alias}: email_hash={email_hash(creds.email_address)[:12]}…"
-                        f"  scopes={scopes_short}"
+                        f"  scopes={creds.scope_labels()}"
                     )
                 except Exception as e:
                     print(f"    {alias}: ERROR ({e})")
@@ -609,12 +604,7 @@ def _cmd_google_connect(args: argparse.Namespace) -> None:
         conn.execute("ROLLBACK")
     conn.close()
 
-    scopes_short = []
-    if creds.has_gmail_scope():
-        scopes_short.append("gmail.metadata")
-    if creds.has_calendar_scope():
-        scopes_short.append("calendar")
-    print(f"\nConnected account {alias!r} (scopes: {scopes_short})")
+    print(f"\nConnected account {alias!r} (scopes: {creds.scope_labels()})")
     if oauth_status == "testing":
         print("  Warning: Testing-mode tokens expire 7 days after consent.")
         print("  Run 'hermes olo google connect' again weekly to reconnect.")
@@ -643,18 +633,10 @@ def _cmd_google_status(args: argparse.Namespace) -> None:
             print(f"  {alias}: ERROR loading credentials: {e}")
             continue
 
-        scopes_short = []
-        if creds.has_gmail_scope():
-            scopes_short.append(
-                "gmail.readonly" if creds.has_gmail_readonly_scope() else "gmail.metadata"
-            )
-        if creds.has_calendar_scope():
-            scopes_short.append("calendar")
-
         profile_str = creds.scope_profile or "legacy_v1"
         print(f"  {alias}:")
         print(f"    email_hash:    {email_hash(creds.email_address)}")
-        print(f"    scopes:        {scopes_short}")
+        print(f"    scopes:        {creds.scope_labels()}")
         print(f"    scope_profile: {profile_str}")
         print(f"    status:        {creds.oauth_publishing_status}")
 

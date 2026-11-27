@@ -5,7 +5,13 @@ mailbox and calendar of ``tests.olo.fake_google.FakeGoogleServer``, so a
 seeded fixture travels through Olo's real Gmail and Calendar adapters exactly
 as it would after a real write: RFC 822 bytes become a Gmail API payload,
 label changes become history records, and events become full Calendar
-resources (organizer.self, attendees, recurring occurrences, deletion stubs).
+resources (organizer.self, attendees, recurring occurrences, deletions).
+
+Shapes follow what live Google returned (acceptance, 2026-11-27): an inline
+text part's body comes back transcoded to UTF-8 under its original
+Content-Type label; a deleted event and a cancelled occurrence come back to
+incremental sync as the full resource with ``status: cancelled`` (title,
+start, iCalUID — the series' for an occurrence — still present).
 """
 from __future__ import annotations
 
@@ -40,6 +46,9 @@ def mime_to_payload(part: Message, part_id: str = "") -> dict:
                         for n, p in enumerate(part.get_payload())]
     else:
         data = part.get_payload(decode=True) or b""
+        if part.get_content_maintype() == "text" and not part.get_filename():
+            # Gmail transcodes an inline text part to UTF-8 and keeps its label.
+            data = data.decode(part.get_content_charset() or "utf-8", "replace").encode("utf-8")
         out["body"] = {"size": len(data), "data": _b64(data)}
     return out
 
@@ -105,10 +114,12 @@ class FakeWriteApi:
         if msg is not None:
             self.g.gmail.delete_message(msg_id, stub_label_ids=list(msg.label_ids))
 
-    def message_marker(self, msg_id: str) -> Optional[str]:
-        if msg_id not in self.g.gmail.messages:
+    def message_meta(self, msg_id: str) -> Optional[dict]:
+        msg = self.g.gmail.messages.get(msg_id)
+        if msg is None:
             return None
-        return email.message_from_bytes(self._raw[msg_id]).get(RUN_HEADER)
+        return {"marker": email.message_from_bytes(self._raw[msg_id]).get(RUN_HEADER),
+                "labels": list(msg.label_ids)}
 
     def create_draft(self, raw: bytes) -> str:
         draft = self._id("d")
@@ -175,16 +186,14 @@ class FakeWriteApi:
             res = next((o for o in self._occurrences(master) if o["id"] == event_id), None) if master else None
         if res is None:
             raise ApiError(404, "not found")
-        if patch.get("status") == "cancelled" and res.get("recurringEventId"):
-            res = {"id": res["id"], "status": "cancelled", "recurringEventId": res["recurringEventId"],
-                   "originalStartTime": res["originalStartTime"]}
-        else:
-            res.update(copy.deepcopy(patch))
-            res["sequence"] = res.get("sequence", 0) + (1 if "start" in patch else 0)
+        res.update(copy.deepcopy(patch))
+        res["sequence"] = res.get("sequence", 0) + (1 if "start" in patch else 0)
         res["updated"] = self._updated()
         self.g.calendar.put_event(res)
         return copy.deepcopy(res)
 
     def delete_event(self, event_id: str) -> None:
-        if self._resource(event_id):
-            self.g.calendar.put_event({"id": event_id, "status": "cancelled", "updated": self._updated()})
+        res = self._resource(event_id)
+        if res:
+            res.update({"status": "cancelled", "updated": self._updated()})
+            self.g.calendar.put_event(res)

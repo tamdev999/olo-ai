@@ -159,7 +159,7 @@ class WriteApi(Protocol):
     def trash(self, msg_id: str) -> None: ...
     def untrash(self, msg_id: str) -> None: ...
     def delete_message(self, msg_id: str) -> None: ...
-    def message_marker(self, msg_id: str) -> Optional[str]: ...
+    def message_meta(self, msg_id: str) -> Optional[dict]: ...
     def create_draft(self, raw: bytes) -> str: ...
     def update_draft(self, draft_id: str, raw: bytes) -> None: ...
     def send_draft(self, draft_id: str) -> dict: ...
@@ -249,7 +249,8 @@ class GoogleWriteApi:
     def delete_message(self, msg_id: str) -> None:
         _ignore_gone(lambda: self._json("DELETE", f"{self.gmail}/messages/{msg_id}"))
 
-    def message_marker(self, msg_id: str) -> Optional[str]:
+    def message_meta(self, msg_id: str) -> Optional[dict]:
+        """``{"marker": <run header or None>, "labels": [...]}``, None when gone (one read)."""
         try:
             msg = self._json("GET", f"{self.gmail}/messages/{msg_id}?format=metadata"
                                     f"&metadataHeaders={RUN_HEADER}")
@@ -258,7 +259,9 @@ class GoogleWriteApi:
                 return None
             raise
         heads = (msg.get("payload") or {}).get("headers") or []
-        return next((h.get("value") for h in heads if h.get("name", "").lower() == RUN_HEADER.lower()), None)
+        return {"marker": next((h.get("value") for h in heads
+                                if h.get("name", "").lower() == RUN_HEADER.lower()), None),
+                "labels": list(msg.get("labelIds") or [])}
 
     def create_draft(self, raw: bytes) -> str:
         return self._json("POST", f"{self.gmail}/drafts", {"message": {"raw": _b64(raw)}})["id"]
@@ -702,11 +705,15 @@ def _cleanup_item(api, run_id, scenario, key, item, permanent, dry_run) -> dict:
         return {**out, "result": "would delete" if dry_run else "deleted"}
     if item["type"] == "draft":
         return {**out, "result": "skipped: drafts are sent or discarded by G7"}
-    marker = api.message_marker(item["id"])
-    if marker is None:
+    meta = api.message_meta(item["id"])
+    if meta is None:
         return {**out, "result": "gone"}
-    if marker != run_id:
+    if meta["marker"] != run_id:
         return {**out, "result": "skipped: run marker differs"}
+    if not permanent and "TRASH" in meta["labels"]:
+        # Already trashed (an earlier cleanup, or the scenario itself): nothing
+        # to do, and a dry run must not claim it would trash it again.
+        return {**out, "result": "already in trash"}
     if not dry_run:
         (api.delete_message if permanent else api.trash)(item["id"])
     action = "deleted" if permanent else "trashed"

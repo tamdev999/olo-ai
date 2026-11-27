@@ -201,6 +201,40 @@ def test_degradation_is_not_success_and_failed_fetch_still_processes(home: Path,
         assert hindsight.errors == [], hindsight.errors
 
 
+
+def test_unattended_no_model_runs_stay_healthy(home: Path, tmp_path: Path) -> None:
+    """E2 (live acceptance, 2026-11-27): the installed Mode A worker
+    (``--extract-max-calls 0``, no DeepSeek key) ran unattended for two hours
+    and health read "commitment degraded (85 consecutive): budget_exhausted".
+    Disabled extraction is not degradation: every scheduled run completes,
+    prose waits for a model, and status shows nothing degraded."""
+    with FakeGoogleServer(email=OWNER) as google, FakeHindsight(TENANT_KEY) as hindsight:
+        _save_creds(google, "acme", home)
+        registry, _key = _business(home, hindsight, tmp_path)
+        r = _run(["olo", "setup", "--source", "gmail", "--option", "account=acme",
+                  "--enable-commitments", "--enable-projection", "--business-id", BIZ,
+                  "--bank-id", BANK, "--extract-max-calls", "0",
+                  "--projection-max-docs", "20", "--projection-max-prose-docs", "0",
+                  "--projection-budget-usd", "1.0", "--own-email", OWNER,
+                  "--hindsight-registry", str(registry)], home)
+        assert r.returncode == 0, r.stderr
+        job = _cron(home)
+        _cron_run_and_wait(home, job, expect_status="completed")          # bootstrap
+        for n in range(4):                                                 # scheduled runs
+            _sent(google, f"m{n}", f"{PASSAGE} (note {n})")
+            _cron_run_and_wait(home, job, expect_status="completed")
+            assert _health(home)["commitment"] == "ok"
+        conn = _db(home)
+        waiting = conn.execute("SELECT COUNT(*) FROM signal_resolution WHERE commitment_status='pending'"
+                               " AND commitment_attempts=0").fetchone()[0]
+        failures = conn.execute("SELECT consecutive_failures FROM pipeline_health"
+                                " WHERE source='gmail_acme' AND stage='commitment'").fetchone()[0]
+        conn.close()
+        assert waiting >= 4 and failures == 0
+        status = _run(["olo", "status"], home)
+        assert status.returncode == 0 and "[DEGRADED]" not in status.stdout, status.stdout
+        assert hindsight.errors == [], hindsight.errors
+
 def test_setup_keeps_s5_disabled_by_default_and_refuses_unsafe_options(home: Path, tmp_path: Path) -> None:
     with FakeGoogleServer(email=OWNER) as google, FakeDeepSeek(ROUTES) as deepseek, \
             FakeHindsight(TENANT_KEY) as hindsight:

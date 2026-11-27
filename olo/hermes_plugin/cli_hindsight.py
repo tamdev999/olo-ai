@@ -64,9 +64,11 @@ def _cmd_start(args: argparse.Namespace) -> None:
 
 
 def _cmd_stop(args: argparse.Namespace) -> None:
-    from olo.hindsight_service import stop
+    from hermes_constants import get_hermes_home
+    from olo.hindsight_service import business_home, stop
     conn = _conn()
-    print("stopped" if stop(conn, _now(), reason=args.reason) else "not running")
+    home = business_home(conn, get_hermes_home())
+    print("stopped" if stop(conn, _now(), reason=args.reason, home=home) else "not running")
 
 
 def _cmd_status(args: argparse.Namespace) -> None:
@@ -134,7 +136,8 @@ def register(subs) -> None:
     cf.add_argument("--hf-home", help="local model cache; the server then runs offline")
     cf.set_defaults(func=_cmd_configure)
     hs_subs.add_parser("start", help="Start the server").set_defaults(func=_cmd_start)
-    sp = hs_subs.add_parser("stop", help="Stop the server (the supervisor leaves it stopped)")
+    sp = hs_subs.add_parser("stop", help="Stop the server and its embedded database"
+                            " (the supervisor leaves it stopped)")
     sp.add_argument("--reason", default="operator")
     sp.set_defaults(func=_cmd_stop)
     hs_subs.add_parser("status", help="Supervisor state, probe and last reconciliation"

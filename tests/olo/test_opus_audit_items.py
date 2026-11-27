@@ -678,11 +678,8 @@ class TestItem6CalendarRoundRobin:
             )
 
     def test_three_calendar_no_duplication_per_tick(self) -> None:
-        """Round-robin: each tick services at most ONE calendar in steady state.
-
-        The round-robin design ensures one calendar per tick in steady-state,
-        preventing any calendar from monopolising multiple consecutive ticks.
-        """
+        """Each signal-bearing batch carries one calendar's page: a run visits
+        every calendar in turn (the sync cycle), never mixing two in a batch."""
         with FakeGoogleServer() as fake:
             CAL_IDS = ["rr-1@example.com", "rr-2@example.com", "rr-3@example.com"]
             for cal_id in CAL_IDS:
@@ -720,8 +717,9 @@ class TestItem6CalendarRoundRobin:
                 if not b.has_more:
                     break
 
-    def test_next_cal_index_cycles_through_all_calendars(self) -> None:
-        """Round-robin index stored in cursor cycles through all N calendars."""
+    def test_one_run_visits_every_calendar_in_cycle_order(self) -> None:
+        """The cursor's cycle lists every calendar at the start of a run and
+        is empty when the run ends (has_more False): each calendar once."""
         with FakeGoogleServer() as fake:
             CAL_IDS = ["idxa@example.com", "idxb@example.com"]
             for cal_id in CAL_IDS:
@@ -733,51 +731,22 @@ class TestItem6CalendarRoundRobin:
 
             a = _make_adapter(fake)
             cursor, _ = _drive_to_steady(a)
-
-            # Add events to all secondary calendars to trigger steady-state ticks
             for cal_id in CAL_IDS:
                 for i in range(4):
-                    sec = fake.calendar._extra_calendar_states.get(cal_id)
-                    if sec:
-                        sec.add_event(f"idx-{cal_id.split('@')[0]}-{i}",
-                                      summary=f"Idx {i}")
+                    fake.calendar._extra_calendar_states[cal_id].add_event(
+                        f"idx-{cal_id.split('@')[0]}-{i}", summary=f"Idx {i}")
 
-            # Determine actual number of incr calendars in this setup
-            # (primary + 2 secondaries = 3 total)
-            comp0 = json.loads(cursor)
-            incr_cals = sorted(
-                cal_id for cal_id, c in comp0.get("cals", {}).items()
-                if isinstance(c, dict) and c.get("phase") == "incr"
-            )
-            n = len(incr_cals)
-            if n == 0:
-                pytest.skip("No incr calendars after bootstrap — cannot test round-robin")
-
-            # Collect next_cal values across ticks
-            indices: list[int] = []
+            order: list[str] = []
             cur = cursor
-            for _ in range(n * 4 + 5):
+            for _ in range(20):
                 b = a.fetch(cur, limit=10)
-                try:
-                    comp = json.loads(b.next_cursor)
-                    if isinstance(comp, dict) and "next_cal" in comp:
-                        indices.append(comp["next_cal"])
-                except (json.JSONDecodeError, ValueError):
-                    pass
+                order += [s.payload["calendar_id"] for s in b.signals]
                 cur = b.next_cursor
-                if not b.has_more and len(indices) >= n * 2:
+                if not b.has_more:
                     break
-
-            # Indices should stay in [0, n-1]
-            if indices:
-                assert all(0 <= idx < n for idx in indices), (
-                    f"P0-A FAIL: next_cal index out of range [0,{n}): {indices}"
-                )
-                # Over N*2 ticks, all N values should appear
-                assert set(indices) == set(range(n)), (
-                    f"P0-A FAIL: not all {n} calendars visited. "
-                    f"indices seen={set(indices)}, expected={set(range(n))}"
-                )
+            assert not b.has_more and json.loads(cur)["cycle"] == []
+            assert order == sorted(order) and set(order) == set(CAL_IDS)
+            assert len(order) == 8
 
 
 # ══════════════════════════════════════════════════════════════════════════════

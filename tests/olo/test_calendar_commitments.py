@@ -360,3 +360,101 @@ def test_calendar_commitments_are_applied_after_the_model_budget_runs_out(tmp_pa
     assert b.rows("SELECT COUNT(*) FROM commitment_versions")[0][0] == before + 1
     assert b.model.calls == []
 
+
+
+# ── Recurring occurrences share the series' iCalUID (live Google, 2026-11-27) ─
+
+SERIES_UID = "s1@google.com"
+
+
+def _occurrence(day: str, original: str, *, updated: str, hour: int = 15, **extra) -> dict:
+    """A moved or cancelled occurrence as live Google returns it: its own id,
+    the series id and original slot, and the *series'* iCalUID."""
+    eid = f"s1_{original.replace('-', '')}T200000Z"
+    return event(eid, day, updated=updated, recurringEventId="s1", iCalUID=SERIES_UID,
+                 originalStartTime={"dateTime": f"{original}T15:00:00-05:00"},
+                 start={"dateTime": f"{day}T{hour:02d}:00:00-05:00"},
+                 end={"dateTime": f"{day}T{hour + 1:02d}:00:00-05:00"}, **extra)
+
+
+def _series(cal) -> None:
+    cal.put(event("s1", "2026-12-04", updated="2026-11-20T10:00:00.000Z", iCalUID=SERIES_UID,
+                  recurrence=["RRULE:FREQ=WEEKLY;COUNT=6"]))
+    cal.run()
+
+
+class TestRecurringOccurrenceIdentity:
+    def test_cancelling_one_occurrence_never_cancels_another(self, tmp_path) -> None:
+        """Live C5: the 18 Dec occurrence's cancellation was recorded on the
+        11 Dec occurrence's commitment through the shared iCalUID."""
+        with calendar(tmp_path) as cal:
+            _series(cal)
+            cal.put(_occurrence("2026-12-12", "2026-12-11", updated="2026-11-21T10:00:00.000Z"))
+            cal.run()
+            moved = cal.commitment("s1_20261211T200000Z")
+            # Live shape: the cancelled occurrence is a full resource (title, start, UID).
+            cal.put(_occurrence("2026-12-18", "2026-12-18", updated="2026-11-21T11:00:00.000Z",
+                                status="cancelled"))
+            cal.run()
+            assert cal.state(moved)["status"] == STATUS_SCHEDULED
+            assert cal.versions(moved) == [("commit", "2026-12-12", "2026-12-11")]
+            assert [o for _, o in cal.outcomes()] == ["recurring_series", "applied", "no_commitment"]
+            assert cal.query("SELECT COUNT(*) FROM commitment_aliases WHERE alias LIKE 'ical:%'") == [(0,)]
+
+    def test_a_minimal_cancellation_stub_finds_only_its_own_occurrence(self, tmp_path) -> None:
+        with calendar(tmp_path) as cal:
+            _series(cal)
+            cal.put(_occurrence("2026-12-12", "2026-12-11", updated="2026-11-21T10:00:00.000Z"),
+                    _occurrence("2026-12-19", "2026-12-18", updated="2026-11-21T10:01:00.000Z"))
+            cal.run()
+            a, b = cal.commitment("s1_20261211T200000Z"), cal.commitment("s1_20261218T200000Z")
+            # A stub: id, status and updated only — no title, series or UID.
+            cal.put(cancelled("s1_20261218T200000Z", updated="2026-11-22T10:00:00.000Z"))
+            cal.run()
+            assert cal.state(b)["status"] == STATUS_CANCELLED
+            assert cal.state(a)["status"] == STATUS_SCHEDULED
+
+    def test_two_occurrences_on_one_day_stay_two_commitments(self, tmp_path) -> None:
+        with calendar(tmp_path) as cal:
+            _series(cal)
+            morning = _occurrence("2026-12-11", "2026-12-11", updated="2026-11-21T10:00:00.000Z",
+                                  hour=9)
+            evening = dict(_occurrence("2026-12-11", "2026-12-11", updated="2026-11-21T10:01:00.000Z",
+                                       hour=17), id="s1_20261211T220000Z",
+                           originalStartTime={"dateTime": "2026-12-11T17:00:00-05:00"})
+            cal.put(morning, evening)
+            cal.run()
+            m, e = cal.commitment("s1_20261211T200000Z"), cal.commitment("s1_20261211T220000Z")
+            assert m != e
+            cal.put(dict(evening, status="cancelled", updated="2026-11-22T10:00:00.000Z"))
+            cal.run()
+            assert cal.state(e)["status"] == STATUS_CANCELLED
+            assert cal.state(m)["status"] == STATUS_SCHEDULED
+
+    def test_rescheduling_an_occurrence_twice_updates_only_it(self, tmp_path) -> None:
+        with calendar(tmp_path) as cal:
+            _series(cal)
+            cal.put(_occurrence("2026-12-12", "2026-12-11", updated="2026-11-21T10:00:00.000Z"),
+                    _occurrence("2026-12-18", "2026-12-18", updated="2026-11-21T10:01:00.000Z",
+                                hour=16))
+            cal.run()
+            other = cal.commitment("s1_20261218T200000Z")
+            cal.put(_occurrence("2026-12-14", "2026-12-11", updated="2026-11-22T10:00:00.000Z"))
+            cal.run()
+            moved = cal.commitment("s1_20261211T200000Z")
+            assert cal.versions(moved) == [("commit", "2026-12-12", "2026-12-11"),
+                                           ("confirm_change", "2026-12-14", "2026-12-12")]
+            assert cal.versions(other) == [("commit", "2026-12-18", None)]
+            # The series association is kept apart from the occurrence's identity.
+            series = cal.query("SELECT alias, commitment_id, basis FROM commitment_aliases"
+                               " WHERE alias LIKE 'series:%' ORDER BY alias")
+            assert series == [
+                ("series:gcal:primary:s1@2026-12-11T15:00:00-05:00", moved, "series_occurrence"),
+                ("series:gcal:primary:s1@2026-12-18T15:00:00-05:00", other, "series_occurrence")]
+
+    def test_a_single_event_still_links_by_its_ical_uid(self, tmp_path) -> None:
+        with calendar(tmp_path) as cal:
+            cal.put(event("e1", "2026-12-10", updated="2026-11-20T10:00:00.000Z"))
+            cal.run()
+            assert cal.query("SELECT alias, commitment_id FROM commitment_aliases WHERE alias LIKE 'ical:%'"
+                             ) == [("ical:e1@google.com", cal.commitment("e1"))]

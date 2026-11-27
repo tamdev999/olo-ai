@@ -30,7 +30,7 @@ Two run modes:
 |---|---|
 | Gmail sync: history, label moves, rescue from SPAM/TRASH/DRAFT, deletion state, 404 and expired-history gaps, pagination | `test_gmail_adapter.py`, `test_gmail_full.py`, `test_gmail_fidelity.py`, `test_google_cron_e2e.py` (fake Gmail API) |
 | MIME, HTML-only, charsets, quoting, attachments | `test_gmail_fidelity.py` (Gmail API-shaped payloads) |
-| Calendar sync: calendarList, round-robin, 410 recovery, pagination | `test_gcal_adapter.py`, `test_gcal_full.py` |
+| Calendar sync: calendarList, every calendar on every run (sync cycle), 410 recovery, pagination | `test_gcal_adapter.py`, `test_gcal_full.py`, `test_gcal_cycle.py` |
 | Calendar to ledger: reschedule, same-day time change, cancellation and deletion stubs, recurring exceptions, invitation responses, stale and duplicate revisions | `test_calendar_commitments.py`, `test_calendar_email_linking.py` |
 | Email/Calendar UID linking, in either order | `test_calendar_email_linking.py` |
 | Cron → SQLite → ledger → Hindsight through the installed shim | `test_s5_cron_e2e.py`, `test_installed_schedule.py` |
@@ -74,7 +74,7 @@ Record what Google actually returned (`phase_b_observations.json`, redacted: has
 | C5 | Weekly recurring meeting; move one occurrence; cancel another | Series `recurring_series`; moved occurrence is its own commitment; cancelled occurrence is `no_commitment` | `recurringEventId` / `originalStartTime` shapes |
 | C6 | Delete an event | The deletion stub inherits the customer; `cancel` | The minimal stub shape in incremental sync |
 | C7 | Expire the sync token (stored-token rewrite, as in the M2b failure stage) | 410 then full resync; nothing duplicated | 410 behaviour |
-| C8 | 300 events (an import) | Paginated; round-robin across calendars | — |
+| C8 | 300 events (an import) | Paginated; every calendar still synced each run | — |
 
 ### Email and Calendar
 
