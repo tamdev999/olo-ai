@@ -346,3 +346,79 @@ def service_status(conn: sqlite3.Connection, limit: int = 10) -> dict:
             "last_healthy_at": st["last_healthy_at"], "failures": st["failures"] or 0,
             "detail": st["detail"] or "", "events": events}
 
+
+
+#: Supervisor results that need a person: cron marks the run failed.
+OPERATOR_STATUSES = ("crashloop", "misconfigured")
+
+
+def supervise_main() -> int:
+    """One supervision pass for this profile's business (the cron shim).
+
+    Prints nothing while the server is fine (cron delivers stdout
+    verbatim); a line otherwise.  Exit code 1 for a state an operator must
+    fix (``crashloop``, ``misconfigured``) or a configuration error, so the
+    cron run is recorded failed and ``hermes olo status`` shows why.
+    """
+    from datetime import UTC, datetime
+
+    from hermes_constants import get_hermes_home
+    from olo.paths import db_path
+    from olo.store import connect
+    from olo.store import migrate as migrate_store
+    conn = connect(db_path())
+    try:
+        migrate_store(conn)
+        try:
+            spec = load_spec(conn, get_hermes_home())
+        except (ValueError, FileNotFoundError) as exc:
+            print(f"olo hindsight supervisor: {exc}")
+            return 1
+        status = supervise_once(conn, spec, datetime.now(UTC))
+    finally:
+        conn.close()
+    if status not in ("healthy", "adopted"):
+        print(f"olo hindsight {spec.business_id}: {status}")
+    return 1 if status in OPERATOR_STATUSES else 0
+
+
+def supervisor_conditions(conn: sqlite3.Connection, now: datetime,
+                          stale_after: timedelta = timedelta(minutes=5)) -> list[tuple[str, str]]:
+    """``(severity, message)`` for `hermes olo status` (olo.health.assess)."""
+    try:
+        configured = conn.execute("SELECT business_id FROM hindsight_service WHERE id=1").fetchone()
+    except sqlite3.OperationalError:
+        return []
+    if configured is None:
+        return []
+    st = service_status(conn)
+    out: list[tuple[str, str]] = []
+    if st["status"] in OPERATOR_STATUSES:
+        out.append(("degraded", f"Hindsight {st['status']}: {st['detail'] or '-'}"))
+    elif st["status"] in ("unhealthy", "restarting", "starting"):
+        out.append(("degraded", f"Hindsight {st['status']} ({st['failures']} failed checks)"))
+    elif st["status"] == "stopped":
+        out.append(("attention", "Hindsight stopped by an operator; `hermes olo hindsight start`"))
+    row = conn.execute("SELECT last_check_at FROM hindsight_service_state WHERE id=1").fetchone()
+    last = row[0] if row else None
+    if last is None:
+        # Never supervised: stalled only if its job is scheduled; otherwise
+        # this business's Hindsight is run some other way (status says so).
+        if _supervisor_job_scheduled(configured[0]):
+            out.append(("stalled", "Hindsight supervisor job is scheduled but has never run"
+                                   " (is the Hermes cron scheduler running?)"))
+    elif now - datetime.fromisoformat(last) > stale_after:
+        out.append(("stalled", f"Hindsight supervisor has not run since {last}"
+                               " (is its cron job scheduled and the scheduler running?)"))
+    return out
+
+
+def _supervisor_job_scheduled(business_id: str) -> bool:
+    """An enabled `olo-hindsight-<business>` job in this profile's cron store."""
+    from olo.hermes_plugin.schedule import supervisor_job_name
+    try:
+        from cron.jobs import list_jobs
+        jobs = list_jobs(include_disabled=False)
+    except Exception:  # health: allow BLE001 -- no cron store here: nothing is scheduled
+        return False
+    return any(j.get("name") == supervisor_job_name(business_id) for j in jobs)

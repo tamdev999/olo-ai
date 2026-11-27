@@ -224,3 +224,64 @@ def test_a_memory_pointing_at_another_customers_ledger_never_attaches(business) 
     assert planted and all(m["commitment_id"] is None for m in planted)
     assert all(m["label"] == "uncertain" for m in planted)
     assert by_key(brief)["ORD-1"]["date"] == "2024-04-15"
+
+
+def _find_brief(obj):
+    """The brief inside a tool result, however the bridge wraps it."""
+    if isinstance(obj, str):
+        try:
+            obj = json.loads(obj)
+        except ValueError:
+            return None
+    if isinstance(obj, dict):
+        if obj.get("authority") and "actions" in obj:
+            return obj
+        obj = list(obj.values())
+    if isinstance(obj, list):
+        for item in obj:
+            found = _find_brief(item)
+            if found:
+                return found
+    return None
+
+
+def test_a_real_agent_turn_reads_the_ledger_through_the_tool(business) -> None:
+    """A real Hermes ``AIAgent`` turn with the default tool surface: the Olo
+    tool is a deferred plugin tool behind Hermes's tool-search bridge, the
+    (scripted, loopback) model calls it through ``tool_call``, and the agent
+    loop returns the brief to the model.  No inference: the model's replies
+    are fixed; everything between them — tool listing, bridge dispatch,
+    result injection — is Hermes."""
+    from run_agent import AIAgent
+    from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
+    from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
+
+    home, hs = business
+    alice = contact(home, "alice@x.com")
+    hs.recall_extra = [{"type": "observation", "tags": [f"ent:{alice}"],
+                        "text": "Order ORD-1 is scheduled for delivery on 2024-04-10."}]
+    call_args = {"customer": "alice@x.com", "question": "when is order ORD-1 delivered?"}
+    script = [ToolCall("tool_call", {"calls": [{"name": "olo_customer_context",
+                                                "arguments": call_args}]}),
+              Text("ORD-1 is scheduled for 2024-04-15.")]
+    with FakeLLMServer(script) as srv:
+        write_hermes_home(home, srv.base_url, extra_config=(
+            "plugins:\n  enabled:\n  - olo\n" + OFFLINE_CONFIG + NO_BACKGROUND_REVIEW))
+        agent = AIAgent(provider="custom", base_url=srv.base_url, api_key="sk-fake",
+                        model="fake-model", session_id="olo-context-turn", quiet_mode=True,
+                        platform="cli", skip_memory=True)
+        try:
+            result = agent.run_conversation("When is my order ORD-1 delivered?",
+                                            conversation_history=[], task_id="t")
+        finally:
+            agent.close()
+        first, second = srv.main_requests()[:2]
+    assert "olo_customer_context" in json.dumps(first.get("tools") or [])   # discoverable
+    [tool_msg] = [m for m in second["messages"] if m.get("role") == "tool"]
+    brief = _find_brief(tool_msg["content"])
+    assert brief is not None, tool_msg["content"][:500]
+    assert brief["actions"] == "disabled"
+    assert by_key(brief)["ORD-1"]["date"] == "2024-04-15"             # SQLite, not memory
+    stale = [m["text"] for m in brief["memory"]["no_longer_true"]]
+    assert "Order ORD-1 is scheduled for delivery on 2024-04-10." in stale
+    assert result.get("final_response") == "ORD-1 is scheduled for 2024-04-15."

@@ -175,25 +175,6 @@ def test_plugin_adds_only_the_read_only_context_tool(tmp_path: Path, monkeypatch
 
 # ── Shim content ──────────────────────────────────────────────────────────────
 
-def test_shim_contains_fallback_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Installed shim contains both direct import attempt and repo-root fallback."""
-    home = tmp_path / "hermes_home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    from olo.hermes_plugin.cli import _cmd_setup
-    import types
-    args = types.SimpleNamespace(source="synthetic", option=[], force=False)
-    _cmd_setup(args)
-
-    shim = home / "scripts" / "olo_monitor_synthetic.py"
-    content = shim.read_text(encoding="utf-8")
-    assert "try:" in content
-    assert "except ImportError:" in content
-    assert "sys.path.insert" in content
-    assert "olo.runner" in content
-
-
 def test_shim_executes_successfully(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The installed shim runs without error (25 signals ingested)."""
     home = tmp_path / "hermes_home"

@@ -281,5 +281,8 @@ def assess(conn: sqlite3.Connection, now: datetime, *,
     for name, n in backlog(conn)["operator"].items():
         if n:
             out.append(Condition("attention", "operator", f"{n} {name.replace('_', ' ')}"))
+    from olo.hindsight_service import supervisor_conditions
+    for severity, message in supervisor_conditions(conn, now):
+        out.append(Condition(severity, "hindsight", message))
     order = {"degraded": 0, "stalled": 1, "attention": 2}
     return sorted(out, key=lambda c: order[c.severity])

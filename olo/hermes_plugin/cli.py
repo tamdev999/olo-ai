@@ -146,6 +146,20 @@ def _print_health(conn) -> None:
     if b["unresolved_ledger"]["open"]:
         print(f"    unresolved_ledger={_json.dumps(b['unresolved_ledger'], sort_keys=True)}"
               f" operators={b['operators']} (review: hermes olo review)")
+    from olo.hindsight_service import service_status
+    try:
+        hs = service_status(conn)
+    except Exception:  # health: allow BLE001 -- status must print even with a broken service table
+        hs = None
+    if hs and hs["status"] == "not_started" and conn.execute(
+            "SELECT 1 FROM hindsight_service WHERE id=1").fetchone():
+        print("  Hindsight: supervisor configured, never run"
+              " (schedule it: hermes olo setup ... --schedule)")
+    elif hs and hs["status"] != "not_started":
+        last = hs["events"][0] if hs["events"] else {}
+        print(f"  Hindsight: {hs['status']} pid={hs['pid'] or '-'} alive={hs['alive']}"
+              f" failures={hs['failures']} last_healthy={hs['last_healthy_at'] or 'never'}"
+              + (f" last_event={last.get('event')}@{last.get('at')}" if last else ""))
     conditions = assess(conn, datetime.now(UTC))
     if conditions:
         print("  Attention:")
@@ -346,19 +360,10 @@ def _cmd_setup(args: argparse.Namespace) -> None:
     parts += [repr(a) for a in _s5_argv(args, conn)]
     argv_literal = "[" + ", ".join(parts) + "]"
 
-    tmpl_path = Path(__file__).parent.parent / "cron_scripts" / "olo_monitor.py.tmpl"
-    if tmpl_path.exists():
-        tmpl = tmpl_path.read_text(encoding="utf-8")
-    else:
-        tmpl = _DEFAULT_SHIM_TEMPLATE
-
-    shim_content = tmpl.format(
-        repo_root=repr(repo_root),
-        argv_literal=argv_literal,
-    )
-
-    shim_path.write_text(shim_content, encoding="utf-8")
-    shim_path.chmod(0o700)
+    from olo.hermes_plugin.schedule import shim_source, write_shim
+    write_shim(shim_path, shim_source(
+        repo_root, f"import olo.runner as _r\n\nraise SystemExit(_r.main({argv_literal}))\n"))
+    supervisor = _setup_supervisor(args, conn, scripts_dir, repo_root)
 
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -378,14 +383,24 @@ def _cmd_setup(args: argparse.Namespace) -> None:
     schedule_str = _GMAIL_SCHEDULE if source == "gmail" else (
         _GCAL_SCHEDULE if source == "gcal" else "every 15m"
     )
+    jobs = [(cron_name, schedule_str, shim_name)]
+    if supervisor is not None:
+        jobs.append(supervisor)
 
     print(f"olo setup: DB migrated, shim installed at {shim_path}")
+    if supervisor is not None:
+        print(f"olo setup: Hindsight supervisor shim installed at {scripts_dir / supervisor[2]}")
     print()
-    print("Add cron job:")
-    print(
-        f"  hermes cron create \"{schedule_str}\" --name {cron_name}"
-        f" --script {shim_name} --no-agent --deliver local"
-    )
+    if getattr(args, "schedule", False):
+        from olo.hermes_plugin.schedule import ensure_job
+        for name, every, script in jobs:
+            job_id, action = ensure_job(name, every, script)
+            print(f"cron job {name} ({every}, {script}): {action} [{job_id}]")
+        return
+    print("Add cron jobs (or re-run with --schedule):")
+    for name, every, script in jobs:
+        print(f"  hermes cron create \"{every}\" --name {name}"
+              f" --script {script} --no-agent --deliver local")
 
 
 # ── Google connect ─────────────────────────────────────────────────────────────
@@ -1012,24 +1027,26 @@ def _cmd_purge_content(args: argparse.Namespace) -> None:
 
 # ── Shim template ─────────────────────────────────────────────────────────────
 
-_DEFAULT_SHIM_TEMPLATE = """\
-#!/usr/bin/env python3
-# Olo AI monitor shim — installed by `hermes olo setup`.
-# Do NOT edit directly; re-run setup to regenerate.
-# argv and repo_root are Python literals produced by repr() — injection-safe.
-import sys
-
-try:
-    import olo.runner as _r
-except ImportError:
-    # Fallback: add repo root so dev installs work without the package installed.
-    _repo_root = {repo_root}
-    if _repo_root not in sys.path:
-        sys.path.insert(0, _repo_root)
-    import olo.runner as _r  # type: ignore[no-redef]
-
-raise SystemExit(_r.main({argv_literal}))
-"""
+def _setup_supervisor(args: argparse.Namespace, conn, scripts_dir: Path,
+                      repo_root: str):
+    """With --enable-projection: configure this business's Hindsight service
+    and install its supervisor shim; ``(job name, schedule, shim)`` or None."""
+    if not getattr(args, "enable_projection", False):
+        return None
+    from hermes_constants import get_hermes_home
+    from olo.hermes_plugin.schedule import (
+        SUPERVISOR_SCHEDULE, shim_source, supervisor_job_name, supervisor_shim_name, write_shim)
+    from olo.hindsight_service import configure
+    from olo.signals import format_utc
+    from olo.store import utc_now
+    venv = args.hindsight_venv or str(get_hermes_home() / "olo" / "hindsight-venv")
+    configure(conn, args.business_id, venv, format_utc(utc_now()),
+              key_file=args.hindsight_llm_key_file, hf_home=args.hindsight_hf_home)
+    name = supervisor_shim_name(args.business_id)
+    write_shim(scripts_dir / name, shim_source(
+        repo_root, "from olo.hindsight_service import supervise_main as _main\n\n"
+                   "raise SystemExit(_main())\n"))
+    return supervisor_job_name(args.business_id), SUPERVISOR_SCHEDULE, name
 
 
 # ── Argparse setup ────────────────────────────────────────────────────────────
@@ -1050,6 +1067,8 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
         help="Adapter option (may be repeated)",
     )
     setup_p.add_argument("--force", action="store_true", help="Overwrite existing shim")
+    setup_p.add_argument("--schedule", action="store_true",
+                         help="Create or update the Hermes cron jobs (idempotent by name)")
     s5 = setup_p.add_argument_group(
         "S5 stages (off by default; validated now and written into the shim)")
     s5.add_argument("--enable-commitments", action="store_true",
@@ -1067,6 +1086,11 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
     s5.add_argument("--projection-budget-usd", type=float)
     s5.add_argument("--own-email", action="append", default=[])
     s5.add_argument("--hindsight-registry")
+    s5.add_argument("--hindsight-venv",
+                    help="Hindsight venv the supervisor runs (default $HERMES_HOME/olo/hindsight-venv)")
+    s5.add_argument("--hindsight-llm-key-file",
+                    help="owner-only file with HINDSIGHT_API_LLM_API_KEY (Hindsight provider deepseek)")
+    s5.add_argument("--hindsight-hf-home", help="local model cache; Hindsight then runs offline")
     setup_p.set_defaults(func=_cmd_setup)
 
     # google (sub-group)
