@@ -90,14 +90,22 @@ Only synthetic contacts, messages and events are used. Subjects and titles carry
 ## 5. Activation procedure (after approval)
 
 ```bash
-# 0. A host with working localhost (native Linux, or WSL with NAT repaired).
-export OLO_ACCEPTANCE_HOME=/srv/olo-accept/home            # disposable, not ~/.hermes
-export OLO_ACCEPTANCE_EVIDENCE=/srv/olo-accept/evidence    # outside the home
+# 0. WSL's default network namespace (not the private namespace of the offline
+#    suite: Google must be reachable), as a non-root user (pg0 refuses root),
+#    with this checkout first on the path (the venv's editable install may be
+#    an older tree). Every command below runs in this shell.
+sudo -iu olo_hs
+export REPO="/mnt/c/Users/twMatt/Music/OLO MVP/olo-ai" PYTHONPATH="$REPO"
+alias hermes=/root/olo_linux_venv/bin/hermes python=/root/olo_linux_venv/bin/python
+cd "$REPO"
+export OLO_ACCEPTANCE_HOME=/home/olo_hs/accept/home        # disposable, not ~/.hermes
+export OLO_ACCEPTANCE_EVIDENCE=/home/olo_hs/accept/evidence # outside the home
 export OLO_ACCEPTANCE_ACCOUNT=olo.acceptance.biz@gmail.com # dedicated test account
 export OLO_ACCEPTANCE_CONFIRM=olo.acceptance.biz@gmail.com # repeated on purpose
 export OLO_ACCEPTANCE_CUSTOMER=olo.acceptance.cust@gmail.com
 export HERMES_HOME=$OLO_ACCEPTANCE_HOME
 mkdir -p "$OLO_ACCEPTANCE_HOME" "$OLO_ACCEPTANCE_EVIDENCE"
+python scripts/olo/m3/google_acceptance/run.py environment   # no Google call; exit 3 on a refusal
 
 # 1. Disposable Hindsight business (provider none in mode A).
 HERMES_HOME=$OLO_ACCEPTANCE_HOME bash olo/m3/hindsight/setup.sh accept --provider=none
@@ -171,12 +179,39 @@ Run `run.py teardown` to print the steps:
 6. Optionally remove the OAuth test users and client.
 7. Optionally empty the test accounts.
 
-## 8. Environmental blockers
+## 8. Network status and remaining blockers
 
-1. **WSL NAT networking fails on this machine** (the VirtioProxy fallback).
-   - Scheduled jobs and Hindsight on `127.0.0.1` depend on the Windows relay, which refuses connections intermittently.
-   - Run the acceptance on a native Linux host, or repair WSL NAT with administrator rights first. A private network namespace cannot be used here, because Google must be reachable.
-2. **Accounts:** the test accounts (business, customer, optionally Outlook.com) and the Testing-mode OAuth client with both as test users.
-3. **Approvals:** connecting the account (P4); mode B budget (P5).
-4. **The Hermes cron scheduler running** for E2 and E5 (gateway, or `hermes cron tick` from the system cron).
-5. **The WSL service on this machine hung** during the readiness verification: neither `wsl --shutdown` nor `wsl --shutdown --force` returned. Recovering it needs a restart of `WslService` (administrator) or a Windows reboot.
+### WSL networking: NAT fails, application connectivity works
+
+These are two separate facts, measured on 2026-11-27 (WSL 2.7.10, Windows 26100.1457). The networking configuration is kept as it is: no Windows service, firewall, `.wslconfig`, networking-mode or routing change.
+
+- **NAT initialisation fails, by design of this host.**
+  - WSL logs `Failed to configure network (networkingMode Nat), falling back to networkingMode VirtioProxy` (VirtioProxy is the former name of Consomme). It has done so since the distribution was created, on 2026-11-15.
+  - WSL's NAT setup adds a host firewall rule ("WSLCore SharedAccess Allow Rule"). WSL's ICS and HNS components import `FirewallAPI.dll`. The Windows Defender Firewall service is deliberately disabled on this host.
+  - This is not a blocker: the fallback mode carries every connection the run needs.
+- **Application connectivity in WSL's default namespace is verified:**
+
+  | Path | Result |
+  |---|---|
+  | External DNS and HTTPS | work |
+  | Windows browser → Linux `127.0.0.1` listener (the OAuth loopback redirect) | 5/5, through WSL's relay |
+  | Real Hindsight 1.2.1 + pg0 + Olo supervisor + installed cron, `scripts/olo/m3/b5_live` with `NETNS=default` | **14/14 stages** (`b5_live/evidence_wsl_default_namespace.json`) |
+  | Linux → `127.0.0.1` listener 0.25 s or more after `listen()` | 100% (5/5 at each of 0.25, 1, 3 and 8 s; 10/10 repeated) |
+  | Linux → `127.0.0.1` listener at the instant of `listen()` | **refused** (5/5) |
+
+  The Hindsight stages covered start, tenant authentication, projection, document replacement, `kill -9` and supervised restart, reconciliation, partial-write, drift and bank-loss recovery, recall, a scripted agent turn, and the installed cron supervisor.
+- **The listener-registration delay.** In the fallback mode, Linux TCP to `127.0.0.1` is routed to the Windows host (`ip rule … lookup 127`), which relays it back once WSL has registered the new port, in about a quarter of a second.
+  - **Residual risk:** a client that connects within that window after a server starts gets one refusal. Olo's paths tolerate it:
+    - the Hindsight client retries refused idempotent requests (about 0.5 s, then 1 s);
+    - projection starts with a bank-config GET and, if Hindsight is unreachable, records `bank_unprepared`, submits nothing, and retries next run;
+    - the supervisor probes once a minute, counts a refused probe in the start grace period as `starting`, and restarts only after three failed passes;
+    - the OAuth listener exists long before the browser redirect.
+  - **Offline tests** (fake servers connected the instant they listen) still run in a private network namespace (`unshare -n` + `ip link set lo up`), where loopback is the kernel's own. That workaround does not apply to the live run, which needs Google.
+- **`run.py environment`** checks this host before the run: not root; default route present (not the private namespace); `olo` and `hermes_cli` from this checkout; a `127.0.0.1` listener reachable after the registration wait.
+
+### Remaining blockers
+
+1. **Accounts:** the test accounts (business, customer, optionally Outlook.com) and the Testing-mode OAuth client with both as test users.
+2. **Approvals:** connecting the account (P4); mode B budget (P5).
+3. **The Hermes cron scheduler running** for E2 and E5. For example, a crontab entry for `olo_hs`: `* * * * * HERMES_HOME=<home> PYTHONPATH=<repo> /root/olo_linux_venv/bin/hermes cron tick`.
+4. **If WSL stops responding during the run:** record the time and the failing step as `error`, and stop. On 2026-11-26 the WSL service hung (neither `wsl --shutdown` nor `--shutdown --force` returned). A Windows restart recovered it; that restart ended in bugcheck 0x9F, whose driver is unidentified.

@@ -92,6 +92,43 @@ class TestPreflight:
         assert any("another mailbox" in r for r in pf.refusals)
 
 
+ROUTES_DEFAULT = ("Iface\tDestination\tGateway\tFlags\n"
+                  "eth0\t00000000\t0100A8C0\t0003\neth0\t0000A8C0\t00000000\t0001\n")
+ROUTES_PRIVATE_NS = "Iface\tDestination\tGateway\tFlags\n"
+
+
+class TestEnvironment:
+    """The live run's host checks (WSL default namespace, non-root, this checkout)."""
+
+    def _check(self, **kw):
+        from google_acceptance import environment
+        repo = Path(__file__).resolve().parents[2]
+        mods = {"olo": str(repo / "olo" / "__init__.py"),
+                "hermes_cli": str(repo / "hermes_cli" / "__init__.py")}
+        args = {"uid": 1001, "route_table": ROUTES_DEFAULT, "module_files": mods,
+                "loopback": lambda: True, **kw}
+        return environment.check(repo, **args)
+
+    def test_a_suitable_host_passes(self) -> None:
+        refusals, facts = self._check()
+        assert refusals == [] and facts["default_route"] is True
+
+    @pytest.mark.parametrize("change, needle", [
+        ({"uid": 0}, "pg0 refuses root"),
+        ({"route_table": ROUTES_PRIVATE_NS}, "private network namespace"),
+        ({"module_files": {"olo": "/root/olo-linux/olo/__init__.py",
+                           "hermes_cli": "/root/olo-linux/hermes_cli/__init__.py"}}, "not this checkout"),
+        ({"loopback": lambda: False}, "still refused"),
+    ])
+    def test_an_unsuitable_host_is_refused(self, change, needle) -> None:
+        refusals, _ = self._check(**change)
+        assert any(needle in r for r in refusals), refusals
+
+    def test_a_fresh_loopback_listener_is_reachable_after_the_wait(self) -> None:
+        from google_acceptance import environment
+        assert environment.loopback_reachable(wait_s=0.5) is True
+
+
 class TestRecorder:
     def test_the_budget_stops_requests(self) -> None:
         class Echo:

@@ -1,5 +1,6 @@
 """Operator command line for the Google live acceptance run.
 
+  python scripts/olo/m3/google_acceptance/run.py environment
   python scripts/olo/m3/google_acceptance/run.py preflight
   python scripts/olo/m3/google_acceptance/run.py sync [--max-requests 400]
   python scripts/olo/m3/google_acceptance/run.py action <ID> [--note TEXT]
@@ -8,8 +9,9 @@
   python scripts/olo/m3/google_acceptance/run.py check [ID ...]
   python scripts/olo/m3/google_acceptance/run.py teardown
 
-Every command except ``teardown`` runs the preflight first and stops on a
-refusal.  ``sync`` runs both sources once through Olo's real worker with a
+``environment`` checks the host (user, network namespace, imports, loopback)
+without reading credentials or contacting Google.  Every other command except
+``teardown`` runs the preflight first and stops on a refusal.  ``sync`` runs both sources once through Olo's real worker with a
 request budget and records Google's response shapes; the scheduled cron jobs
 (E1–E6) run the same code unattended.  Evidence lands in
 $OLO_ACCEPTANCE_EVIDENCE; credentials stay in the acceptance home.
@@ -176,12 +178,26 @@ def check(pf: guard.Preflight, only: set[str] | None, mode: str) -> int:
     return code
 
 
+def environment_check(env=os.environ) -> int:
+    """Host checks only; the result goes to the evidence directory when set."""
+    from google_acceptance import environment
+    refusals, facts = environment.check(REPO)
+    if env.get("OLO_ACCEPTANCE_EVIDENCE"):
+        _write(Path(env["OLO_ACCEPTANCE_EVIDENCE"]) / "environment.json",
+               {"at": _now(), "ok": not refusals, "refusals": refusals, "facts": facts})
+    for r in refusals:
+        print(f"REFUSED: {r}", file=sys.stderr)
+    print(json.dumps({"ok": not refusals, "facts": facts}, indent=2))
+    return 3 if refusals else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="google_acceptance")
     ap.add_argument("--mode", choices=("A", "B"), default="A",
                     help="B adds paid inference; it needs its own approval and --key-file")
     ap.add_argument("--key-file", help="mode B: owner-only DeepSeek key file")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("environment")
     sub.add_parser("preflight")
     sp = sub.add_parser("sync")
     sp.add_argument("--max-requests", type=int, default=400)
@@ -199,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "teardown":
         print(TEARDOWN)
         return 0
+    if args.cmd == "environment":
+        return environment_check()
     if args.mode == "B" and not args.key_file:
         raise SystemExit("mode B needs --key-file (and its own approval)")
     pf = _preflight()

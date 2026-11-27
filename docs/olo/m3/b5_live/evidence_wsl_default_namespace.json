@@ -1,0 +1,353 @@
+{
+  "run_at": "2026-11-27T07:22:48.316653+00:00",
+  "stages": [
+    {
+      "stage": "configure",
+      "ok": true,
+      "verified_against": "setup.sh registry and .env",
+      "t_s": 0.2,
+      "port": 18914,
+      "bank": "olo-b5live",
+      "executable": "/home/olo_hs/b5live_hermes/olo/hindsight-venv/bin/hindsight-api",
+      "tenant_key_present": true
+    },
+    {
+      "stage": "start_and_ready",
+      "ok": true,
+      "verified_against": "real hindsight-api 1.2.1",
+      "t_s": 9.4,
+      "pid": 484,
+      "supervisor_status": "healthy"
+    },
+    {
+      "stage": "tenant_auth",
+      "ok": true,
+      "verified_against": "real server",
+      "t_s": 9.4,
+      "probe": "healthy",
+      "wrong_key_status": 401
+    },
+    {
+      "stage": "first_projection",
+      "ok": true,
+      "verified_against": "real retain + listing",
+      "t_s": 12.8,
+      "run": {
+        "status": "succeeded",
+        "commitment": {},
+        "projection": {
+          "submitted": 0,
+          "unchanged": 4,
+          "deferred": 0,
+          "retries_exhausted": 0,
+          "budget_exceeded": 0,
+          "stats_unavailable": 0,
+          "bank_unprepared": 0,
+          "unregistered_strategy": 0,
+          "consolidation_submitted": 0,
+          "confirmed": 4,
+          "failed": 0,
+          "cancelled": 0,
+          "lost": 0,
+          "consolidation_completed": 0,
+          "consolidation_failed": 0,
+          "consolidation_cancelled": 0,
+          "consolidation_lost": 0,
+          "cancelled_persisted": 0,
+          "bank_prepared": "unchanged",
+          "reconcile_missing": 0,
+          "reconcile_drifted": 0,
+          "reconcile_present_unconfirmed": 0,
+          "reconcile_unexpected": 0,
+          "consolidation_pending": 0,
+          "consolidation_failed_memories": 0
+        }
+      },
+      "desired": [
+        "ledger:2603e176-3851-48a6-9010-2e0ab82489fa:v1",
+        "ledger:b3bf029a-2366-4d57-a07f-f3345a5b6041:v1",
+        "sig:ev_8b5cc4df7eec7d32a7814eca4af047ae33b2d523_2027-02-01T10:00:00.000Z_986a1b71",
+        "sig:ev_ac0f09c0f8bf5e7a4b063d863255f16d8ce9abe6_2027-02-01T10:05:00.000Z_986a1b71"
+      ],
+      "held": [
+        "ledger:2603e176-3851-48a6-9010-2e0ab82489fa:v1",
+        "ledger:b3bf029a-2366-4d57-a07f-f3345a5b6041:v1",
+        "sig:ev_8b5cc4df7eec7d32a7814eca4af047ae33b2d523_2027-02-01T10:00:00.000Z_986a1b71",
+        "sig:ev_ac0f09c0f8bf5e7a4b063d863255f16d8ce9abe6_2027-02-01T10:05:00.000Z_986a1b71"
+      ]
+    },
+    {
+      "stage": "metadata_consistency",
+      "ok": true,
+      "verified_against": "real get_document / listing",
+      "t_s": 12.8,
+      "sample": "ledger:2603e176-3851-48a6-9010-2e0ab82489fa:v1",
+      "text_stored": true,
+      "listing_has_metadata": {
+        "sig:ev_8b5cc4df7eec7d32a7814eca4af047ae33b2d523_2027-02-01T10:00:00.000Z_986a1b71": true,
+        "sig:ev_ac0f09c0f8bf5e7a4b063d863255f16d8ce9abe6_2027-02-01T10:05:00.000Z_986a1b71": true,
+        "ledger:2603e176-3851-48a6-9010-2e0ab82489fa:v1": true,
+        "ledger:b3bf029a-2366-4d57-a07f-f3345a5b6041:v1": true
+      },
+      "get_document_metadata_equal": {
+        "sig:ev_8b5cc4df7eec7d32a7814eca4af047ae33b2d523_2027-02-01T10:00:00.000Z_986a1b71": "equal",
+        "sig:ev_ac0f09c0f8bf5e7a4b063d863255f16d8ce9abe6_2027-02-01T10:05:00.000Z_986a1b71": "equal",
+        "ledger:2603e176-3851-48a6-9010-2e0ab82489fa:v1": "equal",
+        "ledger:b3bf029a-2366-4d57-a07f-f3345a5b6041:v1": "equal"
+      },
+      "tags_equal": {
+        "sig:ev_8b5cc4df7eec7d32a7814eca4af047ae33b2d523_2027-02-01T10:00:00.000Z_986a1b71": true,
+        "sig:ev_ac0f09c0f8bf5e7a4b063d863255f16d8ce9abe6_2027-02-01T10:05:00.000Z_986a1b71": true,
+        "ledger:2603e176-3851-48a6-9010-2e0ab82489fa:v1": true,
+        "ledger:b3bf029a-2366-4d57-a07f-f3345a5b6041:v1": true
+      }
+    },
+    {
+      "stage": "document_replacement",
+      "ok": true,
+      "verified_against": "real retain upsert",
+      "t_s": 16.0,
+      "run": {
+        "status": "succeeded",
+        "commitment": {},
+        "projection": {
+          "submitted": 0,
+          "unchanged": 6,
+          "deferred": 0,
+          "retries_exhausted": 0,
+          "budget_exceeded": 0,
+          "stats_unavailable": 0,
+          "bank_unprepared": 0,
+          "unregistered_strategy": 0,
+          "consolidation_submitted": 0,
+          "confirmed": 3,
+          "failed": 0,
+          "cancelled": 0,
+          "lost": 0,
+          "consolidation_completed": 0,
+          "consolidation_failed": 0,
+          "consolidation_cancelled": 0,
+          "consolidation_lost": 0,
+          "cancelled_persisted": 0,
+          "bank_prepared": "unchanged",
+          "consolidation_pending": 0,
+          "consolidation_failed_memories": 0
+        }
+      },
+      "v1": "ledger:b3bf029a-2366-4d57-a07f-f3345a5b6041:v1",
+      "v1_tags": [
+        "ent:cid_968745e1d9274d67a2d5759807f83327",
+        "kind:ledger.state",
+        "ledger:superseded",
+        "ym:2027-02"
+      ],
+      "held_count": 6,
+      "desired_count": 6,
+      "desired_v1_tags": [
+        "ent:cid_968745e1d9274d67a2d5759807f83327",
+        "kind:ledger.state",
+        "ledger:superseded",
+        "ym:2027-02"
+      ],
+      "desired_v1_prefix": "SUPERSEDED: version 1 is history, not the current state. Cur",
+      "server_get_tags": [
+        "ent:cid_968745e1d9274d67a2d5759807f83327",
+        "kind:ledger.state",
+        "ledger:superseded",
+        "ym:2027-02"
+      ],
+      "server_text_prefix": "SUPERSEDED: version 1 is history, not the current state. Cur",
+      "server_updated_at": "2026-11-27T07:21:55.127940+00:00",
+      "outbox": [
+        "confirmed",
+        "7f4d11a7-1f29-4a54-bd6b-209653356e38",
+        "completed",
+        "2026-11-27T07:21:54.762972Z",
+        "2026-11-27T07:21:57.832540Z"
+      ],
+      "operations": [
+        [
+          "c55be273-70ff-4a44-8809-5a56a6187143",
+          "completed",
+          "2026-11-27T07:21:51.484833Z"
+        ],
+        [
+          "7f4d11a7-1f29-4a54-bd6b-209653356e38",
+          "completed",
+          "2026-11-27T07:21:54.762972Z"
+        ]
+      ]
+    },
+    {
+      "stage": "forced_restart",
+      "ok": true,
+      "verified_against": "real process kill -9 + supervisor",
+      "t_s": 22.1,
+      "killed_pid": 484,
+      "new_pid": 627,
+      "after_kill": "restarting",
+      "final": "healthy",
+      "documents_persisted": true
+    },
+    {
+      "stage": "reconcile_after_restart",
+      "ok": true,
+      "verified_against": "real listing",
+      "t_s": 22.2,
+      "reconciliation": {
+        "trigger": "restart",
+        "status": "ok",
+        "report": "{\"status\": \"ok\", \"server_documents\": 6, \"confirmed\": 6, \"missing\": 0, \"drifted\": 0, \"present_unconfirmed\": 0, \"unexpected\": 0, \"retired\": 0, \"missing_ids\": [], \"drifted_ids\": [], \"unexpected_ids\": []}"
+      }
+    },
+    {
+      "stage": "partial_write_recovery",
+      "ok": true,
+      "verified_against": "real delete + listing + retain",
+      "t_s": 25.3,
+      "lost": "sig:ev_8b5cc4df7eec7d32a7814eca4af047ae33b2d523_2027-02-01T10:00:00.000Z_986a1b71",
+      "report": {
+        "status": "recovered",
+        "server_documents": 5,
+        "confirmed": 5,
+        "missing": 1,
+        "drifted": 0,
+        "present_unconfirmed": 0,
+        "unexpected": 0,
+        "retired": 0
+      },
+      "run": {
+        "status": "succeeded",
+        "commitment": {},
+        "projection": {
+          "submitted": 0,
+          "unchanged": 6,
+          "deferred": 0,
+          "retries_exhausted": 0,
+          "budget_exceeded": 0,
+          "stats_unavailable": 0,
+          "bank_unprepared": 0,
+          "unregistered_strategy": 0,
+          "consolidation_submitted": 0,
+          "confirmed": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "lost": 0,
+          "consolidation_completed": 0,
+          "consolidation_failed": 0,
+          "consolidation_cancelled": 0,
+          "consolidation_lost": 0,
+          "cancelled_persisted": 0,
+          "bank_prepared": "unchanged",
+          "consolidation_pending": 0,
+          "consolidation_failed_memories": 0
+        }
+      }
+    },
+    {
+      "stage": "drift_recovery",
+      "ok": true,
+      "verified_against": "real retain + listing",
+      "t_s": 28.5,
+      "report": {
+        "status": "recovered",
+        "server_documents": 6,
+        "confirmed": 5,
+        "missing": 0,
+        "drifted": 1,
+        "present_unconfirmed": 0,
+        "unexpected": 0,
+        "retired": 0
+      },
+      "tags_after": [
+        "ent:cid_968745e1d9274d67a2d5759807f83327",
+        "kind:ledger.state",
+        "ledger:superseded",
+        "ym:2027-02"
+      ]
+    },
+    {
+      "stage": "bank_loss_recovery",
+      "ok": true,
+      "verified_against": "real delete_bank + rebuild",
+      "t_s": 31.7,
+      "documents_before": 6,
+      "documents_after": 6,
+      "run": {
+        "status": "succeeded",
+        "commitment": {},
+        "projection": {
+          "submitted": 0,
+          "unchanged": 6,
+          "deferred": 0,
+          "retries_exhausted": 0,
+          "budget_exceeded": 0,
+          "stats_unavailable": 0,
+          "bank_unprepared": 0,
+          "unregistered_strategy": 0,
+          "consolidation_submitted": 0,
+          "confirmed": 6,
+          "failed": 0,
+          "cancelled": 0,
+          "lost": 0,
+          "consolidation_completed": 0,
+          "consolidation_failed": 0,
+          "consolidation_cancelled": 0,
+          "consolidation_lost": 0,
+          "cancelled_persisted": 0,
+          "bank_prepared": "unchanged",
+          "consolidation_pending": 0,
+          "consolidation_failed_memories": 0
+        }
+      }
+    },
+    {
+      "stage": "tool_over_real_recall",
+      "ok": true,
+      "verified_against": "real recall (local embeddings)",
+      "t_s": 39.6,
+      "current": [
+        "gcal:primary:e1"
+      ],
+      "date": "2027-03-12",
+      "start": "2027-03-12T15:00:00-05:00",
+      "memory_groups": {
+        "supporting": [
+          "{\"attendees\":[{\"email\":\"owner@b5live.example\",\"organizer\":true,\"responseStatus\":",
+          "CURRENT: version 2 is the latest confirmed state of this commitment.\nCommitment "
+        ],
+        "no_longer_true": [
+          "{\"attendees\":[{\"email\":\"owner@b5live.example\",\"organizer\":true,\"responseStatus\":",
+          "SUPERSEDED: version 1 is history, not the current state. Current confirmed state"
+        ],
+        "unconfirmed": [],
+        "uncertain": []
+      }
+    },
+    {
+      "stage": "agent_turn",
+      "ok": true,
+      "verified_against": "real AIAgent loop + real Hindsight recall; model scripted (loopback, no inference)",
+      "t_s": 44.6,
+      "model_requests": 2
+    },
+    {
+      "stage": "installed_cron_supervisor",
+      "ok": true,
+      "verified_against": "real Hermes cron + installed shim + real server",
+      "t_s": 66.4,
+      "setup_exit": 0,
+      "setup_stderr": "",
+      "job": "olo-hindsight-b5live",
+      "schedule": "every 1m",
+      "interpreter": "/root/olo_linux_venv/bin/python",
+      "killed_pid": 627,
+      "new_pid": 903,
+      "first_run": "Triggered job: olo-hindsight-b5live (07e1dc3ab15c)\n  Next run: 2026-11-27T02:23:30.918561-05:00\n  Ran now: succeeded.",
+      "second_run": "Triggered job: olo-hindsight-b5live (07e1dc3ab15c)\n  Next run: 2026-11-27T02:23:30.918561-05:00\n  Ran now: succeeded.",
+      "status_lines": [
+        "  Hindsight: healthy pid=903 alive=True failures=0 last_healthy=2026-11-27T07:22:43.734836Z last_event=restarted@2026-11-27T07:22:34.226206Z"
+      ]
+    }
+  ]
+}

@@ -13,7 +13,7 @@ Nothing in this document has been run. Connecting the account (OAuth consent) an
 |---|---|---|---|
 | P1 | A dedicated Google account, for example `olo.acceptance.<n>@gmail.com`, plus a second account as the "customer", with no other data | operator | — |
 | P2 | An OAuth client in a Testing-mode Google Cloud project with the Gmail readonly, Calendar readonly and calendarList scopes; both accounts as test users | operator | — |
-| P3 | A disposable HERMES_HOME and business (`hermes olo setup`, Hindsight via `setup.sh`) on a machine whose WSL networking works, or a native Linux host | operator | — |
+| P3 | A disposable HERMES_HOME and business (`hermes olo setup`, Hindsight via `setup.sh`) in WSL's default network namespace (verified despite the NAT fallback: readiness doc §8), as a non-root user; `run.py environment` passes | operator | — |
 | P4 | `hermes olo google connect --account accept --client-secret-file …` (interactive consent) | operator | **yes: connects a Google account** |
 | P5 | Optional: a DeepSeek key file with a hard budget, for commitment extraction from email prose | operator | **yes: paid inference** |
 | P6 | An enrolled Olo operator (`hermes olo operator enroll`) for the review steps | operator | — |
