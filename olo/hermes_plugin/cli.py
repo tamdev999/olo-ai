@@ -357,6 +357,7 @@ def _cmd_setup(args: argparse.Namespace) -> None:
     parts: list[str] = [repr("--source"), repr(source)]
     for k, v in options.items():
         parts += [repr("--option"), repr(f"{k}={v}")]
+    parts += [repr(a) for a in _page_argv(args)]
     parts += [repr(a) for a in _s5_argv(args, conn)]
     argv_literal = "[" + ", ".join(parts) + "]"
 
@@ -1027,6 +1028,20 @@ def _cmd_purge_content(args: argparse.Namespace) -> None:
 
 # ── Shim template ─────────────────────────────────────────────────────────────
 
+def _page_argv(args: argparse.Namespace) -> list[str]:
+    """Worker page bounds (--limit, --max-batches) for the shim, validated."""
+    argv: list[str] = []
+    for flag, value in (("--limit", getattr(args, "limit", None)),
+                        ("--max-batches", getattr(args, "max_batches", None))):
+        if value is None:
+            continue
+        if value < 1:
+            print(f"olo setup: {flag} must be at least 1", file=sys.stderr)
+            sys.exit(1)
+        argv += [flag, str(value)]
+    return argv
+
+
 def _setup_supervisor(args: argparse.Namespace, conn, scripts_dir: Path,
                       repo_root: str):
     """With --enable-projection: configure this business's Hindsight service
@@ -1067,6 +1082,10 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
         help="Adapter option (may be repeated)",
     )
     setup_p.add_argument("--force", action="store_true", help="Overwrite existing shim")
+    setup_p.add_argument("--limit", type=int,
+                         help="items per source page in each run (default 100)")
+    setup_p.add_argument("--max-batches", type=int,
+                         help="pages per run (default 50); bounds API calls per run")
     setup_p.add_argument("--schedule", action="store_true",
                          help="Create or update the Hermes cron jobs (idempotent by name)")
     s5 = setup_p.add_argument_group(

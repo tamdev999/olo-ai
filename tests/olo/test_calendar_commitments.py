@@ -331,3 +331,32 @@ class TestCalendarPipeline:
             conn.close()
             cal.run()
             assert cal.versions(cal.commitment("e1")) == [("commit", "2027-01-15", None)]
+
+
+def test_calendar_commitments_are_applied_after_the_model_budget_runs_out(tmp_path) -> None:
+    """An exhausted extraction budget stops prose only: calendar events need
+    no model and are still applied in the same run."""
+    from datetime import UTC, datetime
+
+    from olo.extractor import Budget
+    from tests.olo.test_calendar_email_linking import Business, PLAIN
+    b = Business(tmp_path)
+    b.calendar(event("e1", "2027-01-20", updated="2026-11-20T10:00:00.000Z"))
+    before = b.rows("SELECT COUNT(*) FROM commitment_versions")[0][0]
+    # Prose first in the queue, then a calendar revision, with no model budget.
+    from olo.adapters.gcal import _event_to_signal
+    from olo.adapters.gmail_full import build_email_content_signal
+    from tests.olo import gmail_fixtures as gf
+    payload = gf.with_headers(gf.text_part(PLAIN), gf.message_headers(
+        frm=f"Owner <{OWNER}>", to=f"Alice <{ALICE}>", subject="Visit", msg_id="m1"))
+    email = build_email_content_signal("gcal_biz", gf.raw_message(
+        "m1", payload, labels=["SENT"], internal_ms="1700000000000"), "1")
+    revision = _event_to_signal(event("e1", "2027-01-22", updated="2026-11-21T10:00:00.000Z"),
+                                "gcal_biz", datetime.now(UTC), "primary")
+    b.gcal.queue.extend([email, revision])
+    r = run_source(b.gcal, db_path=b.db, commitment=CommitmentStageConfig(
+        model_fn=b.model, budget=Budget(max_calls=0)))
+    assert r.commitment.get("budget_exhausted") == 1 and r.commitment.get("applied") == 1
+    assert b.rows("SELECT COUNT(*) FROM commitment_versions")[0][0] == before + 1
+    assert b.model.calls == []
+

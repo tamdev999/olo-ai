@@ -121,6 +121,20 @@ def bind_business(conn: sqlite3.Connection, business_id: str, now: str) -> None:
             f"this olo.db belongs to business {bound!r}, not {business_id!r}")
 
 
+def _no_model(prompt: str):
+    """The model of a no-model activation (--extract-max-calls 0): the budget
+    refuses before any call, and this refuses should one ever be attempted."""
+    raise RuntimeError("extraction is disabled (--extract-max-calls 0)")
+
+
+def _non_negative(value: Optional[float], name: str) -> float:
+    if value is None:
+        raise ActivationError(f"{name} is required when the stage is enabled")
+    if value < 0:
+        raise ActivationError(f"{name} must not be negative (got {value!r})")
+    return value
+
+
 def _positive(value: Optional[float], name: str) -> float:
     if value is None:
         raise ActivationError(f"{name} is required when the stage is enabled")
@@ -187,7 +201,9 @@ def activate(
             raise ActivationError(
                 f"this olo.db is bound to bank {bound_bank!r}, not {req.bank_id!r}")
         max_docs = int(_positive(req.projection_max_docs, "--projection-max-docs"))
-        max_prose = int(_positive(req.projection_max_prose_docs, "--projection-max-prose-docs"))
+        # 0 = structured documents only: prose (which Hindsight's LLM would
+        # extract) is never submitted.
+        max_prose = int(_non_negative(req.projection_max_prose_docs, "--projection-max-prose-docs"))
         budget_usd = _positive(req.projection_budget_usd, "--projection-budget-usd")
         from olo.m3.hindsight.client import HindsightConfig
         try:
@@ -203,14 +219,19 @@ def activate(
             raise ActivationError(f"no Hindsight tenant API key for {req.business_id!r}")
 
     if req.enable_commitments:
-        max_calls = int(_positive(req.extract_max_calls, "--extract-max-calls"))
-        max_tokens = int(_positive(req.extract_max_tokens or max_calls * 2_000,
-                                   "--extract-max-tokens"))
-        key = (load_key_file(req.deepseek_key_file) if req.deepseek_key_file
-               else environ.get("DEEPSEEK_API_KEY", ""))
-        if not key:
-            raise ActivationError(
-                "no DeepSeek key: set DEEPSEEK_API_KEY or pass --deepseek-key-file")
+        # 0 = no model: calendar commitments (deterministic) are applied and
+        # prose waits; no key is read and no call can be made.
+        max_calls = int(_non_negative(req.extract_max_calls, "--extract-max-calls"))
+        max_tokens = (int(_positive(req.extract_max_tokens or max_calls * 2_000,
+                                    "--extract-max-tokens")) if max_calls else 0)
+        key = ""
+        if max_calls:
+            key = (load_key_file(req.deepseek_key_file) if req.deepseek_key_file
+                   else environ.get("DEEPSEEK_API_KEY", ""))
+            if not key:
+                raise ActivationError(
+                    "no DeepSeek key: set DEEPSEEK_API_KEY or pass --deepseek-key-file"
+                    " (or --extract-max-calls 0 for calendar commitments only)")
         base_url = _deepseek_base_url(req.deepseek_base_url)
         from olo.adapters.contacts import load_own_identifiers
         own = frozenset(("email", e.strip().lower()) for e in req.own_emails if "@" in e)
@@ -226,8 +247,11 @@ def activate(
     if req.enable_commitments:
         from olo.commitments import CommitmentStageConfig
         from olo.extractor import Budget, make_deepseek_model_fn
-        model_kwargs = {"base_url": base_url} if base_url else {}
-        model_fn = (model_factory or make_deepseek_model_fn)(api_key=key, **model_kwargs)
+        if max_calls:
+            model_kwargs = {"base_url": base_url} if base_url else {}
+            model_fn = (model_factory or make_deepseek_model_fn)(api_key=key, **model_kwargs)
+        else:
+            model_fn = _no_model
         commitment = CommitmentStageConfig(
             model_fn=model_fn,
             budget=Budget(max_calls=max_calls, max_total_tokens=max_tokens),

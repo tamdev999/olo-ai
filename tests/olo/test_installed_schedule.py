@@ -161,6 +161,24 @@ def _server_pid(home: Path) -> int | None:
     return None if out.stdout.strip() == "None" else int(out.stdout)
 
 
+def _service(home: Path) -> dict:
+    """The supervisor's state and recent events, for failure messages."""
+    out = subprocess.run(
+        [sys.executable, "-c", "import json; from olo.paths import db_path; from olo.store import connect;"
+                               "from olo.hindsight_service import service_status;"
+                               "print(json.dumps(service_status(connect(db_path()), limit=20), default=str))"],
+        capture_output=True, text=True, check=True, cwd=str(_repo_root()),
+        env={**os.environ, "HERMES_HOME": str(home)})
+    return json.loads(out.stdout)
+
+
+def _exited(pid: int) -> bool:
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass   # kills the server cron started (detached, by design)
 def test_the_supervisor_job_starts_restarts_and_reports_a_crash_loop(home: Path, tmp_path: Path) -> None:
@@ -195,11 +213,17 @@ def test_the_supervisor_job_starts_restarts_and_reports_a_crash_loop(home: Path,
     # already holds the restart above) is spent; then the job fails.
     outcomes = []
     for _ in range(8):
+        # The server "dies at once": wait until it has, so each run sees a dead
+        # process (a still-running one is treated as hung, not crashed).
+        pid = _server_pid(home)
+        if pid:
+            wait_until(lambda: _exited(pid), timeout=30, what="crashed server gone")
         ran = _run(["cron", "run", job], home)
         outcomes.append("failed" if "Ran now: failed" in ran.stdout else "completed")
         if outcomes[-1] == "failed":
             break
-    assert outcomes[-1] == "failed" and outcomes.count("completed") >= 1, outcomes
+    assert outcomes[-1] == "failed" and outcomes.count("completed") >= 1, json.dumps(
+        {"outcomes": outcomes, "service": _service(home)}, default=str)
     status = _run(["olo", "status"], home)
     assert "[DEGRADED] hindsight: Hindsight crashloop" in status.stdout
     assert _run(["cron", "run", job], home).stdout.count("Ran now: failed") == 1   # stays failed
@@ -217,3 +241,20 @@ def test_status_reports_an_unrun_supervisor_only_once_it_is_scheduled(home: Path
         assert _setup(home, registry, tmp_path / "venv", "--schedule", "--force").returncode == 0
     stalled = _run(["olo", "status"], home).stdout
     assert "[STALLED] hindsight: Hindsight supervisor job is scheduled but has never run" in stalled
+
+
+def test_a_no_model_installation_needs_no_key_and_runs(home: Path) -> None:
+    """--extract-max-calls 0 (calendar commitments only) installs with no
+    DeepSeek key anywhere, with bounded pages, and its cron job runs."""
+    with FakeGoogleServer() as google:
+        _save_creds(google, "acme", home)
+        google.gmail.add_message("m1", labels=["SENT"], subject="hello", from_=google.email,
+                                 to="Alice <alice@customer.test>")
+        r = _run(["olo", "setup", "--source", "gmail", "--option", "account=acme",
+                  "--enable-commitments", "--extract-max-calls", "0", "--business-id", BIZ,
+                  "--own-email", google.email, "--limit", "5", "--max-batches", "3",
+                  "--schedule"], home)
+        assert r.returncode == 0, r.stderr
+        job = _jobs(home)["olo-gmail-acme"]["id"]
+        _cron_run_and_wait(home, job, expect_status="completed")
+        _cron_run_and_wait(home, job, expect_status="completed")

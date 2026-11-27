@@ -27,7 +27,8 @@ Outcomes (``commitment_outcome``) and their ``commitment_status``:
   ledger_invalid      unresolved  event failed ledger validation
   model_error         failed      retried on later runs, up to max_attempts
   content_error       failed      stored content missing/corrupt; retried
-  budget_exhausted    pending     no call made; the run stops extracting
+  budget_exhausted    pending     no call made; the run stops extracting (calendar
+                                  events, which need no model, are still applied)
 
 Only signals with ``identity_status='resolved'`` are processed: the ledger
 key is the canonical Rolodex contact, never a guess.  Ambiguous or unresolved
@@ -265,6 +266,7 @@ def run_commitment_stage(
     content_enabled = _full_content_enabled(conn)
     counts: dict[str, int] = {}
     reopen_calendar_signals(conn, source, format_utc(clock()))
+    extraction_stopped = False
 
     for row in _candidates(conn, source, cfg.max_attempts):
         if renew is not None:
@@ -305,6 +307,8 @@ def run_commitment_stage(
             counts[OUTCOME_SUPERSEDED] = counts.get(OUTCOME_SUPERSEDED, 0) + 1
             continue
 
+        if extraction_stopped:
+            continue                   # prose waits for the next run's budget
         prepared = load_prepared_signal(conn, source, sid)
         outcome = extract_prepared(
             prepared, source, budget=cfg.budget, cache_conn=conn,
@@ -312,7 +316,10 @@ def run_commitment_stage(
         )
         if outcome.status == ExtractionStatus.BUDGET_EXHAUSTED:
             counts["budget_exhausted"] = counts.get("budget_exhausted", 0) + 1
-            break                      # left pending; no attempt is charged
+            # Left pending, no attempt charged.  Only extraction stops:
+            # calendar events need no model and are still applied.
+            extraction_stopped = True
+            continue
         if _fault:
             _fault("after_extraction")
 

@@ -107,3 +107,14 @@ Record what Google actually returned (`phase_b_observations.json`, redacted: has
 1. P1–P3 and P6, then **request approval for P4**.
 2. Mode A: G1–G10, C1–C8, L1–L3, E1, E2, E4–E6.
 3. **Request approval for P5** (budget), then mode B: G1 and G2 with commitment extraction, and E3 with a real model.
+
+## 5. Revision (readiness batch)
+
+The plan is executable through `scripts/olo/m3/google_acceptance`. The procedure, endpoints, scopes, coverage matrix and blockers are in `GOOGLE_ACCEPTANCE_READINESS.md`.
+
+- **Tagging:** test data carries `[OLO-<ID>]` in the subject or title (G6 uses `G6a` for restore and `G6b` for delete). Each check reads only its own tagged data.
+- **Mode A setup:** `--extract-max-calls 0` (calendar commitments, no model) and `--projection-max-prose-docs 0` (structured documents only), so mode A needs no paid inference anywhere, including in Hindsight.
+- **Pagination:** G9 and C8 use 12 items with the jobs at `--limit 5` instead of hundreds.
+- **New scenario D1** (duplicate delivery): both sources re-synced twice back to back; no new or duplicate signals.
+- **Identities:** a second (customer) identity is required, Outlook.com is needed only for G2, and G3 needs an SMTP-capable sender.
+- **Recording:** every scenario ends `passed`, `failed`, `error`, `not_run` or `needs_approval`. The verdict is `accepted` only when all pass.

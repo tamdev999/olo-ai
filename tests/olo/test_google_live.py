@@ -78,8 +78,13 @@ def _has_live_creds() -> bool:
 
 @pytest.fixture(scope="module", autouse=True)
 def require_live_creds():
-    if not _has_live_creds():
+    if not _TEST_HOME:
         pytest.skip(_SKIP_REASON)
+    # A live run was asked for: broken or missing credentials are a failure,
+    # never a run that silently skips every check.
+    if not _has_live_creds():
+        pytest.fail(f"OLO_GOOGLE_TEST_HOME={_TEST_HOME!r} is set but its 'livetest' "
+                    "credentials cannot be loaded; reconnect the account")
 
 
 # ── Repo root ─────────────────────────────────────────────────────────────────
@@ -223,7 +228,11 @@ def _save_state(state: dict) -> None:
 # ── Observations file (redacted) ──────────────────────────────────────────────
 
 def _obs_path() -> Path:
-    return Path(_TEST_HOME) / "phase_b_observations.json"
+    # OLO_GOOGLE_EVIDENCE keeps the redacted observations apart from the home
+    # that holds the credentials (the default stays the home, as before).
+    base = Path(os.environ.get("OLO_GOOGLE_EVIDENCE") or _TEST_HOME)
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "phase_b_observations.json"
 
 
 def _record_observation(key: str, value: Any) -> None:

@@ -32,8 +32,12 @@ A pass probes the server, then acts:
 Timestamps are canonical UTC (olo.signals.format_utc), like the projection
 stage's, so they order correctly as text.
 
-Process identity is the recorded pid *and* its creation time (psutil), never
-a command-line match.  Every start, restart, stop and condition is an event
+Process identity is the recorded pid *and* its birth, never a command-line
+match.  The birth is ``hermes_cli.process_identity.worker_birth``: on Linux the
+kernel's start ticks since boot, because psutil's epoch ``create_time()`` adds
+the ``/proc/stat`` btime it re-reads on every call and WSL2 re-anchors btime,
+so another process would read a live server's epoch birth seconds off, take it
+for dead, adopt it and never stop it.  (The ``create_time`` column holds it.)  Every start, restart, stop and condition is an event
 in ``hindsight_service_events``; the projection stage reconciles the bank
 after a restart (olo.hindsight_reconcile).
 """
@@ -182,14 +186,18 @@ def probe(spec: ServiceSpec, timeout: float = 3.0) -> Probe:
 
 # ── Process ───────────────────────────────────────────────────────────────────
 
-def _alive(pid: Optional[int], create_time: Optional[float]) -> bool:
+def _birth(proc) -> float:
+    from hermes_cli.process_identity import worker_birth
+    return worker_birth(proc)
+
+
+def _alive(pid: Optional[int], birth: Optional[float]) -> bool:
     import psutil
-    if not pid or create_time is None:
+    if not pid or birth is None:
         return False
     try:
         proc = psutil.Process(pid)
-        return (abs(proc.create_time() - create_time) < 0.01
-                and proc.status() != psutil.STATUS_ZOMBIE)
+        return abs(_birth(proc) - birth) < 0.01 and proc.status() != psutil.STATUS_ZOMBIE
     except psutil.Error:
         return False
 
@@ -211,7 +219,7 @@ def _spawn(spec: ServiceSpec) -> tuple[int, float]:
             [str(spec.executable), "--host", "127.0.0.1", "--port", str(spec.port)],
             cwd=str(spec.home), env=_environment(spec), stdin=subprocess.DEVNULL,
             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    return proc.pid, psutil.Process(proc.pid).create_time()
+    return proc.pid, _birth(psutil.Process(proc.pid))
 
 
 def _event(conn: sqlite3.Connection, now: str, event: str, detail: str = "") -> None:

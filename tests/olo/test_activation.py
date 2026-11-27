@@ -122,7 +122,7 @@ class TestRefusals:
         ({"business_id": "Biz Name!"}, "--business-id"),
         ({"bank_id": None}, "--bank-id"),
         ({"extract_max_calls": None}, "--extract-max-calls"),
-        ({"extract_max_calls": 0}, "--extract-max-calls"),
+        ({"extract_max_calls": -1}, "--extract-max-calls"),
         ({"projection_max_docs": None}, "--projection-max-docs"),
         ({"projection_max_prose_docs": -1}, "--projection-max-prose-docs"),
         ({"projection_budget_usd": None}, "--projection-budget-usd"),
@@ -133,6 +133,19 @@ class TestRefusals:
         with pytest.raises(ActivationError, match=needle.replace("-", r"\-")):
             _activate(conn, _req(registry, **change))
         assert _bindings(conn) == {}
+
+    def test_zero_calls_is_a_no_model_mode(self, conn, registry) -> None:
+        """--extract-max-calls 0: calendar commitments only.  No key is read,
+        no model is built (the factory would raise) and none can be called."""
+        def factory(**kw):
+            raise AssertionError("no model may be built in no-model mode")
+        act = activate(_req(registry, extract_max_calls=0, projection_max_prose_docs=0),
+                       conn, NOW, environ={}, model_factory=factory)
+        assert act.commitment.budget.max_calls == 0
+        assert act.commitment.budget.call_refusal(1) is not None
+        with pytest.raises(RuntimeError, match="extraction is disabled"):
+            act.commitment.model_fn("prompt")
+        assert act.projection.limits.max_prose_docs_per_run == 0
 
     def test_missing_deepseek_key(self, conn, registry) -> None:
         with pytest.raises(ActivationError, match="DeepSeek key"):

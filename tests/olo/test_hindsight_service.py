@@ -17,6 +17,7 @@ from pathlib import Path
 import psutil
 import pytest
 
+from hermes_cli.process_identity import worker_birth
 from olo.hindsight_service import (
     Probe,
     ServiceSpec,
@@ -70,7 +71,7 @@ def spawner(children, code: str = "import time; time.sleep(120)"):
         p = subprocess.Popen([sys.executable, "-c", code])
         children.append(p)
         calls.append(p.pid)
-        return p.pid, psutil.Process(p.pid).create_time()
+        return p.pid, worker_birth(psutil.Process(p.pid))     # the birth _spawn records
     return spawn, calls
 
 
@@ -217,6 +218,28 @@ def test_the_supervisor_restarts_a_killed_server(conn, tmp_path) -> None:
         assert service_status(conn)["pid"] != first
         assert events(conn) == ["started", "restarted"]
         assert (s.home / "hindsight.log").exists()
+    finally:
+        stop(conn, datetime.now(UTC).isoformat(), reason="test teardown")
+
+
+@pytest.mark.platforms("linux")
+def test_a_boot_time_reanchor_does_not_orphan_the_server(conn, tmp_path, monkeypatch) -> None:
+    """psutil's epoch create_time() adds the /proc/stat btime it re-reads on
+    every call, and WSL2 re-anchors btime: the supervisor took its own live
+    server for dead, adopted it, and ``stop`` left it holding the port."""
+    s = _install(tmp_path)
+    try:
+        start(conn, s, T0.isoformat())
+        wait_until(lambda: probe(s).status == "healthy", timeout=30, what="server up")
+        pid = service_status(conn)["pid"]
+        epoch, boot = psutil.Process(pid).create_time(), psutil.boot_time()
+        monkeypatch.setattr(psutil._pslinux, "boot_time", lambda: boot + 3)
+        assert psutil.Process(pid).create_time() != epoch          # the re-anchor is real
+        assert service_status(conn)["alive"] is True
+        assert supervise_once(conn, s, datetime.now(UTC)) == "healthy"
+        assert stop(conn, datetime.now(UTC).isoformat()) is True
+        assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+        assert probe(s).status == "down"
     finally:
         stop(conn, datetime.now(UTC).isoformat(), reason="test teardown")
 
