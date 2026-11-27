@@ -227,8 +227,9 @@ def _seed_all_phases(pf, s, sid: str) -> None:
     run.record_action(pf, sid, f"seeded, run {s.run_id}", by="seeder")
 
 
-def _results(evidence: Path) -> dict:
-    return {o["id"]: o for o in json.loads((evidence / "results.json").read_text(encoding="utf-8"))["outcomes"]}
+def _results(evidence: Path, run_id: str = "") -> dict:
+    report = run.results_path(evidence, run_id)
+    return {o["id"]: o for o in json.loads(report.read_text(encoding="utf-8"))["outcomes"]}
 
 
 @pytest.mark.parametrize("sid", ["G5", "G6", "G7", "G8", "G9", "C1", "C2", "C3", "C5", "C6", "C8"])
@@ -285,9 +286,9 @@ def test_a_check_sees_only_its_own_run(acceptance) -> None:
     diag = _other_run(s.api, evidence)
     _seed_run(pf, diag, "C3")
     assert run.check(pf, {"C3"}, "A", run=s.run_id) in (0, 4)
-    assert _results(evidence)["C3"]["details"]["outcomes"] == ["applied", "no_change"]
+    assert _results(evidence, s.run_id)["C3"]["details"]["outcomes"] == ["applied", "no_change"]
     assert run.check(pf, {"C3"}, "A", run=diag.run_id) in (0, 4)
-    assert _results(evidence)["C3"]["details"]["outcomes"] == ["applied", "no_change"]
+    assert _results(evidence, diag.run_id)["C3"]["details"]["outcomes"] == ["applied", "no_change"]
     run.record_action(pf, "C3", "unscoped look", by="seeder")
     run.check(pf, {"C3"}, "A")                       # unscoped: both runs' revisions
     assert _results(evidence)["C3"]["details"]["outcomes"].count("applied") == 2
@@ -300,20 +301,20 @@ def test_a_verdict_is_not_rewritten_by_later_activity(acceptance) -> None:
     _seed_run(pf, s, "G8")
     window = run.rerun(pf, mode="A", key_file=None, run=s.run_id)
     run.check(pf, {"D1", "G8"}, "A", run=s.run_id)
-    first = _results(evidence)
+    first = _results(evidence, s.run_id)
     assert first["D1"]["status"] == "passed", first["D1"]
     assert first["D1"]["details"]["window"] == [window["max_signal_id_before"],
                                                 window["max_signal_id_after"]]
     for sid in ("G9", "C8"):                          # much later, unrelated ingestion
         _seed_run(pf, s, sid)
     run.check(pf, None, "A", run=s.run_id)
-    later = _results(evidence)
+    later = _results(evidence, s.run_id)
     for sid in ("D1", "G8"):
         assert later[sid]["status"] == first[sid]["status"]
         assert later[sid]["checked_at"] == first[sid]["checked_at"]      # the recorded verdict
     # Re-evaluated on request, D1 still judges only its own window.
     run.check(pf, {"D1"}, "A", run=s.run_id, recheck=frozenset({"D1"}))
-    assert _results(evidence)["D1"]["status"] == "passed"
+    assert _results(evidence, s.run_id)["D1"]["status"] == "passed"
     log = [json.loads(line) for line in (evidence / "verdicts.jsonl").read_text().splitlines()]
     assert [v["status"] for v in log if v["id"] == "D1"] == ["passed", "passed"]
 
@@ -322,10 +323,10 @@ def test_a_new_action_is_judged_afresh(acceptance) -> None:
     pf, s, evidence = acceptance
     run.record_action(pf, "C3", "nothing seeded yet", by="seeder", run=s.run_id)
     run.check(pf, {"C3"}, "A", run=s.run_id)
-    assert _results(evidence)["C3"]["status"] == "failed"
+    assert _results(evidence, s.run_id)["C3"]["status"] == "failed"
     _seed_run(pf, s, "C3")                            # records a new action
     run.check(pf, {"C3"}, "A", run=s.run_id)
-    assert _results(evidence)["C3"]["status"] == "passed"
+    assert _results(evidence, s.run_id)["C3"]["status"] == "passed"
 
 
 def test_d1_counts_duplicates_inside_its_window_only(acceptance) -> None:
@@ -347,7 +348,7 @@ def test_d1_counts_duplicates_inside_its_window_only(acceptance) -> None:
     facts["runs"][s.run_id]["rerun"]["max_signal_id_after"] = lo + 1
     (evidence / "facts.json").write_text(json.dumps(facts))
     run.check(pf, {"D1"}, "A", run=s.run_id)
-    d1 = _results(evidence)["D1"]
+    d1 = _results(evidence, s.run_id)["D1"]
     assert row is not None and d1["status"] == "failed" and d1["details"]["duplicate_messages"] == 1
 
 
@@ -372,3 +373,19 @@ def test_cleanup_dry_run_reports_items_already_in_trash(tmp_path) -> None:
         assert {r["result"] for r in af.cleanup(api, RUN, s.run) if r["type"] == "message"} == {"trashed"}
         after = [r["result"] for r in af.cleanup(api, RUN, s.run, dry_run=True) if r["type"] == "message"]
         assert after and set(after) == {"already in trash"}
+
+
+def test_a_run_scoped_check_never_overwrites_another_runs_report(acceptance) -> None:
+    """Live re-acceptance, 2026-11-27: every check rewrote the one shared
+    results.json/results.md, so the first run's final report survived only as
+    a manual copy.  Each run now keeps its own report."""
+    pf, s, evidence = acceptance
+    _seed_run(pf, s, "C3")
+    run.record_action(pf, "C3", "unscoped", by="seeder")
+    run.check(pf, {"C3"}, "A")
+    unscoped = (evidence / "results.json").read_bytes()
+    run.check(pf, {"C3"}, "A", run=s.run_id)
+    assert (evidence / "results.json").read_bytes() == unscoped
+    assert (evidence / f"results_{s.run_id}.json").exists() and (evidence / f"results_{s.run_id}.md").exists()
+    with pytest.raises(SystemExit):
+        run.results_path(evidence, "../x")

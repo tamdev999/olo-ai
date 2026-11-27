@@ -228,7 +228,7 @@ Mode B adds `--mode B --key-file /secure/deepseek.env` to `sync` and `check`, an
   - `api_shapes.json`;
   - `requests.jsonl` (every request: endpoint template, parameter names, budget);
   - `syncs.jsonl`;
-  - `results.json`, `results.md`, `verdicts.jsonl` (every verdict, append-only);
+  - `results_<run id>.json` / `.md` per run (`results.json` / `.md` for an unscoped check), `verdicts.jsonl` (every verdict, append-only);
   - `fixtures.jsonl` (each seeder write: run, scenario, phase, operation, Google ID).
 - **olo.db** keeps the source evidence (signals, blobs) in the acceptance home; it is archived or deleted at teardown.
 

@@ -95,6 +95,14 @@ def _verdicts(evidence: Path, run: str) -> dict:
     return latest
 
 
+def results_path(evidence: Path, run: str) -> Path:
+    """Where a check's report goes: one file per run, so a later run's check
+    never overwrites another run's results (``results.json`` is unscoped)."""
+    if run and not (run.isascii() and run.isalnum()):
+        raise SystemExit(f"run id must be letters and digits only, not {run!r}")
+    return evidence / (f"results_{run}.json" if run else "results.json")
+
+
 #: Verdicts that are recorded and reused; an error re-runs its check.
 _RECORDED = ("passed", "passed_simulated", "failed")
 
@@ -251,14 +259,15 @@ def check(pf: guard.Preflight, only: set[str] | None, mode: str, *, run: str = "
                 fh.write(json.dumps({"run": run, "id": o.id, "status": o.status, "details": o.details,
                                      "checked_at": o.checked_at, "action_at": o.action_at},
                                     default=str) + "\n")
-    _write(s.evidence / "results.json", {"at": now, "run": run, "verdict": verdict, "mode": mode,
-                                         "outcomes": [o.__dict__ for o in outcomes]})
+    results = results_path(s.evidence, run)
+    _write(results, {"at": now, "run": run, "verdict": verdict, "mode": mode,
+                     "outcomes": [o.__dict__ for o in outcomes]})
     lines = [f"# Google acceptance results ({now}, mode {mode}, run {run or 'unscoped'}): {verdict}",
              "", "| Scenario | Evidence | Result | Checked at | Details |", "|---|---|---|---|---|"]
     evidence = {sc.id: sc.evidence for sc in scenarios.SCENARIOS}
     lines += [f"| {o.id} | {evidence[o.id]} | {o.status} | {o.checked_at or '-'} |"
               f" `{json.dumps(o.details, default=str)[:300]}` |" for o in outcomes]
-    (s.evidence / "results.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    results.with_suffix(".md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     if not run:
         print("note: no --run-id / $OLO_ACCEPTANCE_RUN; checks are not scoped to a run",
               file=sys.stderr)

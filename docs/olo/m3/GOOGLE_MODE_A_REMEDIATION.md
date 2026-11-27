@@ -40,6 +40,7 @@ These shapes come from the recorded API evidence:
 | E2 | **The connect and status messages printed `['gmail.metadata', 'calendar']`** for the three read-only v2 scopes. | `GoogleAccountCredentials.scope_labels()` reports exactly the granted scopes. | `test_cli_google.py::test_status_reports_exactly_the_granted_read_only_scopes` |
 | F1 | **`expire-cursor gmail` raised `TypeError`** on the bare history-id cursor. | `run.stale_cursor` | `test_expire_cursor_handles_a_bare_gmail_history_id` |
 | F2 | **Checks were neither run-scoped nor point-in-time.** A diagnostic run mixed into C2/C3, and later ingestion flipped D1. | `--run-id` / `$OLO_ACCEPTANCE_RUN` scope actions, facts and checks. Verdicts are appended to `verdicts.jsonl` and reused until the scenario's action is recorded again, or until `--recheck`. D1 judges the signal-id window around its own rerun. | `test_a_check_sees_only_its_own_run`, `test_a_verdict_is_not_rewritten_by_later_activity`, `test_a_new_action_is_judged_afresh`, `test_d1_counts_duplicates_inside_its_window_only` |
+| F4 | **Every `check` rewrote the one shared `results.json` / `results.md`** (found on the live re-acceptance; the first run's final report survives as `results_final_precleanup.*`). | A run-scoped check writes `results_<run id>.json` / `.md`. | `test_a_run_scoped_check_never_overwrites_another_runs_report` |
 | F3 | **The cleanup dry run said "would be trashed" for items already in trash.** | `message_meta` returns the marker and labels in a single read. Items already trashed report `already in trash`. | `test_cleanup_dry_run_reports_items_already_in_trash` |
 
 ### A: the sync cycle
@@ -103,3 +104,25 @@ This needs its own approval. It does not touch real data, and creates no account
 6. **Run the final check:** one `check` scoped to the new run. Earlier verdicts are reported as checked.
 7. **Clean up:** a dry run, then the run-tagged cleanup. Then remove the cron jobs and stop Hindsight, without revoking either grant.
 8. **Expected verdict:** `accepted_within_scope` at best. G1, G3 and G4 are simulated; G2, C4, L1 and L3 need a second identity; L2 needs mode B; and E5 and E6 stay `not_run` unless separately approved.
+
+## 5. Live targeted re-acceptance (2026-11-27, run `acc20261127t2225247f1c`, code `233c647`)
+
+The rerun used the same account, clients, grants and acceptance home, in Mode A, with one Olo sync after each seeder phase. Every verdict below comes from this run's evidence only, in `results_acc20261127t2225247f1c.*` and `verdicts.jsonl`. The first run's report is untouched (`results_final_precleanup.*`).
+
+| Scenario | Result | Ledger / identity evidence |
+|---|---|---|
+| G3 | passed_simulated | Google again returned `43 61 66 c3 a9…` under `charset="iso-8859-1"`; the authored text reads "Café déjà vu", with no mojibake |
+| C1 | passed | `commit 2026-11-30`, with its start time |
+| C2 | passed | `commit 12-01` → `confirm_change 12-02 (prior 12-01)` → `confirm_change 12-02 17:00 (same day)` |
+| C3 | passed | `applied` then `no_change`; one version |
+| C5 | passed | Series (seen twice): `recurring_series`. The moved 11 Dec occurrence: `applied`, its own commitment, still scheduled, with one version. The cancelled 18 Dec occurrence: a full resource with title and start, `no_commitment`. All three revisions share one iCalUID, and no `ical:` alias was recorded. |
+| C6 | passed | `commit 12-05` → `cancel`; the deleted event came back as a full resource |
+| C8 | passed | 12 events over 3 pages |
+| E4 | passed | kill -9, then the supervisor restarted the server in about 4 s, reusing the same postmaster. The final `stop` recorded `embedded database stopped (pid 683)` and left 0 olo_hs postgres or Hindsight processes; the other users' 5 postgres processes were untouched. |
+| E2 (bounded) | passed | 35 minutes: 6 Gmail and 2 Calendar scheduled runs, all succeeded. The commitment stage stayed `ok` (0 consecutive), counting `extraction_disabled`. Calendar coverage was 4 of 4, and nothing was degraded or stalled. **The plan's two-hour E2 window was not re-run.** The harness's E2 check judges conditions at check time and does not measure duration, so an accepted two-hour E2 still needs a fresh two-hour window. |
+
+**Requests and writes:**
+- **Olo:** 13 harness syncs made 84 read requests, at most 10 in one sync against the 400 budget. Separately, the preflight made 1 profile read, and the scheduled E2 runs aren't counted by the recorder.
+- **Seeder:** 25 writes and 32 reads for fixtures, plus the cleanup: 16 event deletes and 2 trashes.
+
+**Found during the rerun and fixed:** F4, the shared `results.json`.
