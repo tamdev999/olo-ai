@@ -183,13 +183,26 @@ class TestScenarios:
         assert outcomes["C1"] == "failed"                 # recorded, not hidden
         assert outcomes["L2"] == "needs_approval"         # mode B only
         assert outcomes["G1"] == "not_run"                # its action is not recorded
+        assert outcomes["C4"] == "needs_identity"         # no second identity: never passed
         assert code == 1                                  # any failure rejects the run
-        assert "| C1 | failed |" in (evidence / "results.md").read_text(encoding="utf-8")
+        assert "| C1 | api | failed |" in (evidence / "results.md").read_text(encoding="utf-8")
 
     def test_an_incomplete_run_is_not_accepted(self) -> None:
         o = [scenarios.Outcome("G1", "passed", {}), scenarios.Outcome("G2", "not_run", {})]
         assert scenarios.verdict(o) == ("incomplete", 2)
         assert scenarios.verdict(o[:1]) == ("accepted", 0)
+
+    @pytest.mark.parametrize("status", ["passed_simulated", "needs_identity"])
+    def test_seeded_or_untested_cross_account_scenarios_are_never_full_acceptance(self, status) -> None:
+        o = [scenarios.Outcome("G5", "passed", {}), scenarios.Outcome("X", status, {})]
+        assert scenarios.verdict(o) == ("accepted_within_scope", 4)
+        assert scenarios.verdict(o + [scenarios.Outcome("G6", "failed", {})])[1] == 1
+
+    def test_unknown_actors_are_refused(self, setup) -> None:
+        _, _, _, env = setup
+        pf = guard.run_preflight(env)
+        with pytest.raises(SystemExit):
+            run.record_action(pf, "G1", "x", by="someone")
 
     def test_commands_refuse_before_any_work_when_unconfigured(self, monkeypatch, tmp_path) -> None:
         for key in ("OLO_ACCEPTANCE_HOME", "OLO_ACCEPTANCE_ACCOUNT", "OLO_ACCEPTANCE_CONFIRM",

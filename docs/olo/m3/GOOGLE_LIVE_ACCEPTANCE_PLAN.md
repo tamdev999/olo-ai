@@ -118,3 +118,14 @@ The plan is executable through `scripts/olo/m3/google_acceptance`. The procedure
 - **New scenario D1** (duplicate delivery): both sources re-synced twice back to back; no new or duplicate signals.
 - **Identities:** a second (customer) identity is required, Outlook.com is needed only for G2, and G3 needs an SMTP-capable sender.
 - **Recording:** every scenario ends `passed`, `failed`, `error`, `not_run` or `needs_approval`. The verdict is `accepted` only when all pass.
+
+## 6. Revision: seeder-generated test data
+
+The run keeps the 2026-11-17 architecture: one dedicated test account (`livetest`) is read through Olo's read-only project and written only through the separate `olo-seeder` project. There is no second Google account, and no manual sending.
+
+- **Fixtures:** `tests/olo/live_seed/acceptance_fixtures.py` seeds every scenario that the API can genuinely exercise, one run ID per run.
+- **Evidence classes:** each scenario is `api`, `simulated` or `second_identity` (readiness doc §3).
+  - G1, G3 and G4 pass as `passed_simulated`.
+  - G2, C4, L1 and L3 are reported `needs_identity` and are never passed.
+  - The run's verdict is `accepted_within_scope` unless a genuine second identity performs those scenarios.
+- **Corrected check:** C5's cancelled occurrence is found through its series. Google's cancelled occurrences carry no title.

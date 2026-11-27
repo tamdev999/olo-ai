@@ -5,13 +5,29 @@ test accounts' Gmail and Calendar UIs, or by a runner command) and which
 identities it needs.  Test data is tagged: an email subject or event title
 carries ``[OLO-<ID>]`` so a check finds exactly its own data.
 
+Each scenario also has an evidence class, which says what a pass proves:
+
+  api              Google's behaviour is verified for real.  Any external
+                   party in the data is a seeded stand-in that the tested
+                   assumption does not depend on (label history, deletion,
+                   pagination, the business's own Calendar writes).
+  simulated        the assumption depends on how another party's mail client
+                   composes a message (quoting, charset, attachments).  Seeded
+                   through the seeder project, a pass proves Olo against
+                   Google-stored synthetic MIME, not against that client.
+  second_identity  only a genuine second party can produce the data (a real
+                   invitation and its responses, a real Outlook client).
+
 ``evaluate`` turns every scenario into one outcome, never a skip:
 
-  passed          the check held
-  failed          the check ran and did not hold (details say why)
-  not_run         its action is not recorded yet (``run.py action <ID>``)
-  needs_approval  mode B (paid inference) without that approval
-  error           the check itself raised (recorded with the error)
+  passed            the check held
+  passed_simulated  the check held on seeded data for a ``simulated`` scenario
+  failed            the check ran and did not hold (details say why)
+  not_run           its action is not recorded yet (``run.py action <ID>``)
+  needs_approval    mode B (paid inference) without that approval
+  needs_identity    a ``second_identity`` scenario without an action recorded
+                    ``--by real-identity``: not tested, never passed
+  error             the check itself raised (recorded with the error)
 
 The checks encode the plan's "Expected" column (GOOGLE_LIVE_ACCEPTANCE_PLAN.md)
 and are never edited during a run: a mismatch is a failed result, recorded
@@ -48,6 +64,7 @@ class Scenario:
     identities: str                      # account | account+customer | …+outlook | local
     check: Callable[[Ctx], tuple[bool, dict]]
     mode: str = "A"
+    evidence: str = "api"                # api | simulated | second_identity
 
 
 @dataclass(frozen=True)
@@ -244,8 +261,25 @@ def c4(ctx):
     return outcomes[:3] == want, {"outcomes": outcomes, "expected_prefix": want}
 
 
+def _series(ctx: Ctx, tag: str) -> list[dict]:
+    """The tagged series and every revision of its occurrences.  Google only
+    guarantees id, recurringEventId and originalStartTime on a cancelled
+    occurrence, so occurrences are found through the series, not the title."""
+    tagged = _cal(ctx, tag)
+    series = {s["payload"].get("event_id") for s in tagged if not s["payload"].get("recurring_event_id")}
+    marks = ",".join("?" * len(series)) or "''"
+    rows = ctx.conn.execute(
+        f"SELECT source, external_id, kind, subject, payload FROM signals WHERE kind IN (?, ?)"
+        f" AND json_extract(payload, '$.recurring_event_id') IN ({marks}) ORDER BY occurred_at, id",
+        (*CAL_KINDS, *series)).fetchall()
+    seen = {s["sid"] for s in tagged}
+    extra = [{"source": r[0], "sid": r[1], "kind": r[2], "subject": r[3], "payload": json.loads(r[4])}
+             for r in rows if r[1] not in seen]
+    return tagged + extra
+
+
 def c5(ctx):
-    outcomes = _outcomes(ctx, _cal(ctx, "C5"))
+    outcomes = _outcomes(ctx, _series(ctx, "C5"))
     return ("recurring_series" in outcomes and "applied" in outcomes and "no_commitment" in outcomes,
             {"outcomes": outcomes})
 
@@ -364,13 +398,13 @@ def e6(ctx):
 
 SCENARIOS: tuple[Scenario, ...] = (
     Scenario("G1", "gmail", "sent and received, plain reply", "customer emails the business"
-             " '[OLO-G1] order question'; business replies from Gmail web", "account+customer", g1),
+             " '[OLO-G1] order question'; business replies from Gmail web", "account+customer", g1, evidence="simulated"),
     Scenario("G2", "gmail", "Outlook HTML reply", "an Outlook.com identity replies to a business"
-             " email with subject '[OLO-G2] …'", "account+customer+outlook", g2),
+             " email with subject '[OLO-G2] …'", "account+customer+outlook", g2, evidence="second_identity"),
     Scenario("G3", "gmail", "HTML-only and non-UTF-8", "send '[OLO-G3] …' HTML-only and as"
-             " ISO-8859-1 (SMTP client), body containing 'Café déjà vu'", "account+customer", g3),
+             " ISO-8859-1 (SMTP client), body containing 'Café déjà vu'", "account+customer", g3, evidence="simulated"),
     Scenario("G4", "gmail", "attachments", "customer sends '[OLO-G4] …' with a .txt attachment"
-             " containing OLO-ATTACHMENT-TEXT and a forwarded .eml", "account+customer", g4),
+             " containing OLO-ATTACHMENT-TEXT and a forwarded .eml", "account+customer", g4, evidence="simulated"),
     Scenario("G5", "gmail", "spam rescue", "customer's '[OLO-G5] …' to Spam, then 'Not spam'",
              "account+customer", g5),
     Scenario("G6", "gmail", "trash, restore, delete", "trash and restore '[OLO-G6a] …'; trash"
@@ -388,7 +422,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("C3", "calendar", "title-only edit", "edit only the title/description of '[OLO-C3] …'",
              "account", c3),
     Scenario("C4", "calendar", "invitation responses", "customer invites the business to"
-             " '[OLO-C4] …'; business: no response, accept, then decline", "account+customer", c4),
+             " '[OLO-C4] …'; business: no response, accept, then decline", "account+customer", c4, evidence="second_identity"),
     Scenario("C5", "calendar", "recurring exceptions", "weekly '[OLO-C5] …'; move one occurrence,"
              " cancel another", "account+customer", c5),
     Scenario("C6", "calendar", "deleted event", "delete '[OLO-C6] …'", "account+customer", c6),
@@ -397,10 +431,10 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("C8", "calendar", "pagination", "12 events '[OLO-C8] n' with jobs at --limit 5",
              "account", c8),
     Scenario("L1", "linking", "invitation UID", "the customer receives the business's '[OLO-L1] …'"
-             " invitation and forwards it back; the event is tagged [OLO-L1]", "account+customer", l1),
+             " invitation and forwards it back; the event is tagged [OLO-L1]", "account+customer", l1, evidence="second_identity"),
     Scenario("L2", "linking", "same day without UID", "business emails '[OLO-L2] …' confirming"
              " the L1 meeting by date only", "account+customer", l2, mode="B"),
-    Scenario("L3", "linking", "cancel after linking", "cancel the [OLO-L1] event", "account", l3),
+    Scenario("L3", "linking", "cancel after linking", "cancel the [OLO-L1] event", "account", l3, evidence="second_identity"),
     Scenario("D1", "recovery", "duplicate delivery", "run.py rerun (both jobs twice back to back)",
              "local", d1),
     Scenario("E1", "installed", "three jobs installed", "hermes olo setup … --schedule for gmail"
@@ -422,10 +456,17 @@ def evaluate(ctx: Ctx, only: Optional[set[str]] = None) -> list[Outcome]:
     for sc in SCENARIOS:
         if only and sc.id not in only:
             continue
+        act = ctx.actions.get(sc.id)
+        real = bool(act) and act.get("by") == "real-identity"
+        if sc.evidence == "second_identity" and not real:
+            out.append(Outcome(sc.id, "needs_identity", {
+                "reason": "needs a genuine second identity; seeded data cannot stand in",
+                "action": sc.action}))
+            continue
         if sc.mode == "B" and ctx.mode != "B":
             out.append(Outcome(sc.id, "needs_approval", {"reason": "mode B (paid inference)"}))
             continue
-        if sc.id not in ctx.actions:
+        if act is None:
             out.append(Outcome(sc.id, "not_run", {"action": sc.action}))
             continue
         try:
@@ -433,15 +474,28 @@ def evaluate(ctx: Ctx, only: Optional[set[str]] = None) -> list[Outcome]:
         except Exception as exc:  # health: allow BLE001 -- a broken check is a recorded result
             out.append(Outcome(sc.id, "error", {"error": f"{type(exc).__name__}: {exc}"[:400]}))
             continue
-        out.append(Outcome(sc.id, "passed" if ok else "failed", details))
+        details = {**details, "evidence": sc.evidence, "by": act.get("by", "operator")}
+        status = "passed" if ok else "failed"
+        if ok and sc.evidence == "simulated" and not real:
+            status = "passed_simulated"
+        out.append(Outcome(sc.id, status, details))
     return out
 
 
 def verdict(outcomes: list[Outcome]) -> tuple[str, int]:
-    """``(verdict, exit code)``: failed/error 1, incomplete 2, accepted 0."""
+    """``(verdict, exit code)``.
+
+    ``rejected`` (1) on any failure or error; ``incomplete`` (2) while any
+    scenario is not run or awaits approval; ``accepted_within_scope`` (4) when
+    everything else passed but some scenarios passed only on seeded data or
+    need a second identity (they are listed, never counted as passed);
+    ``accepted`` (0) only when every scenario passed for real.
+    """
     statuses = {o.status for o in outcomes}
     if statuses & {"failed", "error"}:
         return "rejected", 1
     if statuses & {"not_run", "needs_approval"}:
         return "incomplete", 2
+    if statuses & {"passed_simulated", "needs_identity"}:
+        return "accepted_within_scope", 4
     return "accepted", 0

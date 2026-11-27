@@ -3,11 +3,17 @@
   python scripts/olo/m3/google_acceptance/run.py environment
   python scripts/olo/m3/google_acceptance/run.py preflight
   python scripts/olo/m3/google_acceptance/run.py sync [--max-requests 400]
-  python scripts/olo/m3/google_acceptance/run.py action <ID> [--note TEXT]
+  python scripts/olo/m3/google_acceptance/run.py action <ID> [--by operator|seeder|real-identity] [--note TEXT]
   python scripts/olo/m3/google_acceptance/run.py expire-cursor gmail|gcal
   python scripts/olo/m3/google_acceptance/run.py rerun
   python scripts/olo/m3/google_acceptance/run.py check [ID ...]
   python scripts/olo/m3/google_acceptance/run.py teardown
+
+Test data comes from the seeder project
+(``python -m tests.olo.live_seed.acceptance_fixtures``) or by hand; ``action
+--by`` records who produced it, and only ``--by real-identity`` lets a
+second-identity scenario be evaluated (scenarios.py: evidence classes).
+``check`` exits 0 accepted, 1 rejected, 2 incomplete, 4 accepted within scope.
 
 ``environment`` checks the host (user, network namespace, imports, loopback)
 without reading credentials or contacting Google.  Every other command except
@@ -35,17 +41,17 @@ from google_acceptance.recorder import RecordingClient
 BIZ = "accept"
 BANK = f"olo-{BIZ}"
 TEARDOWN = """\
-Teardown (nothing here touches Google except the token revocation):
+Teardown (only steps 0 and 1 touch Google):
+  0. python -m tests.olo.live_seed.acceptance_fixtures cleanup --run-id <run> --dry-run, then
+     without --dry-run (root, seeder credentials): removes only this run's marked fixtures
   1. hermes olo google disconnect --account <alias>      # revokes the OAuth token
   2. hermes cron remove olo-gmail-<alias>; hermes cron remove olo-gcal-<alias>;
      hermes cron remove olo-hindsight-accept
   3. hermes olo hindsight stop
   4. Archive $OLO_ACCEPTANCE_EVIDENCE (no credentials are in it), then delete
      $OLO_ACCEPTANCE_HOME (credentials, olo.db, Hindsight data).
-  5. In Google Cloud: remove the test users from the OAuth consent screen and
-     delete the client, or keep them for a re-run.
-  6. Optionally empty the test accounts' mail and calendars (manual; Olo has
-     no write access).
+  5. Keep both Google Cloud projects and clients (Olo's and the seeder's) for
+     the next run: they are reused, not recreated.
 """
 
 
@@ -128,13 +134,18 @@ def sync(pf: guard.Preflight, *, max_requests: int, limit: int, client_factory=N
     return out
 
 
-def record_action(pf: guard.Preflight, sid: str, note: str) -> None:
+ACTORS = ("operator", "seeder", "real-identity")
+
+
+def record_action(pf: guard.Preflight, sid: str, note: str, by: str = "operator") -> None:
     known = {sc.id for sc in scenarios.SCENARIOS}
     if sid not in known:
         raise SystemExit(f"unknown scenario {sid!r}; known: {sorted(known)}")
+    if by not in ACTORS:
+        raise SystemExit(f"--by must be one of {ACTORS}")
     path = pf.settings.evidence / "actions.json"
     actions = _json(path, {})
-    actions[sid] = {"at": _now(), "note": note}
+    actions[sid] = {"at": _now(), "note": note, "by": by}
     _write(path, actions)
 
 
@@ -169,11 +180,13 @@ def check(pf: guard.Preflight, only: set[str] | None, mode: str) -> int:
     _write(s.evidence / "results.json", {"at": _now(), "verdict": verdict, "mode": mode,
                                          "outcomes": [o.__dict__ for o in outcomes]})
     lines = [f"# Google acceptance results ({_now()}, mode {mode}): {verdict}", "",
-             "| Scenario | Result | Details |", "|---|---|---|"]
-    lines += [f"| {o.id} | {o.status} | `{json.dumps(o.details, default=str)[:300]}` |" for o in outcomes]
+             "| Scenario | Evidence | Result | Details |", "|---|---|---|---|"]
+    evidence = {sc.id: sc.evidence for sc in scenarios.SCENARIOS}
+    lines += [f"| {o.id} | {evidence[o.id]} | {o.status} | `{json.dumps(o.details, default=str)[:300]}` |"
+              for o in outcomes]
     (s.evidence / "results.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     for o in outcomes:
-        print(f"{o.id:4s} {o.status:15s} {json.dumps(o.details, default=str)[:160]}")
+        print(f"{o.id:4s} {evidence[o.id]:15s} {o.status:16s} {json.dumps(o.details, default=str)[:140]}")
     print(f"verdict: {verdict}")
     return code
 
@@ -205,6 +218,9 @@ def main(argv: list[str] | None = None) -> int:
     ac = sub.add_parser("action")
     ac.add_argument("id")
     ac.add_argument("--note", default="")
+    ac.add_argument("--by", choices=ACTORS, default="operator",
+                    help="who produced the data: the business by hand, the seeder project, or a"
+                         " genuine second identity (the only way a second-identity scenario is checked)")
     ex = sub.add_parser("expire-cursor")
     ex.add_argument("source", choices=("gmail", "gcal"))
     sub.add_parser("rerun")
@@ -228,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                               mode=args.mode, key_file=args.key_file), indent=2, default=str))
         return 0
     if args.cmd == "action":
-        record_action(pf, args.id, args.note)
+        record_action(pf, args.id, args.note, args.by)
         return 0
     if args.cmd == "expire-cursor":
         print(f"cursor of {expire_cursor(pf, args.source)} made stale")
