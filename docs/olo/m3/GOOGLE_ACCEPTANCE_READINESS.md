@@ -202,7 +202,7 @@ python scripts/olo/m3/google_acceptance/run.py check
 python scripts/olo/m3/google_acceptance/run.py teardown              # prints the steps
 ```
 
-Mode B adds `--mode B --key-file /secure/deepseek.env` to `sync` and `check`, and needs approval P5.
+Mode B adds `--mode B --key-file <owner-only key file>` to `sync`, `snapshot` and `check`, and needs approval P5. Its run caps, structured-only projection, backlog guard, offline `preflight-b` and the B1 sequence are in `GOOGLE_MODE_B_PLAN.md`.
 
 ## 6. How results are recorded
 

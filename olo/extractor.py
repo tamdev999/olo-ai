@@ -162,6 +162,8 @@ class Budget:
         #: Calls whose reported usage exceeded max_tokens_per_call despite the
         #: pre-call estimate (visible in report(); the estimate is conservative).
         self.per_call_overruns: int = 0
+        #: Calls that raised; counted in calls_used and charged (charge_failed).
+        self.failed_calls: int = 0
 
     def within_budget(self) -> bool:
         """True if another model call is within budget."""
@@ -203,6 +205,18 @@ class Budget:
             + output_t * _DEEPSEEK_OUTPUT_PER_M / 1_000_000
         )
 
+    def charge_failed(self, estimated_tokens: int) -> None:
+        """Record a model call that raised (transport error, timeout, HTTP 5xx).
+
+        It counts toward the call cap like any request, and its conservative
+        token estimate is charged at the output rate: a failure can never let
+        a run make more requests, or report less spend, than its budget.
+        """
+        self.calls_used += 1
+        self.failed_calls += 1
+        self.tokens_used += estimated_tokens
+        self.cost_usd += estimated_tokens * _DEEPSEEK_OUTPUT_PER_M / 1_000_000
+
     def record_cache_hit(self) -> None:
         """Record a cache hit; no token cost."""
         self.cache_hits += 1
@@ -215,6 +229,7 @@ class Budget:
             "cache_hits":  self.cache_hits,
             "cost_usd":    round(self.cost_usd, 6),
             "per_call_overruns": self.per_call_overruns,
+            "failed_calls": self.failed_calls,
         }
 
     def charge_reply(self, usage: tuple[int, ...]) -> None:
@@ -404,6 +419,13 @@ DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
 #: Request field selecting non-thinking mode (DeepSeek thinking-mode guide:
 #: ``thinking.type`` takes precedence over ``reasoning_effort``).
 DEEPSEEK_NON_THINKING: dict = {"thinking": {"type": "disabled"}}
+#: One model call is one HTTP request.  The OpenAI SDK retries a failed
+#: request twice by default, invisibly to the Budget; that is switched off, so
+#: the call cap bounds requests (and spend).  A failed call is retried by the
+#: worker on a later run (up to ``max_attempts``), each attempt counted.
+DEEPSEEK_MAX_RETRIES: int = 0
+#: Seconds before a request is abandoned (the SDK default is ten minutes).
+DEEPSEEK_TIMEOUT_S: float = 60.0
 
 
 def _deepseek_model_id(model: str, base_url: str, temperature: float, max_tokens: int) -> str:
@@ -448,7 +470,8 @@ def make_deepseek_model_fn(
 
     from openai import OpenAI  # noqa: PLC0415 — lazy import, no side effects at load
 
-    client = OpenAI(api_key=resolved_key, base_url=base_url)
+    client = OpenAI(api_key=resolved_key, base_url=base_url,
+                    max_retries=DEEPSEEK_MAX_RETRIES, timeout=DEEPSEEK_TIMEOUT_S)
     _system = (
         "You extract structured commitment events from business signals. "
         "Return only valid JSON matching the requested schema."
@@ -913,6 +936,11 @@ def extract_prepared(
         try:
             raw_response, usage = _split_reply(fn(prompt))
         except Exception as exc:
+            if budget is not None:
+                # The request may still have been billed: it counts toward the
+                # call cap, and its estimate is charged at the output rate.
+                budget.charge_failed(_estimate_call_tokens(
+                    prompt, int(getattr(fn, "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS))))
             return ExtractionOutcome(S.MODEL_ERROR, reason=f"model call failed: {type(exc).__name__}")
         tokens_used = sum(usage)
         if budget is not None:

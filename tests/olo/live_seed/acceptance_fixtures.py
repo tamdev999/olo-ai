@@ -637,6 +637,60 @@ def l2(s: Session) -> None:
                            text=f"Confirming our walkthrough on {start:%A %d %B} at {start:%H:%M} UTC."))
 
 
+# ── B1 (mode B): one delivery's life through paid extraction ─────────────────
+
+def _b1(s: Session) -> tuple[str, datetime, datetime]:
+    """The order number and the two delivery dates of this run's B1 thread."""
+    return f"ORD-{s.run_id[-4:].upper()}", s.base + timedelta(days=18), s.base + timedelta(days=20)
+
+
+def _b1_mail(s: Session, key: str, frm: str, to: str, text: str, quoted: str = "") -> Mail:
+    order, _, _ = _b1(s)
+    first = key == "commit"
+    body = text + (f"\n\nOn an earlier day, the other party wrote:\n> {quoted}\n" if quoted else "\n")
+    return Mail(frm=frm, to=to, text=body,
+                subject=("" if first else "Re: ") + tagged("B1", s.run_id, f"delivery of {order}"),
+                in_reply_to=None if first else s.item("commit")["msgid"])
+
+
+def b1_commit(s: Session) -> None:
+    order, d1, _ = _b1(s)
+    s.sent("commit", _b1_mail(s, "commit", s.account, s.customer,
+                              f"Your order {order} is confirmed for delivery on {d1:%A %d %B %Y}."))
+
+
+def b1_request(s: Session) -> None:
+    order, d1, d2 = _b1(s)
+    s.received("request", _b1_mail(
+        s, "request", f"Customer <{s.customer}>", s.account,
+        f"Could we move the {order} delivery from {d1:%A %d %B %Y} to {d2:%A %d %B %Y}?",
+        quoted=f"Your order {order} is confirmed for delivery on {d1:%A %d %B %Y}."), thread_of="commit")
+
+
+def b1_confirm_change(s: Session) -> None:
+    order, d1, d2 = _b1(s)
+    s.sent("confirm", _b1_mail(
+        s, "confirm", s.account, s.customer,
+        f"Confirmed: your {order} delivery is moved from {d1:%A %d %B %Y} to {d2:%A %d %B %Y}.",
+        quoted=f"Could we move the {order} delivery to {d2:%A %d %B %Y}?"), thread_of="commit")
+
+
+def b1_cancel_request(s: Session) -> None:
+    order, _, d2 = _b1(s)
+    s.received("cancel_request", _b1_mail(
+        s, "cancel_request", f"Customer <{s.customer}>", s.account,
+        f"Sorry, please cancel the {order} delivery on {d2:%A %d %B %Y}.",
+        quoted=f"Confirmed: your {order} delivery is moved to {d2:%A %d %B %Y}."), thread_of="commit")
+
+
+def b1_cancel(s: Session) -> None:
+    order, _, d2 = _b1(s)
+    s.sent("cancel", _b1_mail(
+        s, "cancel", s.account, s.customer,
+        f"We have cancelled the {order} delivery that was scheduled for {d2:%A %d %B %Y}.",
+        quoted=f"Sorry, please cancel the {order} delivery on {d2:%A %d %B %Y}."), thread_of="commit")
+
+
 #: Scenario → ordered phases.  Scenarios absent here need no Google data
 #: (local, operator or installed-path actions) or a genuine second identity.
 PHASES: dict[str, tuple[Callable[[Session], None], ...]] = {
@@ -644,6 +698,7 @@ PHASES: dict[str, tuple[Callable[[Session], None], ...]] = {
     "G6": (g6_add, g6_trash, g6_restore_delete), "G7": (g7_draft, g7_send), "G8": (g8_add, g8_labels),
     "G9": (g9,), "C1": (c1,), "C2": (c2_create, c2_other_day, c2_same_day), "C3": (c3_create, c3_retitle),
     "C5": (c5_series, c5_exceptions), "C6": (c6_create, c6_delete), "C8": (c8,), "L2": (l2,),
+    "B1": (b1_commit, b1_request, b1_confirm_change, b1_cancel_request, b1_cancel),
 }
 
 

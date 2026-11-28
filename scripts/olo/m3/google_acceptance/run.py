@@ -7,7 +7,15 @@
   python scripts/olo/m3/google_acceptance/run.py expire-cursor gmail|gcal
   python scripts/olo/m3/google_acceptance/run.py rerun
   python scripts/olo/m3/google_acceptance/run.py check [ID ...] [--recheck ID ...]
+  python scripts/olo/m3/google_acceptance/run.py snapshot <ID>
+  python scripts/olo/m3/google_acceptance/run.py --mode B --key-file F preflight-b
   python scripts/olo/m3/google_acceptance/run.py teardown
+
+Mode B (paid extraction, approval P5) runs the production extractor under
+hard run caps (``--max-model-calls``, ``--max-usd``; mode_b.py), structured-only
+projection (no Hindsight inference) and only in a home with no prose backlog;
+``preflight-b`` checks all of it offline first.  ``snapshot <ID>`` records a
+scenario's ledger state after a phase (B1's point-in-time invariants).
 
 ``--run-id`` (default ``$OLO_ACCEPTANCE_RUN``) scopes actions, facts and checks
 to one seeder run: a check sees only data tagged ``acc <run id>``.  Each
@@ -42,7 +50,7 @@ REPO = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from google_acceptance import guard, scenarios
+from google_acceptance import guard, mode_b, scenarios
 from google_acceptance.recorder import RecordingClient
 
 BIZ = "accept"
@@ -91,7 +99,8 @@ def _verdicts(evidence: Path, run: str) -> dict:
         v = json.loads(line)
         if v.get("run", "") == run:
             latest[v["id"]] = scenarios.Outcome(v["id"], v["status"], v["details"],
-                                                v["checked_at"], v["action_at"])
+                                                v["checked_at"], v["action_at"],
+                                                version=v.get("version", 1))
     return latest
 
 
@@ -148,8 +157,14 @@ def _conn(pf: guard.Preflight):
 
 
 def sync(pf: guard.Preflight, *, max_requests: int, limit: int, client_factory=None,
-         mode: str = "A", key_file: str | None = None, run: str = "") -> dict:
-    """Both sources once through the real worker, budgeted and recorded."""
+         mode: str = "A", key_file: str | None = None, run: str = "",
+         caps: mode_b.Caps | None = None, deepseek_base_url: str | None = None) -> dict:
+    """Both sources once through the real worker, budgeted and recorded.
+
+    Mode B gives this sync's extraction Budget only what is left of the run's
+    caps, and refuses once a cap is reached or while other prose awaits
+    extraction.  ``deepseek_base_url`` exists for offline tests (a loopback
+    fake); the command line never sets it."""
     from olo.activation import ActivationRequest, activate
     from olo.adapters.gcal import GcalAdapter
     from olo.adapters.gmail import GmailAdapter
@@ -160,11 +175,26 @@ def sync(pf: guard.Preflight, *, max_requests: int, limit: int, client_factory=N
     s = pf.settings
     conn = _conn(pf)
     registry = s.home / "hindsight_port_registry.json"
+    doc = _json(s.evidence / "facts.json", {})
+    facts = _scoped(doc, run)
+    calls = tokens = 0
+    if mode == "B":
+        if not run or caps is None:
+            raise SystemExit("mode B needs a run id and its caps")
+        calls, tokens = mode_b.allowance(caps, mode_b.usage(facts))
+        if not calls:
+            raise SystemExit(f"mode B cap reached for run {run}: {facts['mode_b']}")
+        waiting = mode_b.backlog(conn, run)
+        if waiting:
+            raise SystemExit(f"mode B refused: {waiting} prose signals of other runs await extraction")
     act = activate(ActivationRequest(
         business_id=BIZ, enable_commitments=True, enable_projection=registry.exists(),
         bank_id=BANK if registry.exists() else None,
-        extract_max_calls=(10 if mode == "B" else 0), deepseek_key_file=key_file,
-        projection_max_docs=50, projection_max_prose_docs=(10 if mode == "B" else 0),
+        extract_max_calls=calls, extract_max_tokens=tokens or None, deepseek_key_file=key_file,
+        deepseek_base_url=deepseek_base_url,
+        # Structured documents only, in both modes: prose retained to Hindsight
+        # would run its LLM extraction and consolidation.
+        projection_max_docs=50, projection_max_prose_docs=0,
         projection_budget_usd=0.5, own_emails=(s.account,),
         hindsight_registry=str(registry) if registry.exists() else None), conn, _now())
     client = RecordingClient((client_factory or GoogleClient)(load_credentials(s.alias)),
@@ -178,16 +208,17 @@ def sync(pf: guard.Preflight, *, max_requests: int, limit: int, client_factory=N
         results[adapter.source] = {"status": r.status, "error": r.error, "fetched": r.fetched,
                                    "inserted": r.inserted, "commitment": r.commitment,
                                    "projection": {k: v for k, v in r.projection.items() if v}}
-    doc = _json(s.evidence / "facts.json", {})
-    facts = _scoped(doc, run)
+    if mode == "B":
+        mode_b.record(mode_b.usage(facts), act.commitment.budget.report(), caps)
     facts["history_pages"] = max(facts.get("history_pages", 0), 1 + sum(
         1 for c in client.calls if c["path"] == "/users/me/history" and "pageToken" in c["params"]))
     facts["calendar_pages"] = max(facts.get("calendar_pages", 0), 1 + sum(
         1 for c in client.calls if c["path"].endswith("/events") and "pageToken" in c["params"]))
     _write(s.evidence / "facts.json", doc)
     client.save(s.evidence, _now())
-    out = {"at": _now(), "run": run, "requests": client.requests, "budget": max_requests,
-           "runs": results}
+    out = {"at": _now(), "run": run, "mode": mode, "requests": client.requests,
+           "budget": max_requests, "runs": results,
+           **({"model_usage": act.commitment.budget.report()} if mode == "B" else {})}
     with (s.evidence / "syncs.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(out, default=str) + "\n")
     return out
@@ -221,7 +252,8 @@ def expire_cursor(pf: guard.Preflight, source: str) -> str:
     return name
 
 
-def rerun(pf: guard.Preflight, *, mode: str, key_file: str | None, run: str) -> dict:
+def rerun(pf: guard.Preflight, *, mode: str, key_file: str | None, run: str,
+          caps: mode_b.Caps | None = None) -> dict:
     """D1: both jobs twice back to back, with the signal-id window around them."""
     conn = _conn(pf)
 
@@ -230,7 +262,7 @@ def rerun(pf: guard.Preflight, *, mode: str, key_file: str | None, run: str) -> 
 
     window = {"max_signal_id_before": top(), "at": _now()}
     for _ in range(2):
-        sync(pf, max_requests=200, limit=5, mode=mode, key_file=key_file, run=run)
+        sync(pf, max_requests=200, limit=5, mode=mode, key_file=key_file, run=run, caps=caps)
     window["max_signal_id_after"] = top()
     path = pf.settings.evidence / "facts.json"
     doc = _json(path, {})
@@ -257,7 +289,8 @@ def check(pf: guard.Preflight, only: set[str] | None, mode: str, *, run: str = "
         for o in outcomes:
             if o.fresh and o.status in _RECORDED:
                 fh.write(json.dumps({"run": run, "id": o.id, "status": o.status, "details": o.details,
-                                     "checked_at": o.checked_at, "action_at": o.action_at},
+                                     "checked_at": o.checked_at, "action_at": o.action_at,
+                                     "version": o.version},
                                     default=str) + "\n")
     results = results_path(s.evidence, run)
     _write(results, {"at": now, "run": run, "verdict": verdict, "mode": mode,
@@ -279,6 +312,45 @@ def check(pf: guard.Preflight, only: set[str] | None, mode: str, *, run: str = "
     return code
 
 
+def snapshot(pf: guard.Preflight, sid: str, *, run: str, mode: str) -> dict:
+    """Record *sid*'s ledger state now (point in time, appended to the run's facts)."""
+    take = scenarios.SNAPSHOTS.get(sid)
+    if take is None:
+        raise SystemExit(f"no snapshot for {sid!r}; known: {sorted(scenarios.SNAPSHOTS)}")
+    s = pf.settings
+    path = s.evidence / "facts.json"
+    doc = _json(path, {})
+    facts = _scoped(doc, run)
+    ctx = scenarios.Ctx(_conn(pf), s.account, s.customer, {}, mode=mode, facts=facts, run_id=run)
+    snap = {"at": _now(), **take(ctx)}
+    facts.setdefault("snapshots", {}).setdefault(sid, []).append(snap)
+    _write(path, doc)
+    return snap
+
+
+def preflight_b(env, *, key_file: str | None, caps: mode_b.Caps, run: str) -> int:
+    """Mode B preflight, offline: no Google request and no model call."""
+    pf = guard.settings_from(env)
+    if pf.ok:
+        os.environ["HERMES_HOME"] = str(pf.settings.home)
+        from olo.google.credentials import list_accounts, load_credentials
+        guard.check_credentials(pf, load=load_credentials, aliases=list_accounts)
+    refusals, facts = list(pf.refusals), {}
+    if pf.ok:
+        from olo.hindsight_service import migrate as migrate_service
+        conn = _conn(pf)
+        migrate_service(conn)
+        more, facts = mode_b.offline_checks(pf.settings.home, BIZ, key_file, caps, run, conn, _now())
+        refusals += more
+    if pf.settings is not None:
+        _write(pf.settings.evidence / "preflight_b.json",
+               {"at": _now(), "run": run, "ok": not refusals, "refusals": refusals, "facts": facts})
+    for r in refusals:
+        print(f"REFUSED: {r}", file=sys.stderr)
+    print(json.dumps({"ok": not refusals, "facts": facts}, indent=2, default=str))
+    return 3 if refusals else 0
+
+
 def environment_check(env=os.environ) -> int:
     """Host checks only; the result goes to the evidence directory when set."""
     from google_acceptance import environment
@@ -297,6 +369,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mode", choices=("A", "B"), default="A",
                     help="B adds paid inference; it needs its own approval and --key-file")
     ap.add_argument("--key-file", help="mode B: owner-only DeepSeek key file")
+    ap.add_argument("--max-model-calls", type=int, default=mode_b.MAX_CALLS_DEFAULT,
+                    help=f"mode B: model requests for the whole run (at most {mode_b.MAX_CALLS_LIMIT})")
+    ap.add_argument("--max-usd", type=float, default=mode_b.MAX_USD_DEFAULT,
+                    help=f"mode B: model spend for the whole run (at most {mode_b.MAX_USD_LIMIT})")
     ap.add_argument("--run-id", default=os.environ.get("OLO_ACCEPTANCE_RUN", ""),
                     help="seeder run id to scope actions, facts and checks to"
                          " (default $OLO_ACCEPTANCE_RUN)")
@@ -315,6 +391,9 @@ def main(argv: list[str] | None = None) -> int:
     ex = sub.add_parser("expire-cursor")
     ex.add_argument("source", choices=("gmail", "gcal"))
     sub.add_parser("rerun")
+    sn = sub.add_parser("snapshot")
+    sn.add_argument("id")
+    sub.add_parser("preflight-b")
     ck = sub.add_parser("check")
     ck.add_argument("ids", nargs="*")
     ck.add_argument("--recheck", nargs="*", default=[],
@@ -328,13 +407,18 @@ def main(argv: list[str] | None = None) -> int:
         return environment_check()
     if args.mode == "B" and not args.key_file:
         raise SystemExit("mode B needs --key-file (and its own approval)")
+    caps = mode_b.caps(args.max_model_calls, args.max_usd) if args.mode == "B" else None
+    if args.cmd == "preflight-b":
+        if caps is None:
+            raise SystemExit("preflight-b is for --mode B")
+        return preflight_b(os.environ, key_file=args.key_file, caps=caps, run=args.run_id)
     pf = _preflight()
     if args.cmd == "preflight":
         print(json.dumps({"ok": True, "facts": pf.facts}, indent=2))
         return 0
     if args.cmd == "sync":
         print(json.dumps(sync(pf, max_requests=args.max_requests, limit=args.limit,
-                              mode=args.mode, key_file=args.key_file, run=args.run_id),
+                              mode=args.mode, key_file=args.key_file, run=args.run_id, caps=caps),
                          indent=2, default=str))
         return 0
     if args.cmd == "action":
@@ -345,8 +429,12 @@ def main(argv: list[str] | None = None) -> int:
         record_action(pf, "G10" if args.source == "gmail" else "C7", "expire-cursor",
                       run=args.run_id)
         return 0
+    if args.cmd == "snapshot":
+        print(json.dumps(snapshot(pf, args.id, run=args.run_id, mode=args.mode), default=str))
+        return 0
     if args.cmd == "rerun":
-        print(json.dumps(rerun(pf, mode=args.mode, key_file=args.key_file, run=args.run_id)))
+        print(json.dumps(rerun(pf, mode=args.mode, key_file=args.key_file, run=args.run_id,
+                               caps=caps)))
         return 0
     return check(pf, set(args.ids) or None, args.mode, run=args.run_id,
                  recheck=frozenset(args.recheck))

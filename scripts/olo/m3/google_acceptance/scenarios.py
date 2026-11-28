@@ -12,7 +12,9 @@ Verdicts are point in time.  ``evaluate`` reuses a verdict already recorded
 for the same run, scenario and action (``frozen``) unless the scenario is
 re-checked explicitly, so later unrelated activity (more scenarios, the
 unattended E2 window, cleanup) cannot rewrite it; run.py keeps every verdict
-in an append-only log.
+in an append-only log.  A scenario's ``version`` names its criterion: a
+verdict recorded under an older criterion is never reused (E2 version 2
+measures the unattended window itself).
 
 Each scenario also has an evidence class, which says what a pass proves:
 
@@ -44,10 +46,13 @@ with what Google actually returned.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+from itertools import pairwise
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
 EMAIL_KINDS = ("email.received", "email.sent", "email.content")
@@ -63,6 +68,10 @@ class Ctx:
     mode: str = "A"
     facts: dict[str, Any] = field(default_factory=dict)
     run_id: str = ""                     # "" = unscoped (runs before run ids)
+    now: Optional[datetime] = None       # None = the wall clock (tests pin it)
+
+    def clock(self) -> datetime:
+        return self.now or datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -75,6 +84,7 @@ class Scenario:
     check: Callable[[Ctx], tuple[bool, dict]]
     mode: str = "A"
     evidence: str = "api"                # api | simulated | second_identity
+    version: int = 1                     # the check's criterion; bumped when it changes
 
 
 @dataclass(frozen=True)
@@ -85,6 +95,7 @@ class Outcome:
     checked_at: str = ""                 # when the check ran ("" = no check ran)
     action_at: str = ""                  # the action it judged
     fresh: bool = False                  # evaluated now, not reused
+    version: int = 1                     # the criterion version it was judged by
 
 
 # ── olo.db helpers ────────────────────────────────────────────────────────────
@@ -398,13 +409,159 @@ def e1(ctx):
     return len(want) == 3 and pinned, {"jobs": sorted(want), "interpreters_pinned": pinned}
 
 
-def e2(ctx):
-    from datetime import UTC, datetime
+#: E2: the unattended window the plan requires, and the longest a scheduled
+#: source may go without a run inside it (twice Calendar's 15-minute interval).
+E2_WINDOW = timedelta(hours=2)
+E2_MAX_GAP = timedelta(minutes=30)
 
+
+def _instant(raw: str) -> datetime:
+    return datetime.fromisoformat(raw)
+
+
+def e2(ctx):
+    """Unattended for two hours: the window itself is measured, not assumed.
+
+    Passes only when at least ``E2_WINDOW`` has elapsed since the action,
+    every source the scheduler drives (each source with ingest health) ran
+    with no gap longer than ``E2_MAX_GAP`` from the window's start to the
+    check, and nothing is degraded or stalled now.  The live bounded
+    35-minute regression of 2026-11-27 passed the version-1 check, which
+    looked only at the conditions at check time.
+    """
     from olo.health import assess
-    conditions = [(c.severity, c.stage, c.message) for c in assess(ctx.conn, datetime.now(UTC))]
+    now = ctx.clock()
+    start = _instant(ctx.actions.get("E2", {}).get("at") or now.isoformat())
+    conditions = [(c.severity, c.stage, c.message) for c in assess(ctx.conn, now)]
     bad = [c for c in conditions if c[0] in ("degraded", "stalled")]
-    return not bad, {"conditions": conditions}
+    sources = sorted(r[0] for r in ctx.conn.execute(
+        "SELECT source FROM pipeline_health WHERE stage='ingest'"))
+    coverage: dict[str, dict] = {}
+    for src in sources:
+        times = sorted(_instant(r[0]) for r in ctx.conn.execute(
+            "SELECT started_at FROM ingest_runs WHERE source=? AND status IN ('succeeded','partial')",
+            (src,)) if _instant(r[0]) >= start)
+        marks = [start, *times, now]
+        gap = max(b - a for a, b in pairwise(marks))
+        failed = ctx.conn.execute("SELECT COUNT(*) FROM ingest_runs WHERE source=? AND status='failed'"
+                                  " AND started_at >= ?", (src, start.isoformat())).fetchone()[0]
+        coverage[src] = {"runs": len(times), "max_gap_min": round(gap.total_seconds() / 60, 1),
+                         "failed_runs": failed}
+    elapsed = now - start
+    ok = (elapsed >= E2_WINDOW and bool(coverage) and not bad
+          and all(c["runs"] and c["max_gap_min"] <= E2_MAX_GAP.total_seconds() / 60
+                  for c in coverage.values()))
+    return ok, {"window_min": round(elapsed.total_seconds() / 60, 1),
+                "required_min": E2_WINDOW.total_seconds() / 60, "coverage": coverage,
+                "conditions": conditions}
+
+
+# ── B1 (mode B): a delivery through paid extraction ──────────────────────────
+
+#: The ledger history B1's five messages must produce, in order:
+#: (action, actor, confirmed).  A customer's request and a customer's cancel
+#: are recorded unconfirmed; only the business's messages become truth.
+B1_SEQUENCE = (("commit", "business", True), ("request_change", "customer", False),
+               ("confirm_change", "business", True), ("cancel", "customer", False),
+               ("cancel", "business", True))
+
+
+def _fp(value: object) -> str:
+    return hashlib.sha256(str(value or "").encode()).hexdigest()[:10]
+
+
+def _b1_commitment(ctx: Ctx) -> tuple[list[dict], Optional[str]]:
+    sigs = _content(ctx, "B1")
+    ids = {_resolution(ctx, s).get("commitment_id") for s in sigs} - {None}
+    return sigs, (next(iter(ids)) if len(ids) == 1 else None)
+
+
+def snapshot_b1(ctx: Ctx) -> dict:
+    """B1's ledger state now (run.py snapshot B1, after each phase's sync)."""
+    from olo.ledger import get_all_versions, get_current_state
+    sigs, cid = _b1_commitment(ctx)
+    st = (get_current_state(ctx.conn, cid) or {}) if cid else {}
+    return {"messages": len(sigs), "commitment": _fp(cid) if cid else None,
+            "versions": len(get_all_versions(ctx.conn, cid)) if cid else 0,
+            **{k: st.get(k) for k in ("status", "scheduled_date", "pending_proposed_date",
+                                      "pending_action")}}
+
+
+SNAPSHOTS: dict[str, Callable[[Ctx], dict]] = {"B1": snapshot_b1}
+
+
+def _b1_invariants(snaps: list[dict], vs: list[dict]) -> list[str]:
+    """What the point-in-time snapshots after each phase must show."""
+    if len(snaps) != len(B1_SEQUENCE) or len(vs) != len(B1_SEQUENCE):
+        return [f"{len(snaps)} snapshots and {len(vs)} versions for {len(B1_SEQUENCE)} phases"]
+    d1, d2 = vs[0]["confirmed_date"], vs[2]["confirmed_date"]
+    want = [
+        ("after the commitment", snaps[0], {"status": "scheduled", "scheduled_date": d1,
+                                            "pending_proposed_date": None}),
+        ("after the customer's request", snaps[1], {"status": "scheduled", "scheduled_date": d1,
+                                                    "pending_proposed_date": d2}),
+        ("after the confirmed change", snaps[2], {"status": "scheduled", "scheduled_date": d2,
+                                                  "pending_proposed_date": None}),
+        ("after the customer's cancel request", snaps[3], {"status": "scheduled",
+                                                           "scheduled_date": d2,
+                                                           "pending_action": "cancel"}),
+        ("after the business's cancellation", snaps[4], {"status": "cancelled"}),
+    ]
+    out = [f"{label}: {k}={snap.get(k)!r}, want {v!r}"
+           for label, snap, expect in want for k, v in expect.items() if snap.get(k) != v]
+    if d1 == d2:
+        out.append("the change did not move the date")
+    return out
+
+
+def _b1_tool_output(ctx: Ctx) -> dict:
+    """The Hermes tool's answer (olo_customer_context, the production handler)."""
+    from olo.hermes_plugin import customer_context_tool
+    return json.loads(customer_context_tool({"customer": ctx.customer,
+                                             "question": "deliveries and their dates"}))
+
+
+def b1(ctx):
+    """Customer request, business confirmation, confirmed change, cancellation,
+    through the production extractor, ledger, projection and Hermes tool."""
+    from olo.ledger import get_all_versions
+    sigs, cid = _b1_commitment(ctx)
+    vs = get_all_versions(ctx.conn, cid) if cid else []
+    sequence = [(v["action"], v["actor_role"], bool(v["is_confirmed"])) for v in vs]
+    problems = _b1_invariants(ctx.facts.get("snapshots", {}).get("B1", []), vs)
+    if sequence != [tuple(x) for x in B1_SEQUENCE]:
+        problems.append(f"ledger history {sequence}")
+    docs = {r[0]: r[1] for r in ctx.conn.execute(
+        "SELECT signal_id, status FROM hindsight_projection WHERE signal_id LIKE ?",
+        (f"ledger:{cid}:v%",))} if cid else {}
+    confirmed_versions = [v["version"] for v in vs if v["is_confirmed"]]
+    if [docs.get(f"ledger:{cid}:v{n}") for n in confirmed_versions] != ["confirmed"] * len(confirmed_versions):
+        problems.append(f"ledger memory documents {docs}")
+    tool = _b1_tool_output(ctx)
+    entry = next((c for c in tool.get("current") or [] if c.get("commitment_id") == cid), None)
+    if tool.get("identity", {}).get("status") != "verified" or not entry \
+            or entry.get("status") != "cancelled":
+        problems.append(f"tool output: identity {tool.get('identity', {}).get('status')}, entry {entry}")
+    used = ctx.facts.get("mode_b") or {}
+    cap = (used.get("caps") or {}).get("calls", 0)
+    if not used or used.get("calls_used", 0) > cap:
+        problems.append(f"model usage {used} outside its caps")
+    ctx.facts["B1_tool_output"] = json.loads(
+        json.dumps(tool, default=str).replace(ctx.account, "<business account>"))
+    return not problems, {
+        "messages": [{"kind": s["payload"].get("direction"), "message": _fp(s["payload"].get("message_id")),
+                      "source_doc": _fp(f"gmail:{s['payload'].get('message_id')}"),
+                      "outcome": _resolution(ctx, s).get("commitment_outcome")} for s in sigs],
+        "commitment": _fp(cid) if cid else None,
+        "versions": [{"v": v["version"], "action": v["action"], "actor": v["actor_role"],
+                      "confirmed": bool(v["is_confirmed"]), "date": v["confirmed_date"],
+                      "proposed": v["proposed_date"], "prior": v["prior_confirmed_date"],
+                      "source_doc": _fp(v["source_doc_id"])} for v in vs],
+        "memory_documents": {k.rsplit(":", 1)[-1]: v for k, v in sorted(docs.items())},
+        "tool_current": {k: entry.get(k) for k in ("status", "scheduled_date")} if entry else None,
+        "model_usage": {k: used.get(k) for k in ("calls_used", "failed_calls", "tokens_used",
+                                                 "cost_usd", "caps")},
+        "problems": problems}
 
 
 def e3(ctx):
@@ -474,12 +631,16 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("L2", "linking", "same day without UID", "business emails '[OLO-L2] …' confirming"
              " the L1 meeting by date only", "account+customer", l2, mode="B"),
     Scenario("L3", "linking", "cancel after linking", "cancel the [OLO-L1] event", "account", l3, evidence="second_identity"),
+    Scenario("B1", "mode B", "request, confirmation, change, cancellation", "five-message thread"
+             " '[OLO-B1] delivery of ORD-…': business commits; customer asks to move it; business"
+             " confirms the move; customer asks to cancel; business cancels (run.py snapshot B1"
+             " after each phase's sync)", "account+customer", b1, mode="B"),
     Scenario("D1", "recovery", "duplicate delivery", "run.py rerun (both jobs twice back to back)",
              "local", d1),
     Scenario("E1", "installed", "three jobs installed", "hermes olo setup … --schedule for gmail"
              " and gcal", "local", e1),
     Scenario("E2", "installed", "unattended for 2 hours", "let the scheduler run 2 hours",
-             "local", e2),
+             "local", e2, version=2),
     Scenario("E3", "installed", "customer context", "run.py check E3 (the tool's brief)",
              "local", e3),
     Scenario("E4", "installed", "Hindsight killed", "kill -9 the Hindsight server", "local", e4),
@@ -515,20 +676,21 @@ def evaluate(ctx: Ctx, only: Optional[set[str]] = None, *,
             out.append(Outcome(sc.id, "not_run", {"action": sc.action}))
             continue
         prior = frozen.get(sc.id)
-        if prior is not None and prior.action_at == act.get("at", "") and sc.id not in recheck:
+        if (prior is not None and prior.action_at == act.get("at", "") and prior.version == sc.version
+                and sc.id not in recheck):
             out.append(prior)
             continue
         try:
             ok, details = sc.check(ctx)
         except Exception as exc:  # health: allow BLE001 -- a broken check is a recorded result
             out.append(Outcome(sc.id, "error", {"error": f"{type(exc).__name__}: {exc}"[:400]},
-                               now, act.get("at", ""), True))
+                               now, act.get("at", ""), True, sc.version))
             continue
         details = {**details, "evidence": sc.evidence, "by": act.get("by", "operator")}
         status = "passed" if ok else "failed"
         if ok and sc.evidence == "simulated" and not real:
             status = "passed_simulated"
-        out.append(Outcome(sc.id, status, details, now, act.get("at", ""), True))
+        out.append(Outcome(sc.id, status, details, now, act.get("at", ""), True, sc.version))
     return out
 
 
