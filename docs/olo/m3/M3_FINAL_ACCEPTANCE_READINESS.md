@@ -138,4 +138,18 @@ Cron's durable execution ledger (`$HERMES_HOME/cron/executions.db`) records ever
 
 ## 6. Lint and code-health inventory
 
-The per-commit inventory and the regression comparison are recorded in the batch report. A clean clone of each commit is checked, so untracked scratch files are excluded.
+`python scripts/check` ran on a clean clone of each commit (WSL native filesystem, private network namespace), so untracked scratch files are excluded:
+
+| Check | Baseline `0ce2ccc` | This batch | New findings |
+|---|---|---|---|
+| footguns | failed: 43 | failed: 43 | 0 |
+| shebangs, no-tmp, lazy-deps, blob-size | failed | failed (identical output) | 0 |
+| ruff | failed: 482 | failed: 482 (identical list) | 0 |
+| health | 266 blocking, 7 advisory (175 files) | 266 blocking, 7 advisory (181 files) | 0 |
+| the other 14 checks | pass | pass | 0 |
+
+The only line that differs is the line number of an existing, waived `BLE001` in `scenarios.evaluate`.
+
+The working tree additionally fails `line-endings` and `profile-archives`. Both come from untracked scratch files under `scripts/olo/m3/` and `docs/olo/m3/`, which are not committed.
+
+Baseline findings in this area, left alone (no unrelated cleanup): bare `os.getuid` in `google_acceptance/environment.py` and `mode_b.py` (Linux-only harness), and a BOM-intolerant read in `recorder.py`.
