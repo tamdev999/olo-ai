@@ -93,7 +93,12 @@ class FakeWriteApi:
         return {"id": mid, "threadId": fm.thread_id}
 
     def import_message(self, raw: bytes, labels: list[str], thread_id: Optional[str]) -> dict:
-        return self._add(raw, labels, thread_id)
+        if thread_id:
+            # Live Gmail refuses a threadId on messages.import (400 "threadId
+            # not allowed", acceptance 2026-11-28); an imported reply is
+            # threaded by its In-Reply-To/References, as received mail is.
+            raise ApiError(400, '{"error": {"code": 400, "message": "threadId not allowed"}}')
+        return {"id": self._add(raw, labels, thread_id)["id"]}     # live: no threadId in the response
 
     def insert_message(self, raw: bytes, labels: list[str], thread_id: Optional[str]) -> dict:
         return self._add(raw, sorted(set(labels) | {"SENT"}), thread_id)

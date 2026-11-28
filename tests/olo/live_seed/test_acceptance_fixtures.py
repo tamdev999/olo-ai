@@ -116,6 +116,23 @@ class TestSeeding:
             assert api.writes == 7 and len(received) == 2                  # nothing past the budget
             assert 1 not in s.run["scenarios"]["G9"]["phases_done"]
 
+    def test_a_received_reply_joins_its_thread_by_its_headers(self) -> None:
+        # Gmail refuses a threadId on messages.import (live, 2026-11-28).
+        with FakeGoogleServer(email=ACCOUNT) as google:
+            s = _session(FakeWriteApi(google, ACCOUNT))
+            af.seed_phase(s, "B1", 1)
+            af.seed_phase(s, "B1", 2)
+            assert s.item("request")["thread"] == s.item("commit")["thread"]
+            assert len({m.thread_id for m in google.gmail.messages.values()}) == 1
+
+    def test_a_received_reply_that_is_not_threaded_is_refused(self) -> None:
+        with FakeGoogleServer(email=ACCOUNT) as google:
+            s = _session(FakeWriteApi(google, ACCOUNT))
+            af.seed_phase(s, "G3", 1)
+            with pytest.raises(af.AcceptanceSeedError, match="not threaded"):
+                s.received("x", af.Mail(frm=CUSTOMER, to=ACCOUNT, subject="unrelated", text="x"),
+                           thread_of="html")
+
     def test_scenarios_without_a_fixture_are_refused(self) -> None:
         with FakeGoogleServer(email=ACCOUNT) as google:
             s = _session(FakeWriteApi(google, ACCOUNT))

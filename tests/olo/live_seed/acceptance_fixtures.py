@@ -396,7 +396,16 @@ class Session:
     # Gmail
     def received(self, key: str, mail: Mail, labels: Optional[list[str]] = None,
                  thread_of: Optional[str] = None) -> dict:
-        return self._message(key, mail, labels or ["INBOX", "UNREAD"], thread_of, self.api.import_message)
+        """Import a received message.  Gmail refuses a threadId on import (400
+        "threadId not allowed", live acceptance 2026-11-28), so a reply joins
+        *thread_of* the way received mail does, by its In-Reply-To/References
+        and subject; that it did is verified, never assumed."""
+        item = self._message(key, mail, labels or ["INBOX", "UNREAD"], None, self.api.import_message)
+        if thread_of and item["thread"] != self.item(thread_of)["thread"]:
+            raise AcceptanceSeedError(
+                f"{self.scenario}.{key} was not threaded with {thread_of} (thread {item['thread']},"
+                f" want {self.item(thread_of)['thread']}): check its In-Reply-To and subject")
+        return item
 
     def sent(self, key: str, mail: Mail, thread_of: Optional[str] = None) -> dict:
         return self._message(key, mail, ["SENT"], thread_of, self.api.insert_message)
@@ -411,7 +420,9 @@ class Session:
             return item
         thread = self.item(thread_of)["thread"] if thread_of else None
         res = write(build_mime(self.run_id, f"{self.scenario}.{key}", mail), labels, thread)
-        item = {"type": "message", "id": res["id"], "thread": res.get("threadId"), "msgid": mid}
+        # messages.import's response carries no threadId (live, 2026-11-28): read it back.
+        thread = res.get("threadId") or (self.api.find_message(mid) or {}).get("threadId")
+        item = {"type": "message", "id": res["id"], "thread": thread, "msgid": mid}
         self._items()[key] = item
         self._record("message", key, item["id"], "created")
         return item

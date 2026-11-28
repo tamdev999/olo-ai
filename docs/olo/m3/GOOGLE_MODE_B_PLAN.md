@@ -1,4 +1,4 @@
-# Google Mode B — paid extraction acceptance (prepared, not executed)
+# Google Mode B — paid extraction acceptance (B1 executed live 2026-11-28: accepted; see §7)
 
 Mode B proves the production path that Mode A cannot:
 
@@ -108,3 +108,41 @@ The separate approvals needed:
 - **Reads:** the Google reads of the bootstrap and the Mode B syncs.
 
 Not part of this plan: Mode B for G1 or G2; E3 with a real agent turn; E5 and E6; prose projection with Hindsight inference; new accounts or OAuth.
+
+## 7. Live result: run `acc20261128t021814df39`, 2026-11-28 (B1 only; L2 not approved)
+
+**Verdict: B1 `passed` (`api`), run verdict `accepted`.** Evidence is in `/home/olo_hs/acceptB/evidence/`: `results_acc20261128t021814df39.json`, `facts.json`, `syncs.jsonl`, `requests.jsonl`, `fixtures.jsonl` and `verdicts.jsonl`. A scan of every file found no account address, key, bearer token or refresh token.
+
+**Pre-run checks, all before any fixture was written:**
+- Key file `/home/olo_hs/deepseek.env`: `olo_hs`, mode 600, one `HINDSIGHT_API_LLM_API_KEY`, `sk-` shaped.
+- `preflight-b` on the fresh home: ok. Production model ID, 0 retries, provider `none`, backlog 0.
+- Request-bound probe on `35fdb3b`: a failing model under a 2-call budget made 2 calls, and an HTTP 500 cost 1 request.
+- Identity: Olo's grant, the seeder token and the expected account share one fingerprint. The scopes are exactly the three read-only ones.
+
+**Provider-side spend limit: not established.** DeepSeek is prepaid. Spend is bounded by the account balance (HTTP 402 when it runs out), and no user-configurable cap is documented. Checking the balance needs the key or a dashboard sign-in, so neither was done. The only verified bounds are Olo's local caps, which are not a provider-side cap.
+
+| Phase | Ledger version | Snapshot after the phase's single Mode B sync | Model |
+|---|---|---|---|
+| 1 business commits | v1 `commit` business, confirmed, 2026-12-19 | scheduled 2026-12-19 | 1 call, 516 tokens |
+| 2 customer asks to move | v2 `request_change` customer, **unconfirmed**, proposed 2026-12-21 | **scheduled 2026-12-19**, pending 2026-12-21 | 1 call, 569 tokens |
+| 3 business confirms | v3 `confirm_change` business, confirmed, 2026-12-21 (prior 2026-12-19) | scheduled 2026-12-21 | 1 call, 570 tokens |
+| 4 customer asks to cancel | v4 `cancel` customer, **unconfirmed** | **scheduled 2026-12-21**, pending `cancel` | 1 call, 550 tokens |
+| 5 business cancels | v5 `cancel` business, confirmed | cancelled | 1 call, 553 tokens |
+
+**Usage and output:**
+- **Model usage:** 5 calls, 0 failed, 2,758 tokens, an estimated $0.001186 under the local estimate. The caps were 8 calls and $0.05. Every extraction was correct the first time.
+- **Google:** 66 Olo requests over 7 syncs (a bootstrap Mode A sync, five Mode B syncs and one Mode A settle sync), at most 20 in one sync.
+- **Memory documents:** v1, v3 and v5 are `confirmed` in Hindsight.
+- **`olo_customer_context`:**
+  - identity `verified`; the current entry `cancelled`, with `superseded_dates` 2026-12-19 and 2026-12-21;
+  - memory `authoritative: false`, with v1 and v3 only under `no_longer_true` and v5 as `current_ledger`;
+  - earlier runs' deleted calendar fixtures appear only as `uncertain`.
+
+**Deviations, both recorded in the evidence:**
+- **The settle sync.** Hindsight confirms a retain asynchronously. Phase 5 re-submitted v1, v3 and v5, because each document states the current cancelled state, and they were still `pending` at the check. One Mode A sync, with no model, confirmed them.
+- **The seeder fix (harness only).** Gmail refuses a `threadId` on `messages.import` (400 "threadId not allowed") and returns no `threadId` from it. The fake accepted both. Received replies are now imported unthreaded, and Gmail threads them by `In-Reply-To`/`References`. The seeder reads the thread back and refuses a reply that did not join its thread. The rejected first attempt wrote nothing. The probe confirmed the retried reply sits in the commit's thread.
+
+**Cleanup and teardown:**
+- 5 run-tagged messages trashed; a re-check shows all 5 already in trash; no events.
+- Hindsight stopped: 0 `olo_hs` postgres; 0 cron jobs.
+- Grants kept; nothing revoked.
