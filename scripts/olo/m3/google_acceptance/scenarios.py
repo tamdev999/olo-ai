@@ -55,6 +55,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
+from google_acceptance import real_identity
+
 EMAIL_KINDS = ("email.received", "email.sent", "email.content")
 CAL_KINDS = ("calendar.event.changed", "calendar.event.cancelled")
 
@@ -69,6 +71,7 @@ class Ctx:
     facts: dict[str, Any] = field(default_factory=dict)
     run_id: str = ""                     # "" = unscoped (runs before run ids)
     now: Optional[datetime] = None       # None = the wall clock (tests pin it)
+    outlook: str = ""                    # the Outlook.com identity (G2 provenance)
 
     def clock(self) -> datetime:
         return self.now or datetime.now(UTC)
@@ -172,11 +175,14 @@ def g1(ctx):
     received = [s for s in sigs if s["payload"].get("direction") == "received"]
     sent = [s for s in sigs if s["payload"].get("direction") == "sent"]
     who = {e for s in received for e in _contact_emails(ctx, _resolution(ctx, s).get("contact_id"))}
-    quoted = [s["sid"] for s in sent if any(line.lstrip().startswith(">") or "wrote:" in line
-                                            for line in _authored(ctx, s).splitlines())]
+    # Both directions (version 2): the business's reply and a customer's reply
+    # to the business keep only what their author wrote, never the quote.
+    replies = sent + [s for s in received if s["payload"].get("in_reply_to")]
+    quoted = [s["sid"] for s in replies if any(line.lstrip().startswith(">") or "wrote:" in line
+                                               for line in _authored(ctx, s).splitlines())]
     return (bool(received) and bool(sent) and ctx.customer in who and not quoted,
-            {"received": len(received), "sent": len(sent), "customer_identified": ctx.customer in who,
-             "quoted_in_authored": quoted})
+            {"received": len(received), "sent": len(sent), "customer_replies": len(replies) - len(sent),
+             "customer_identified": ctx.customer in who, "quoted_in_authored": quoted})
 
 
 def g2(ctx):
@@ -410,50 +416,163 @@ def e1(ctx):
 
 
 #: E2: the unattended window the plan requires, and the longest a scheduled
-#: source may go without a run inside it (twice Calendar's 15-minute interval).
+#: job may go without a run inside it (twice Calendar's 15-minute interval).
 E2_WINDOW = timedelta(hours=2)
 E2_MAX_GAP = timedelta(minutes=30)
+#: The installed jobs E2 watches (E1 installs them): ``olo-<kind>-<name>``.
+#: A worker job drives the Olo source ``<kind>_<name>``; the Hindsight
+#: supervisor drives no source.
+E2_WORKER_KINDS = ("gmail", "gcal")
+E2_JOB_KINDS = (*E2_WORKER_KINDS, "hindsight")
+#: Fired by the scheduler (``hermes cron tick`` or the gateway ticker); a
+#: ``hermes cron run`` fire is ``direct`` and a skipped slot is ``missed``.
+_SCHEDULED = "builtin"
 
 
 def _instant(raw: str) -> datetime:
     return datetime.fromisoformat(raw)
 
 
-def e2(ctx):
-    """Unattended for two hours: the window itself is measured, not assumed.
+def _e2_jobs() -> dict[str, dict]:
+    """The installed Olo jobs by kind (cron's own job store, this HERMES_HOME)."""
+    from cron.jobs import list_jobs
+    jobs: dict[str, dict] = {}
+    for job in list_jobs(include_disabled=True):
+        parts = (job.get("name") or "").split("-", 2)
+        if len(parts) == 3 and parts[0] == "olo" and parts[1] in E2_JOB_KINDS:
+            jobs.setdefault(parts[1], {**job, "olo_source": f"{parts[1]}_{parts[2]}"
+                                       if parts[1] in E2_WORKER_KINDS else None})
+    return jobs
 
-    Passes only when at least ``E2_WINDOW`` has elapsed since the action,
-    every source the scheduler drives (each source with ingest health) ran
-    with no gap longer than ``E2_MAX_GAP`` from the window's start to the
-    check, and nothing is degraded or stalled now.  The live bounded
-    35-minute regression of 2026-11-27 passed the version-1 check, which
-    looked only at the conditions at check time.
+
+def _e2_executions(job_id: str, start: datetime) -> list[dict]:
+    """The job's execution attempts since *start* (cron's durable audit ledger)."""
+    from cron.executions import list_executions
+    return [e for e in list_executions(job_id=job_id, limit=500) if _instant(e["claimed_at"]) >= start]
+
+
+def _gap(start: datetime, times: list[datetime], now: datetime) -> float:
+    marks = [start, *sorted(times), now]
+    return round(max(b - a for a, b in pairwise(marks)).total_seconds() / 60, 1)
+
+
+def _e2_job(ctx: Ctx, job: dict, start: datetime, now: datetime) -> dict:
+    """One installed job across the window: what the scheduler fired, and for a
+    worker, whether each fire really polled its source (an ingest run inside
+    the execution) and whether any run happened outside a scheduled fire."""
+    execs = _e2_executions(job["id"], start)
+    fired = [e for e in execs if e["source"] == _SCHEDULED and e["status"] == "completed"]
+    spans = [(_instant(e["started_at"] or e["claimed_at"]),
+              _instant(e["finished_at"]) if e["finished_at"] else now) for e in fired]
+    out = {"job": job["name"], "enabled": job.get("enabled", True) is not False,
+           "scheduled_completed": len(fired),
+           "scheduled_failed": sum(1 for e in execs if e["source"] == _SCHEDULED
+                                   and e["status"] in ("failed", "unknown", "cancelled")),
+           "missed": sum(1 for e in execs if e["status"] == "missed"),
+           "manual_fires": sum(1 for e in execs if e["source"] != _SCHEDULED and e["status"] != "missed"),
+           "max_gap_min": _gap(start, [a for a, _ in spans], now),
+           "errors": sorted({(e["error"] or "")[:160] for e in execs if e["error"]})[:3]}
+    source = job["olo_source"]
+    if source is None:
+        return out
+    runs = [(_instant(r[0]), r[1]) for r in ctx.conn.execute(
+        "SELECT started_at, status FROM ingest_runs WHERE source=?", (source,))]
+    runs = [(t, s) for t, s in runs if t >= start]
+    inside = [any(a <= t <= b for a, b in spans) for t, _ in runs]
+    out.update({"source": source, "ingest_runs": len(runs),
+                "unscheduled_runs": inside.count(False),
+                "failed_runs": sum(1 for _, s in runs if s not in ("succeeded", "partial")),
+                "fires_without_a_run": sum(1 for a, b in spans if not any(a <= t <= b for t, _ in runs))})
+    return out
+
+
+def _e2_job_ok(j: dict) -> bool:
+    limit = E2_MAX_GAP.total_seconds() / 60
+    ok = (j["enabled"] and j["scheduled_completed"] and j["max_gap_min"] <= limit
+          and not (j["scheduled_failed"] or j["missed"] or j["manual_fires"]))
+    if "source" in j:
+        ok = ok and j["ingest_runs"] and not (j["unscheduled_runs"] or j["failed_runs"]
+                                              or j["fires_without_a_run"])
+    return bool(ok)
+
+
+def _e2_model(ctx: Ctx) -> dict:
+    """Mode A's model is off on purpose: extraction ``disabled`` is expected,
+    an exhausted budget is not (the first live Mode A run's 21 failed fires)."""
+    out = {}
+    for src, detail in ctx.conn.execute(
+            "SELECT source, detail FROM pipeline_health WHERE stage='commitment'"):
+        d = json.loads(detail or "{}")
+        counts = d.get("counts", d) if isinstance(d, dict) else {}
+        out[src] = {"extraction_disabled": int(counts.get("extraction_disabled", 0) or 0),
+                    "budget_exhausted": int(counts.get("budget_exhausted", 0) or 0)}
+    return out
+
+
+def _e2_canary(ctx: Ctx, start: datetime, spans_by_source: dict[str, list]) -> dict:
+    """The mid-window canary (seeder ``E2`` phase 1): a new message reached
+    olo.db through a *scheduled* run, so the pipeline progressed end to end
+    rather than merely staying alive."""
+    sigs = [s for s in _content(ctx, "E2") if s["payload"].get("direction") == "received"]
+    if not sigs:
+        return {"seen": False}
+    row = ctx.conn.execute(
+        "SELECT s.ingested_at, r.started_at, r.source FROM signals s JOIN ingest_runs r ON r.id = s.run_id"
+        " WHERE s.source=? AND s.external_id=?", (sigs[0]["source"], sigs[0]["sid"])).fetchone()
+    ran_at = _instant(row[1])
+    scheduled = any(a <= ran_at <= b for a, b in spans_by_source.get(row[2], []))
+    return {"seen": True, "ingested_at": row[0], "after_start": ran_at >= start,
+            "by_scheduled_run": scheduled, "identity": _resolution(ctx, sigs[0]).get("identity_status")}
+
+
+def e2(ctx):
+    """Unattended for two hours through the installed scheduler.
+
+    Measured, never assumed (criterion version 3):
+
+    * **window**: at least ``E2_WINDOW`` since the action;
+    * **scheduler, not a person**: every installed Olo job (gmail, gcal,
+      Hindsight supervisor) was fired by the scheduler (cron's execution
+      ledger, source ``builtin``) with no gap over ``E2_MAX_GAP``, and none
+      failed, was missed or was fired by hand (``direct``);
+    * **real polling**: every scheduled worker fire produced an ingest run of
+      its source, and no ingest run happened outside a scheduled fire (a
+      manually invoked worker); health queries create neither;
+    * **progress, not survival**: the mid-window canary message was ingested
+      by a scheduled run;
+    * **model**: an exhausted extraction budget fails (a disabled model is
+      Mode A's intent and is reported as such);
+    * **now**: nothing degraded or stalled, calendar coverage complete.
+
+    Version 2 counted any ingest run, so a manually invoked worker satisfied
+    it; version 1 looked only at the conditions at check time.
     """
     from olo.health import assess
     now = ctx.clock()
     start = _instant(ctx.actions.get("E2", {}).get("at") or now.isoformat())
     conditions = [(c.severity, c.stage, c.message) for c in assess(ctx.conn, now)]
     bad = [c for c in conditions if c[0] in ("degraded", "stalled")]
-    sources = sorted(r[0] for r in ctx.conn.execute(
-        "SELECT source FROM pipeline_health WHERE stage='ingest'"))
-    coverage: dict[str, dict] = {}
-    for src in sources:
-        times = sorted(_instant(r[0]) for r in ctx.conn.execute(
-            "SELECT started_at FROM ingest_runs WHERE source=? AND status IN ('succeeded','partial')",
-            (src,)) if _instant(r[0]) >= start)
-        marks = [start, *times, now]
-        gap = max(b - a for a, b in pairwise(marks))
-        failed = ctx.conn.execute("SELECT COUNT(*) FROM ingest_runs WHERE source=? AND status='failed'"
-                                  " AND started_at >= ?", (src, start.isoformat())).fetchone()[0]
-        coverage[src] = {"runs": len(times), "max_gap_min": round(gap.total_seconds() / 60, 1),
-                         "failed_runs": failed}
+    jobs = _e2_jobs()
+    detail = {kind: _e2_job(ctx, jobs[kind], start, now) for kind in E2_JOB_KINDS if kind in jobs}
+    spans = {}
+    for kind in E2_WORKER_KINDS:
+        if kind in jobs:
+            fired = [e for e in _e2_executions(jobs[kind]["id"], start)
+                     if e["source"] == _SCHEDULED and e["status"] == "completed"]
+            spans[jobs[kind]["olo_source"]] = [
+                (_instant(e["started_at"] or e["claimed_at"]),
+                 _instant(e["finished_at"]) if e["finished_at"] else now) for e in fired]
+    model = _e2_model(ctx)
+    canary = _e2_canary(ctx, start, spans)
     elapsed = now - start
-    ok = (elapsed >= E2_WINDOW and bool(coverage) and not bad
-          and all(c["runs"] and c["max_gap_min"] <= E2_MAX_GAP.total_seconds() / 60
-                  for c in coverage.values()))
-    return ok, {"window_min": round(elapsed.total_seconds() / 60, 1),
-                "required_min": E2_WINDOW.total_seconds() / 60, "coverage": coverage,
-                "conditions": conditions}
+    missing = [k for k in E2_JOB_KINDS if k not in jobs]
+    ok = (elapsed >= E2_WINDOW and not missing and not bad
+          and all(_e2_job_ok(j) for j in detail.values())
+          and not any(m["budget_exhausted"] for m in model.values())
+          and canary.get("seen") and canary.get("after_start") and canary.get("by_scheduled_run"))
+    return bool(ok), {"window_min": round(elapsed.total_seconds() / 60, 1),
+                      "required_min": E2_WINDOW.total_seconds() / 60, "missing_jobs": missing,
+                      "jobs": detail, "model": model, "canary": canary, "conditions": conditions}
 
 
 # ── B1 (mode B): a delivery through paid extraction ──────────────────────────
@@ -594,7 +713,8 @@ def e6(ctx):
 
 SCENARIOS: tuple[Scenario, ...] = (
     Scenario("G1", "gmail", "sent and received, plain reply", "customer emails the business"
-             " '[OLO-G1] order question'; business replies from Gmail web", "account+customer", g1, evidence="simulated"),
+             " '[OLO-G1] order question'; business replies from Gmail web", "account+customer", g1,
+             evidence="simulated", version=2),
     Scenario("G2", "gmail", "Outlook HTML reply", "an Outlook.com identity replies to a business"
              " email with subject '[OLO-G2] …'", "account+customer+outlook", g2, evidence="second_identity"),
     Scenario("G3", "gmail", "HTML-only and non-UTF-8", "send '[OLO-G3] …' HTML-only and as"
@@ -626,11 +746,13 @@ SCENARIOS: tuple[Scenario, ...] = (
              "local", c7),
     Scenario("C8", "calendar", "pagination", "12 events '[OLO-C8] n' with jobs at --limit 5",
              "account", c8),
-    Scenario("L1", "linking", "invitation UID", "the customer receives the business's '[OLO-L1] …'"
-             " invitation and forwards it back; the event is tagged [OLO-L1]", "account+customer", l1, evidence="second_identity"),
+    Scenario("L1", "linking", "invitation UID", "the customer invites the business to '[OLO-L1] …'"
+             " from Google Calendar; Google's own invitation email (with its iCalendar UID) reaches the"
+             " business's Gmail (real_identity.plan)", "account+customer", l1, evidence="second_identity"),
     Scenario("L2", "linking", "same day without UID", "business emails '[OLO-L2] …' confirming"
              " the L1 meeting by date only", "account+customer", l2, mode="B"),
-    Scenario("L3", "linking", "cancel after linking", "cancel the [OLO-L1] event", "account", l3, evidence="second_identity"),
+    Scenario("L3", "linking", "cancel after linking", "the customer (organizer) cancels the [OLO-L1] event",
+             "account+customer", l3, evidence="second_identity"),
     Scenario("B1", "mode B", "request, confirmation, change, cancellation", "five-message thread"
              " '[OLO-B1] delivery of ORD-…': business commits; customer asks to move it; business"
              " confirms the move; customer asks to cancel; business cancels (run.py snapshot B1"
@@ -639,8 +761,9 @@ SCENARIOS: tuple[Scenario, ...] = (
              "local", d1),
     Scenario("E1", "installed", "three jobs installed", "hermes olo setup … --schedule for gmail"
              " and gcal", "local", e1),
-    Scenario("E2", "installed", "unattended for 2 hours", "let the scheduler run 2 hours",
-             "local", e2, version=2),
+    Scenario("E2", "installed", "unattended for 2 hours", "let the installed scheduler run 2 hours"
+             " untouched; seed the E2 canary (seeder E2 phase 1) about an hour in",
+             "local", e2, version=3),
     Scenario("E3", "installed", "customer context", "run.py check E3 (the tool's brief)",
              "local", e3),
     Scenario("E4", "installed", "Hindsight killed", "kill -9 the Hindsight server", "local", e4),
@@ -687,6 +810,10 @@ def evaluate(ctx: Ctx, only: Optional[set[str]] = None, *,
                                now, act.get("at", ""), True, sc.version))
             continue
         details = {**details, "evidence": sc.evidence, "by": act.get("by", "operator")}
+        if real and sc.id in real_identity.PROVENANCE:
+            genuine, provenance = real_identity.PROVENANCE[sc.id](ctx)
+            details["provenance"] = {"genuine": genuine, **provenance}
+            ok = ok and genuine            # seeded data recorded as real never passes
         status = "passed" if ok else "failed"
         if ok and sc.evidence == "simulated" and not real:
             status = "passed_simulated"

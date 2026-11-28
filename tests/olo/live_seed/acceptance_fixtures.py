@@ -648,6 +648,13 @@ def l2(s: Session) -> None:
                            text=f"Confirming our walkthrough on {start:%A %d %B} at {start:%H:%M} UTC."))
 
 
+def e2_canary(s: Session) -> None:
+    """E2's mid-window canary: one new message the scheduled jobs must ingest
+    (progress end to end, not just processes staying alive)."""
+    s.received("canary", _plain(s, "E2", "canary",
+                                "A new message during the unattended window.\n\nThanks"))
+
+
 # ── B1 (mode B): one delivery's life through paid extraction ─────────────────
 
 def _b1(s: Session) -> tuple[str, datetime, datetime]:
@@ -710,6 +717,7 @@ PHASES: dict[str, tuple[Callable[[Session], None], ...]] = {
     "G9": (g9,), "C1": (c1,), "C2": (c2_create, c2_other_day, c2_same_day), "C3": (c3_create, c3_retitle),
     "C5": (c5_series, c5_exceptions), "C6": (c6_create, c6_delete), "C8": (c8,), "L2": (l2,),
     "B1": (b1_commit, b1_request, b1_confirm_change, b1_cancel_request, b1_cancel),
+    "E2": (e2_canary,),
 }
 
 

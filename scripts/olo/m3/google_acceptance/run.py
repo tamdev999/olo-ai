@@ -10,6 +10,7 @@
   python scripts/olo/m3/google_acceptance/run.py snapshot <ID>
   python scripts/olo/m3/google_acceptance/run.py --mode B --key-file F preflight-b
   python scripts/olo/m3/google_acceptance/run.py teardown
+  python scripts/olo/m3/google_acceptance/run.py --run-id R real-plan
 
 Mode B (paid extraction, approval P5) runs the production extractor under
 hard run caps (``--max-model-calls``, ``--max-usd``; mode_b.py), structured-only
@@ -278,7 +279,7 @@ def check(pf: guard.Preflight, only: set[str] | None, mode: str, *, run: str = "
     conn = _conn(pf)
     facts_doc = _json(s.evidence / "facts.json", {})
     actions = _scoped(_json(s.evidence / "actions.json", {}), run)
-    ctx = scenarios.Ctx(conn, s.account, s.customer, actions, mode=mode,
+    ctx = scenarios.Ctx(conn, s.account, s.customer, actions, mode=mode, outlook=s.outlook,
                         facts=_scoped(facts_doc, run), run_id=run)
     now = _now()
     outcomes = scenarios.evaluate(ctx, only, frozen=_verdicts(s.evidence, run),
@@ -399,9 +400,16 @@ def main(argv: list[str] | None = None) -> int:
     ck.add_argument("--recheck", nargs="*", default=[],
                     help="evaluate these scenarios again instead of reusing their recorded verdict")
     sub.add_parser("teardown")
+    sub.add_parser("real-plan", help="the second-identity steps for --run-id (local; no Google call)")
     args = ap.parse_args(argv)
     if args.cmd == "teardown":
         print(TEARDOWN)
+        return 0
+    if args.cmd == "real-plan":
+        if not args.run_id:
+            raise SystemExit("real-plan needs --run-id (or $OLO_ACCEPTANCE_RUN)")
+        from google_acceptance import real_identity
+        print(real_identity.plan(args.run_id))
         return 0
     if args.cmd == "environment":
         return environment_check()

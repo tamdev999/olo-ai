@@ -10,6 +10,7 @@ harness, not Olo configuration):
   OLO_ACCEPTANCE_CUSTOMER  the second test identity (the "customer")
   OLO_ACCEPTANCE_EVIDENCE  where evidence goes; never inside the home
   OLO_ACCEPTANCE_ALIAS     Olo account alias (default "accept")
+  OLO_ACCEPTANCE_OUTLOOK   the Outlook.com identity, for a real G2 (optional)
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ class Settings:
     customer: str
     evidence: Path
     alias: str = "accept"
+    outlook: str = ""                   # the Outlook.com identity (G2), when one is used
 
 
 @dataclass
@@ -64,12 +66,13 @@ def settings_from(env: Mapping[str, str]) -> Preflight:
     s = Settings(home=Path(env["OLO_ACCEPTANCE_HOME"]), account=account,
                  customer=env["OLO_ACCEPTANCE_CUSTOMER"].strip().lower(),
                  evidence=Path(env["OLO_ACCEPTANCE_EVIDENCE"]),
-                 alias=env.get("OLO_ACCEPTANCE_ALIAS", "accept"))
+                 alias=env.get("OLO_ACCEPTANCE_ALIAS", "accept"),
+                 outlook=env.get("OLO_ACCEPTANCE_OUTLOOK", "").strip().lower())
     pf = Preflight(s)
     if env["OLO_ACCEPTANCE_CONFIRM"].strip().lower() != account:
         pf.refusals.append("OLO_ACCEPTANCE_CONFIRM must repeat OLO_ACCEPTANCE_ACCOUNT exactly")
-    if s.customer == account:
-        pf.refusals.append("the customer identity must be a second account, not the business's")
+    if account in (s.customer, s.outlook):
+        pf.refusals.append("the customer (and Outlook) identity must be a second account, not the business's")
     default_home = Path.home() / ".hermes"
     if s.home.resolve() == default_home.resolve() or not s.home.is_dir():
         pf.refusals.append(f"OLO_ACCEPTANCE_HOME must be an existing disposable home, not {default_home}")
